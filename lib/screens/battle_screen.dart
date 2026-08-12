@@ -98,9 +98,8 @@ class _BattleScreenState extends State<BattleScreen> {
       SoundService.instance.denied();
       return;
     }
-    final res = showingP1
-        ? controller.fireAt(r, c)
-        : controller.p2FireAt(r, c);
+    final res =
+        showingP1 ? controller.fireAt(r, c) : controller.p2FireAt(r, c);
     if (res == ShotResult.cooldown) {
       _toast('Cannon reloading…');
       return;
@@ -109,16 +108,20 @@ class _BattleScreenState extends State<BattleScreen> {
       _toast('Already fired there!');
       return;
     }
-    // Local mode: reveal this player's fleet, then flip perspective.
+    // Local pass-and-play: mark this player's fleet as revealed, then
+    // hand the device to the other player after a beat so they can see
+    // the result of their shot first.
     if (controller.mode == GameMode.local) {
       setState(() {
         if (showingP1) {
           _p1Revealed = true;
-          _p2View = true; // hand over to player 2
         } else {
           _p2Revealed = true;
-          _p2View = false; // back to player 1
         }
+      });
+      Future.delayed(const Duration(milliseconds: 650), () {
+        if (!mounted || controller.phase != BattlePhase.battling) return;
+        setState(() => _p2View = !_p2View);
       });
     }
   }
@@ -139,145 +142,148 @@ class _BattleScreenState extends State<BattleScreen> {
     final boardForStatus =
         showingP1 ? controller.boards[1] : controller.boards[0];
 
-    // Local mode: the viewing player's own fleet grid is hidden until
-    // they fire their first shot (keeps ship locations secret).
+    // Local mode: the viewing player's own fleet stays hidden until they
+    // fire their first shot (keeps ship locations secret on hand-off).
     final ownRevealed = !isLocal || (showingP1 ? _p1Revealed : _p2Revealed);
+
+    // In local pass-and-play, player 2 sits on the opposite side of the
+    // device — flip the whole play area 180° so it reads upright for them.
+    final flipped = isLocal && !showingP1;
+
+    final playArea = Column(
+      children: [
+        const SizedBox(height: 8),
+        // ---------- HUD (no timer — RP + turn chip + exit) ----------
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Row(
+            children: [
+              HudChip(
+                icon: Icons.star,
+                text: '${profile.rp} RP',
+                color: AppColors.gold,
+              ),
+              const SizedBox(width: 8),
+              HudChip(
+                icon: Icons.person,
+                text: isLocal
+                    ? (showingP1 ? 'P1 TURN' : 'P2 TURN')
+                    : profile.playerName.toUpperCase(),
+                color: showingP1 ? AppColors.blue : AppColors.green,
+              ),
+              const Spacer(),
+              _ExitButton(onTap: () => _confirmSurrender(controller)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+
+        // ---------- Enemy waters (tap to fire) ----------
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: 1,
+                child: BattleGrid(
+                  key: ValueKey('enemy-$showingP1'),
+                  shots: trackingGrid,
+                  glowColor: AppColors.water,
+                  recentEvents: _eventsFor(controller, showingP1),
+                  enabled: controller.battling,
+                  onTapCell: (r, c) =>
+                      _fireAtCell(controller, showingP1, r, c),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+
+        // ---------- Middle band: status dots + big cannon ----------
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: const BoxDecoration(
+            color: AppColors.coralLight,
+            border: Border(
+              top: BorderSide(color: AppColors.outline, width: 3),
+              bottom: BorderSide(color: AppColors.outline, width: 3),
+            ),
+          ),
+          child: Row(
+            children: [
+              _StatusDot(
+                  color: AppColors.green, count: 5 - controller.enemySunk),
+              const SizedBox(width: 6),
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (final spec in kFleet)
+                        _DockStatusIcon(
+                          spec: spec,
+                          skin: profile.shipSkin,
+                          sunk: boardForStatus
+                                  .shipOfKind(spec.kind)
+                                  ?.isSunk ??
+                              false,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              _StatusDot(color: AppColors.hit, count: 5 - controller.mySunk),
+              const SizedBox(width: 10),
+              CannonWidget(
+                skin: profile.cannonSkin,
+                cooldownFraction: cooldown,
+                enabled: controller.battling,
+                size: 84,
+                fireTrigger: cannonStream.stream,
+                onFire: () => _toast('Tap the enemy grid to fire!'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+
+        // ---------- Your fleet (same size; hidden until you fire) ----------
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: 1,
+                child: ownRevealed
+                    ? BattleGrid(
+                        key: ValueKey('own-$showingP1'),
+                        shots: enemyTracking,
+                        ships: ownBoard.ships,
+                        skin: profile.shipSkin,
+                        enabled: false,
+                        glowColor: AppColors.waterLight,
+                        recentEvents: _eventsFor(controller, !showingP1),
+                      )
+                    : _HiddenFleet(
+                        label:
+                            '${showingP1 ? 'PLAYER 1' : 'PLAYER 2'}\nTAP THE TOP GRID TO FIRE',
+                      ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
 
     return Scaffold(
       body: Container(
         color: AppColors.coral,
         child: SafeArea(
-          child: Column(
-            children: [
-              const SizedBox(height: 8),
-              // ---------- HUD (no timer — RP + local toggle + exit) ----------
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                child: Row(
-                  children: [
-                    HudChip(
-                      icon: Icons.star,
-                      text: '${profile.rp} RP',
-                      color: AppColors.gold,
-                    ),
-                    const SizedBox(width: 8),
-                    HudChip(
-                      icon: Icons.person,
-                      text: isLocal
-                          ? (showingP1 ? 'P1' : 'P2')
-                          : profile.playerName.toUpperCase(),
-                      color: showingP1 ? AppColors.blue : AppColors.green,
-                    ),
-                    const Spacer(),
-                    _ExitButton(onTap: () => _confirmSurrender(controller)),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-
-              // ---------- Enemy waters (tap to fire) ----------
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  child: Center(
-                    child: AspectRatio(
-                      aspectRatio: 1,
-                      child: BattleGrid(
-                        shots: trackingGrid,
-                        glowColor: AppColors.water,
-                        recentEvents: _eventsFor(controller, showingP1),
-                        enabled: controller.battling,
-                        onTapCell: (r, c) =>
-                            _fireAtCell(controller, showingP1, r, c),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 6),
-
-              // ---------- Middle band: status dots + big cannon ----------
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: const BoxDecoration(
-                  color: AppColors.coralLight,
-                  border: Border(
-                    top: BorderSide(color: AppColors.outline, width: 3),
-                    bottom: BorderSide(color: AppColors.outline, width: 3),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    _StatusDot(
-                        color: AppColors.green,
-                        count: 5 - controller.enemySunk),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          children: [
-                            for (final spec in kFleet)
-                              _DockStatusIcon(
-                                spec: spec,
-                                skin: profile.shipSkin,
-                                sunk: boardForStatus
-                                        .shipOfKind(spec.kind)
-                                        ?.isSunk ??
-                                    false,
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    _StatusDot(
-                        color: AppColors.hit, count: 5 - controller.mySunk),
-                    const SizedBox(width: 10),
-                    // Big cannon button (fires at last tapped cell too,
-                    // but primary interaction is tap-to-fire on the grid).
-                    CannonWidget(
-                      skin: profile.cannonSkin,
-                      cooldownFraction: cooldown,
-                      enabled: controller.battling,
-                      size: 84,
-                      fireTrigger: cannonStream.stream,
-                      onFire: () => _toast('Tap the enemy grid to fire!'),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 6),
-
-              // ---------- Your fleet (same size; hidden until you fire) ----------
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-                  child: Center(
-                    child: AspectRatio(
-                      aspectRatio: 1,
-                      child: ownRevealed
-                          ? BattleGrid(
-                              shots: enemyTracking,
-                              ships: ownBoard.ships,
-                              skin: profile.shipSkin,
-                              enabled: false,
-                              glowColor: AppColors.waterLight,
-                              recentEvents:
-                                  _eventsFor(controller, !showingP1),
-                            )
-                          : _HiddenFleet(
-                              label: isLocal
-                                  ? '${showingP1 ? 'PLAYER 1' : 'PLAYER 2'} — FIRE TO REVEAL YOUR FLEET'
-                                  : '',
-                            ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+          child: flipped
+              ? RotatedBox(quarterTurns: 2, child: playArea)
+              : playArea,
         ),
       ),
     );
@@ -316,37 +322,65 @@ class _BattleScreenState extends State<BattleScreen> {
 }
 
 /// Cover panel shown over the viewing player's fleet until they fire.
+/// Renders an empty water grid (so the layout matches) with a centered
+/// lock + instruction chip on top.
 class _HiddenFleet extends StatelessWidget {
   final String label;
   const _HiddenFleet({required this.label});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.waterDark,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.cellBorder, width: 3),
-      ),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.lock_outline,
-                color: AppColors.cream, size: 40),
-            const SizedBox(height: 10),
-            if (label.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Text(
-                  label,
-                  textAlign: TextAlign.center,
-                  style: AppText.label(size: 11, color: AppColors.cream),
-                ),
-              ),
-          ],
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // Empty water grid underneath (same chunky cells, no ships).
+        BattleGrid(
+          shots: List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0)),
+          enabled: false,
+          glowColor: AppColors.waterLight,
         ),
-      ),
+        // Frosted cover.
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.navyDeep.withValues(alpha: 0.72),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColors.cream,
+                    shape: BoxShape.circle,
+                    border:
+                        Border.all(color: AppColors.outline, width: 3),
+                  ),
+                  child: const Icon(Icons.visibility_off,
+                      color: AppColors.outline, size: 34),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.navy,
+                    borderRadius: BorderRadius.circular(12),
+                    border:
+                        Border.all(color: AppColors.outline, width: 2.5),
+                  ),
+                  child: Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    style: AppText.label(size: 11, color: AppColors.cream),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

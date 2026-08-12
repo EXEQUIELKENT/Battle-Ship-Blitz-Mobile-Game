@@ -1,145 +1,98 @@
-import 'dart:async';
-import 'dart:math';
-import 'dart:typed_data';
-import 'dart:ui' as ui;
-
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/services.dart';
 
-/// Retro-style synthesized sound effects.
+/// Real sound effects via the audioplayers plugin.
 ///
-/// Short PCM blips are synthesized in memory, painted into a picture
-/// and decoded so playback goes through Flutter's engine channel —
-/// no external audio packages needed and fully Web-compatible.
+/// Short synthesized WAV assets live in `assets/sfx/` (see
+/// `tool/gen_sounds.dart`). A small pool of players lets overlapping
+/// effects (fire + hit + splash) play simultaneously on Android & Web.
 class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
 
   bool enabled = true;
-  bool _ready = false;
 
-  final Random _rng = Random();
+  static const _files = {
+    'fire': 'sfx/fire.wav',
+    'hit': 'sfx/hit.wav',
+    'miss': 'sfx/miss.wav',
+    'sunk': 'sfx/sunk.wav',
+    'victory': 'sfx/victory.wav',
+    'defeat': 'sfx/defeat.wav',
+    'place': 'sfx/place.wav',
+    'click': 'sfx/click.wav',
+    'denied': 'sfx/denied.wav',
+  };
 
-  static const int _sampleRate = 22050;
+  final Map<String, List<AudioPlayer>> _pool = {};
+  final Map<String, int> _cursor = {};
 
+  /// Pre-create a round-robin player pool per effect. Safe to call
+  /// fire-and-forget from main().
   Future<void> init() async {
-    _ready = true;
-  }
-
-  Float32List _tone(
-    double seconds,
-    double Function(double t) freqAt, {
-    double volume = 0.4,
-    bool noise = false,
-    double decay = 4.0,
-  }) {
-    final n = (seconds * _sampleRate).toInt();
-    final out = Float32List(n);
-    double phase = 0;
-    for (var i = 0; i < n; i++) {
-      final t = i / _sampleRate;
-      final env = exp(-decay * t);
-      double sample;
-      if (noise) {
-        sample = (_rng.nextDouble() * 2 - 1) * env * volume;
-      } else {
-        final f = freqAt(t);
-        phase += 2 * pi * f / _sampleRate;
-        sample = sin(phase) * env * volume;
+    for (final entry in _files.entries) {
+      final players = <AudioPlayer>[];
+      for (var i = 0; i < 3; i++) {
+        final p = AudioPlayer();
+        try {
+          await p.setSource(AssetSource(entry.value));
+          await p.setPlayerMode(PlayerMode.lowLatency);
+          await p.setReleaseMode(ReleaseMode.stop);
+        } catch (_) {/* cosmetic */}
+        players.add(p);
       }
-      out[i] = sample;
+      _pool[entry.key] = players;
+      _cursor[entry.key] = 0;
     }
-    return out;
   }
 
-  Future<void> _play(Float32List samples) async {
-    if (!enabled || !_ready) return;
+  void _play(String key) {
+    if (!enabled) return;
+    final players = _pool[key];
+    if (players == null || players.isEmpty) return;
+    final i = _cursor[key]! % players.length;
+    _cursor[key] = i + 1;
+    final p = players[i];
     try {
-      final recorder = ui.PictureRecorder();
-      final canvas = ui.Canvas(recorder);
-      final paint = ui.Paint()..color = const ui.Color(0xFF000000);
-      final n = samples.length;
-      final path = ui.Path();
-      for (var i = 0; i < n; i++) {
-        final x = i.toDouble();
-        final y = samples[i].clamp(-1.0, 1.0).toDouble();
-        if (i == 0) {
-          path.moveTo(x, y);
-        } else {
-          path.lineTo(x, y);
-        }
-      }
-      canvas.drawPath(path, paint);
-      final picture = recorder.endRecording();
-      final image = await picture.toImage(n, 1);
-      final byteData = await image.toByteData();
-      if (byteData == null) return;
-      await SystemChannels.platform.invokeMethod(
-        'SystemSound.playRaw',
-        byteData.buffer.asUint8List(),
-      );
+      p.stop();
+      p.play(AssetSource(_files[key]!));
     } catch (_) {
-      // Audio is cosmetic — silently ignore failures (e.g. on web).
+      // Audio is cosmetic — ignore failures (e.g. web autoplay policy).
     }
   }
 
   void fire() {
     HapticFeedback.mediumImpact();
-    _play(_tone(0.18, (t) => 320 - 900 * t, volume: 0.5, decay: 10));
+    _play('fire');
   }
 
   void hit() {
     HapticFeedback.heavyImpact();
-    _play(_tone(0.35, (t) => 90, volume: 0.6, noise: true, decay: 6));
+    _play('hit');
   }
 
   void miss() {
     HapticFeedback.lightImpact();
-    _play(_tone(0.25, (t) => 220 - 400 * t, volume: 0.3, decay: 7));
+    _play('miss');
   }
 
   void sunk() {
     HapticFeedback.heavyImpact();
-    _play(_tone(0.6, (t) => 160 - 180 * t, volume: 0.55, decay: 4));
+    _play('sunk');
   }
 
   void victory() {
     HapticFeedback.heavyImpact();
-    final seq = Float32List((_sampleRate * 0.9).toInt());
-    final notes = [523.25, 659.25, 783.99, 1046.5];
-    final seg = (_sampleRate * 0.2).toInt();
-    for (var nIdx = 0; nIdx < notes.length; nIdx++) {
-      final tone = _tone(0.22, (t) => notes[nIdx], volume: 0.4, decay: 5);
-      final start = nIdx * seg;
-      for (var i = 0; i < tone.length && start + i < seq.length; i++) {
-        seq[start + i] += tone[i];
-      }
-    }
-    _play(seq);
+    _play('victory');
   }
 
   void defeat() {
-    final seq = Float32List((_sampleRate * 0.9).toInt());
-    final notes = [392.0, 311.13, 233.08, 174.61];
-    final seg = (_sampleRate * 0.2).toInt();
-    for (var nIdx = 0; nIdx < notes.length; nIdx++) {
-      final tone = _tone(0.24, (t) => notes[nIdx], volume: 0.35, decay: 4);
-      final start = nIdx * seg;
-      for (var i = 0; i < tone.length && start + i < seq.length; i++) {
-        seq[start + i] += tone[i];
-      }
-    }
-    _play(seq);
+    _play('defeat');
   }
 
-  void place() {
-    _play(_tone(0.1, (t) => 500 + 300 * t, volume: 0.3, decay: 12));
-  }
+  void place() => _play('place');
 
-  void click() {
-    _play(_tone(0.06, (t) => 700, volume: 0.25, decay: 20));
-  }
+  void click() => _play('click');
 
-  void denied() {
-    _play(_tone(0.15, (t) => 140, volume: 0.4, decay: 8));
-  }
+  void denied() => _play('denied');
 }
