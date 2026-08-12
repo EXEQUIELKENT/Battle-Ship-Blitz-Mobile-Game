@@ -15,8 +15,11 @@ import '../widgets/ship_painter.dart';
 import 'result_screen.dart';
 
 /// Battle arena in the reference layout:
-/// enemy targeting grid on top (crosshair + big FIRE button),
-/// ship-status dock in the middle, your fleet grid at the bottom.
+///  • Enemy waters grid (top) — TAP A CELL TO FIRE instantly.
+///  • Middle dock band — ship status + big animated cannon button(s).
+///  • Your fleet grid (bottom) — same size as the top grid.
+/// In local pass-and-play, the viewing player's own fleet stays hidden
+/// until they fire, then the screen flips to the other player.
 class BattleScreen extends StatefulWidget {
   const BattleScreen({super.key});
 
@@ -29,8 +32,11 @@ class _BattleScreenState extends State<BattleScreen> {
   final _cannon2Fire = StreamController<void>.broadcast();
   bool _p2View = false; // local mode perspective
   bool _navigatedToResult = false;
-  List<int>? _aim1; // P1 crosshair cell
-  List<int>? _aim2; // P2 crosshair cell
+
+  /// Local mode: whether the viewing player has revealed their fleet
+  /// (their grid stays hidden until they fire at least once).
+  bool _p1Revealed = false;
+  bool _p2Revealed = false;
 
   @override
   void initState() {
@@ -84,6 +90,39 @@ class _BattleScreenState extends State<BattleScreen> {
       ));
   }
 
+  /// Tap-to-fire: tapping a cell on the enemy grid fires immediately.
+  void _fireAtCell(GameController controller, bool showingP1, int r, int c) {
+    final trackingGrid = showingP1 ? controller.myShots : controller.p2Shots;
+    if (trackingGrid[r][c] != 0) {
+      _toast('Already fired there!');
+      SoundService.instance.denied();
+      return;
+    }
+    final res = showingP1
+        ? controller.fireAt(r, c)
+        : controller.p2FireAt(r, c);
+    if (res == ShotResult.cooldown) {
+      _toast('Cannon reloading…');
+      return;
+    }
+    if (res == ShotResult.duplicate) {
+      _toast('Already fired there!');
+      return;
+    }
+    // Local mode: reveal this player's fleet, then flip perspective.
+    if (controller.mode == GameMode.local) {
+      setState(() {
+        if (showingP1) {
+          _p1Revealed = true;
+          _p2View = true; // hand over to player 2
+        } else {
+          _p2Revealed = true;
+          _p2View = false; // back to player 1
+        }
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<GameController>();
@@ -97,9 +136,12 @@ class _BattleScreenState extends State<BattleScreen> {
     final cooldown =
         showingP1 ? controller.cooldownFraction1 : controller.cooldownFraction2;
     final cannonStream = showingP1 ? _cannon1Fire : _cannon2Fire;
-    final aim = showingP1 ? _aim1 : _aim2;
     final boardForStatus =
         showingP1 ? controller.boards[1] : controller.boards[0];
+
+    // Local mode: the viewing player's own fleet grid is hidden until
+    // they fire their first shot (keeps ship locations secret).
+    final ownRevealed = !isLocal || (showingP1 ? _p1Revealed : _p2Revealed);
 
     return Scaffold(
       body: Container(
@@ -108,100 +150,56 @@ class _BattleScreenState extends State<BattleScreen> {
           child: Column(
             children: [
               const SizedBox(height: 8),
-              // ---------- HUD ----------
+              // ---------- HUD (no timer — RP + local toggle + exit) ----------
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 child: Row(
                   children: [
                     HudChip(
-                      icon: Icons.timer,
-                      text: controller.timerText,
-                      color: controller.timeLeft <= 30
-                          ? AppColors.hit
-                          : AppColors.navy,
-                      pulse: controller.timeLeft <= 30,
-                    ),
-                    const SizedBox(width: 8),
-                    HudChip(
                       icon: Icons.star,
                       text: '${profile.rp} RP',
                       color: AppColors.gold,
                     ),
-                    const Spacer(),
-                    if (isLocal)
-                      GestureDetector(
-                        onTap: () {
-                          SoundService.instance.click();
-                          setState(() => _p2View = !_p2View);
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 7),
-                          decoration: BoxDecoration(
-                            color: _p2View ? AppColors.green : AppColors.blue,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                                color: AppColors.outline, width: 2.5),
-                            boxShadow: const [
-                              BoxShadow(
-                                  color: Color(0x44000000),
-                                  offset: Offset(0, 3)),
-                            ],
-                          ),
-                          child: Text(
-                            _p2View ? 'P2 🎮' : 'P1 🎮',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w900,
-                              fontSize: 12,
-                              color: AppColors.cream,
-                            ),
-                          ),
-                        ),
-                      ),
                     const SizedBox(width: 8),
+                    HudChip(
+                      icon: Icons.person,
+                      text: isLocal
+                          ? (showingP1 ? 'P1' : 'P2')
+                          : profile.playerName.toUpperCase(),
+                      color: showingP1 ? AppColors.blue : AppColors.green,
+                    ),
+                    const Spacer(),
                     _ExitButton(onTap: () => _confirmSurrender(controller)),
                   ],
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
 
-              // ---------- Enemy waters (targeting) ----------
+              // ---------- Enemy waters (tap to fire) ----------
               Expanded(
-                flex: 5,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   child: Center(
-                    child: BattleGrid(
-                      shots: trackingGrid,
-                      glowColor: AppColors.water,
-                      crosshair: aim,
-                      recentEvents: _eventsFor(controller, showingP1),
-                      enabled: controller.battling,
-                      onTapCell: (r, c) {
-                        if (trackingGrid[r][c] != 0) {
-                          _toast('Already fired there!');
-                          SoundService.instance.denied();
-                          return;
-                        }
-                        SoundService.instance.click();
-                        setState(() {
-                          if (showingP1) {
-                            _aim1 = [r, c];
-                          } else {
-                            _aim2 = [r, c];
-                          }
-                        });
-                      },
+                    child: AspectRatio(
+                      aspectRatio: 1,
+                      child: BattleGrid(
+                        shots: trackingGrid,
+                        glowColor: AppColors.water,
+                        recentEvents: _eventsFor(controller, showingP1),
+                        enabled: controller.battling,
+                        onTapCell: (r, c) =>
+                            _fireAtCell(controller, showingP1, r, c),
+                      ),
                     ),
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
 
-              // ---------- Ship status dock + FIRE button ----------
+              // ---------- Middle band: status dots + big cannon ----------
               Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: const BoxDecoration(
                   color: AppColors.coralLight,
                   border: Border(
@@ -228,8 +226,6 @@ class _BattleScreenState extends State<BattleScreen> {
                                         .shipOfKind(spec.kind)
                                         ?.isSunk ??
                                     false,
-                                revealed: _shipRevealed(
-                                    controller, boardForStatus, spec),
                               ),
                           ],
                         ),
@@ -238,57 +234,44 @@ class _BattleScreenState extends State<BattleScreen> {
                     const SizedBox(width: 6),
                     _StatusDot(
                         color: AppColors.hit, count: 5 - controller.mySunk),
-                    const SizedBox(width: 8),
-                    // Big FIRE button
+                    const SizedBox(width: 10),
+                    // Big cannon button (fires at last tapped cell too,
+                    // but primary interaction is tap-to-fire on the grid).
                     CannonWidget(
                       skin: profile.cannonSkin,
                       cooldownFraction: cooldown,
                       enabled: controller.battling,
-                      size: 76,
+                      size: 84,
                       fireTrigger: cannonStream.stream,
-                      onFire: () {
-                        final target = showingP1 ? _aim1 : _aim2;
-                        if (target == null) {
-                          _toast('Tap the enemy grid to aim first!');
-                          SoundService.instance.denied();
-                          return;
-                        }
-                        final res = showingP1
-                            ? controller.fireAt(target[0], target[1])
-                            : controller.p2FireAt(target[0], target[1]);
-                        if (res == ShotResult.cooldown) {
-                          _toast('⏳ Cannon reloading…');
-                        } else if (res == ShotResult.duplicate) {
-                          _toast('Already fired there!');
-                        } else {
-                          setState(() {
-                            if (showingP1) {
-                              _aim1 = null;
-                            } else {
-                              _aim2 = null;
-                            }
-                          });
-                        }
-                      },
+                      onFire: () => _toast('Tap the enemy grid to fire!'),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
 
-              // ---------- Your fleet ----------
+              // ---------- Your fleet (same size; hidden until you fire) ----------
               Expanded(
-                flex: 4,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
                   child: Center(
-                    child: BattleGrid(
-                      shots: enemyTracking,
-                      ships: ownBoard.ships,
-                      skin: profile.shipSkin,
-                      enabled: false,
-                      glowColor: AppColors.waterLight,
-                      recentEvents: _eventsFor(controller, !showingP1),
+                    child: AspectRatio(
+                      aspectRatio: 1,
+                      child: ownRevealed
+                          ? BattleGrid(
+                              shots: enemyTracking,
+                              ships: ownBoard.ships,
+                              skin: profile.shipSkin,
+                              enabled: false,
+                              glowColor: AppColors.waterLight,
+                              recentEvents:
+                                  _eventsFor(controller, !showingP1),
+                            )
+                          : _HiddenFleet(
+                              label: isLocal
+                                  ? '${showingP1 ? 'PLAYER 1' : 'PLAYER 2'} — FIRE TO REVEAL YOUR FLEET'
+                                  : '',
+                            ),
                     ),
                   ),
                 ),
@@ -298,13 +281,6 @@ class _BattleScreenState extends State<BattleScreen> {
         ),
       ),
     );
-  }
-
-  bool _shipRevealed(GameController c, Board enemyBoard, ShipSpec spec) {
-    // For local/AI modes the enemy board is known locally — only reveal
-    // fully sunk ships in the dock; network mode marks sunk ships too.
-    final ship = enemyBoard.shipOfKind(spec.kind);
-    return ship?.isSunk ?? false;
   }
 
   void _confirmSurrender(GameController controller) {
@@ -334,6 +310,42 @@ class _BattleScreenState extends State<BattleScreen> {
             child: Text('SURRENDER', style: AppText.label(color: AppColors.hit)),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Cover panel shown over the viewing player's fleet until they fire.
+class _HiddenFleet extends StatelessWidget {
+  final String label;
+  const _HiddenFleet({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.waterDark,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.cellBorder, width: 3),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.lock_outline,
+                color: AppColors.cream, size: 40),
+            const SizedBox(height: 10),
+            if (label.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: AppText.label(size: 11, color: AppColors.cream),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -375,13 +387,11 @@ class _DockStatusIcon extends StatelessWidget {
   final ShipSpec spec;
   final ShipSkin skin;
   final bool sunk;
-  final bool revealed;
 
   const _DockStatusIcon({
     required this.spec,
     required this.skin,
     required this.sunk,
-    required this.revealed,
   });
 
   @override

@@ -115,6 +115,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       net.addListener(listener);
     } else {
       setState(() => _connecting = false);
+      if (mounted && net.statusMessage.isNotEmpty) _toast(net.statusMessage);
     }
   }
 
@@ -141,6 +142,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       net.addListener(listener);
     } else {
       setState(() => _connecting = false);
+      if (mounted && net.statusMessage.isNotEmpty) _toast(net.statusMessage);
     }
   }
 

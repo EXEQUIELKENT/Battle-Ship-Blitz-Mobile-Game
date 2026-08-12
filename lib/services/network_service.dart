@@ -172,6 +172,9 @@ class NetworkService extends ChangeNotifier {
           socket.destroy();
           return;
         }
+        try {
+          socket.setOption(SocketOption.tcpNoDelay, true);
+        } catch (_) {}
         _proto = _Protocol(socket);
         _beaconTimer?.cancel();
         _proto!.messages.listen(_handleIncoming);
@@ -251,15 +254,37 @@ class NetworkService extends ChangeNotifier {
     try {
       final socket = await Socket.connect(host, kGamePort,
           timeout: const Duration(seconds: 5));
+      try {
+        socket.setOption(SocketOption.tcpNoDelay, true);
+      } catch (_) {}
       _proto = _Protocol(socket);
       _proto!.messages.listen(_handleIncoming);
       _proto!.send({'type': 'hello', 'name': playerName});
       return true;
     } catch (e) {
-      statusMessage = 'Connection failed: $e';
+      statusMessage = 'Connection failed: ${_friendlyError(e)}';
       notifyListeners();
       return false;
     }
+  }
+
+  /// Convert a raw socket error into a friendly hint.
+  String _friendlyError(Object e) {
+    final s = e.toString();
+    if (s.contains('Permission denied') || s.contains('errno = 13')) {
+      return 'Network permission denied. Reinstall the app or allow '
+          'local-network access, then try again.';
+    }
+    if (s.contains('Connection refused') || s.contains('errno = 111')) {
+      return 'No game at that address — is the host still hosting?';
+    }
+    if (s.contains('timed out') || s.contains('errno = 110')) {
+      return 'Timed out — are both devices on the same Wi-Fi / hotspot?';
+    }
+    if (s.contains('unreachable') || s.contains('errno = 101') || s.contains('errno = 113')) {
+      return 'Network unreachable — connect both devices to the same Wi-Fi / hotspot.';
+    }
+    return s;
   }
 
   /// Joins an online match via the relay (falls back message when offline).

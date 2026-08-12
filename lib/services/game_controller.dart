@@ -48,7 +48,6 @@ class GameController extends ChangeNotifier {
   // ----- Configuration -----
   GameMode mode = GameMode.vsAI;
   AIDifficulty difficulty = AIDifficulty.normal;
-  static const int matchSeconds = 180;
 
   // ----- State -----
   BattlePhase phase = BattlePhase.idle;
@@ -68,7 +67,6 @@ class GameController extends ChangeNotifier {
   double cooldownMax1 = kCooldownSeconds.toDouble();
   double cooldownMax2 = kCooldownSeconds.toDouble();
 
-  int timeLeft = matchSeconds;
   bool iWon = false;
   bool p2Won = false;
   bool suddenTimeout = false;
@@ -95,12 +93,6 @@ class GameController extends ChangeNotifier {
   double get cooldownFraction2 =>
       cooldownMax2 == 0 ? 1 : (1 - cooldown2 / cooldownMax2).clamp(0.0, 1.0);
 
-  String get timerText {
-    final m = timeLeft ~/ 60;
-    final s = timeLeft % 60;
-    return '$m:${s.toString().padLeft(2, '0')}';
-  }
-
   int get mySunk => boards[1].sunkCount; // enemy ships I sank
   int get enemySunk => boards[0].sunkCount; // my ships enemy sank
 
@@ -118,7 +110,6 @@ class GameController extends ChangeNotifier {
   void beginBattle({Board? enemyBoard}) {
     boards[1] = enemyBoard ?? Board.random(rng: _rng);
     phase = BattlePhase.battling;
-    timeLeft = matchSeconds;
     cooldownMax1 = kCooldownSeconds * profile.cannonSkin.cooldownFactor;
     cooldownMax2 = mode == GameMode.local ? cooldownMax1 : kCooldownSeconds.toDouble();
     cooldown1 = 0;
@@ -289,21 +280,6 @@ class GameController extends ChangeNotifier {
     if (!battling) return;
     if (cooldown1 > 0) cooldown1 = max(0, cooldown1 - 0.1);
     if (cooldown2 > 0) cooldown2 = max(0, cooldown2 - 0.1);
-    if (timeLeft > 0) {
-      timeLeft--;
-      if (timeLeft == 0) {
-        suddenTimeout = true;
-        final p1Win = mySunk > enemySunk ||
-            (mySunk == enemySunk && _rng.nextBool());
-        _finish(
-          p1Win: p1Win,
-          reason: mySunk == enemySunk
-              ? 'Time up! Tied fleets — coin toss decides!'
-              : 'Time up! Most ships sunk wins!',
-        );
-      }
-    }
-
     if (mode == GameMode.vsAI) _aiThink();
     notifyListeners();
   }
