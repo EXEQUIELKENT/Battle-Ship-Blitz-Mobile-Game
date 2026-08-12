@@ -1,194 +1,222 @@
-import 'dart:math';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/storage_service.dart';
 
-/// Draws a cartoon-ish warship for a given ship spec, with a gentle
-/// bobbing animation driven externally via [wavePhase].
+/// Flat cartoon top-down ship painter with bold outlines,
+/// matching the playful reference UI style.
 class ShipPainter extends CustomPainter {
   final ShipSpec spec;
   final ShipSkin skin;
-  final double wavePhase; // 0..1 looping
+  final double wavePhase; // kept for API compatibility (gentle bob)
   final bool sunk;
   final int hitCount;
 
   ShipPainter({
     required this.spec,
     required this.skin,
-    required this.wavePhase,
+    this.wavePhase = 0,
     this.sunk = false,
     this.hitCount = 0,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.save();
-    // Bob + slight roll
-    final bob = sin(wavePhase * 2 * pi) * size.height * 0.05;
-    final roll = sin(wavePhase * 2 * pi + 1) * 0.05;
-    canvas.translate(size.width / 2, size.height / 2 + bob);
-    canvas.rotate(sunk ? 0.5 : roll);
-    canvas.translate(-size.width / 2, -size.height / 2);
-    if (sunk) {
-      canvas.translate(0, size.height * 0.25);
-    }
-
-    final hull = sunk ? skin.hull.withValues(alpha: 0.35) : skin.hull;
-    final trim = sunk ? skin.trim.withValues(alpha: 0.35) : skin.trim;
-
     final w = size.width;
     final h = size.height;
 
-    // ---- Hull ----
-    final hullPath = Path()
-      ..moveTo(w * 0.02, h * 0.55)
-      ..lineTo(w * 0.12, h * 0.85)
-      ..lineTo(w * 0.88, h * 0.85)
-      ..lineTo(w * 0.98, h * 0.55)
-      ..close();
-    final hullPaint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [trim, hull, hull.withValues(alpha: 0.8)],
-      ).createShader(Rect.fromLTWH(0, h * 0.5, w, h * 0.4));
-    canvas.drawPath(hullPath, hullPaint);
-    canvas.drawPath(
-      hullPath,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5
-        ..color = Colors.black.withValues(alpha: 0.5),
-    );
-
-    // ---- Deck structures per ship type ----
-    final deckPaint = Paint()..color = hull.withValues(alpha: 0.95);
-    final deckStroke = Paint()
+    final hullColor = sunk ? skin.hull.withValues(alpha: 0.45) : skin.hull;
+    final trimColor = sunk ? skin.trim.withValues(alpha: 0.45) : skin.trim;
+    final outlinePaint = Paint()
+      ..color = AppColors.outline.withValues(alpha: sunk ? 0.5 : 1)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..color = trim;
+      ..strokeWidth = 3
+      ..strokeJoin = StrokeJoin.round;
+    final fillPaint = Paint()..color = hullColor;
+    final detailPaint = Paint()
+      ..color = trimColor
+      ..style = PaintingStyle.fill;
+    final detailStroke = Paint()
+      ..color = AppColors.outline.withValues(alpha: sunk ? 0.5 : 1)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+
+    // Gentle bob (tiny, keeps the flat look clean)
+    final bob = sunk ? 0.0 : (wavePhase - 0.5) * h * 0.06;
+    canvas.save();
+    canvas.translate(0, bob);
 
     switch (spec.kind) {
       case ShipKind.carrier:
-        // Flat flight deck + island tower
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-              Rect.fromLTWH(w * 0.06, h * 0.42, w * 0.88, h * 0.15),
-              const Radius.circular(3)),
-          Paint()..color = trim.withValues(alpha: 0.9),
-        );
-        canvas.drawRect(Rect.fromLTWH(w * 0.62, h * 0.18, w * 0.14, h * 0.26), deckPaint);
-        canvas.drawRect(Rect.fromLTWH(w * 0.62, h * 0.18, w * 0.14, h * 0.26), deckStroke);
-        // Runway stripes
-        final stripe = Paint()
-          ..color = Colors.white.withValues(alpha: 0.35)
-          ..strokeWidth = 1.4;
-        for (var i = 0; i < 4; i++) {
-          final x = w * (0.14 + i * 0.14);
-          canvas.drawLine(Offset(x, h * 0.46), Offset(x + w * 0.06, h * 0.46), stripe);
-        }
+        _carrier(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
         break;
       case ShipKind.battleship:
-        // Two turrets + bridge tower
-        _turret(canvas, w * 0.28, h * 0.42, w * 0.16, trim, hull);
-        _turret(canvas, w * 0.62, h * 0.42, w * 0.16, trim, hull);
-        canvas.drawRect(Rect.fromLTWH(w * 0.42, h * 0.20, w * 0.16, h * 0.24), deckPaint);
-        canvas.drawRect(Rect.fromLTWH(w * 0.42, h * 0.20, w * 0.16, h * 0.24), deckStroke);
+        _battleship(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
         break;
       case ShipKind.cruiser:
-        _turret(canvas, w * 0.30, h * 0.44, w * 0.13, trim, hull);
-        canvas.drawRect(Rect.fromLTWH(w * 0.48, h * 0.26, w * 0.13, h * 0.2), deckPaint);
-        canvas.drawRect(Rect.fromLTWH(w * 0.48, h * 0.26, w * 0.13, h * 0.2), deckStroke);
-        _mast(canvas, w * 0.68, h * 0.44, h * 0.24, trim);
+        _cruiser(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
         break;
       case ShipKind.submarine:
-        // Sleek body + conning tower
-        canvas.drawOval(Rect.fromLTWH(w * 0.04, h * 0.42, w * 0.92, h * 0.4), hullPaint);
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-              Rect.fromLTWH(w * 0.42, h * 0.16, w * 0.16, h * 0.3),
-              const Radius.circular(4)),
-          deckPaint,
-        );
-        canvas.drawLine(Offset(w * 0.5, h * 0.16), Offset(w * 0.5, h * 0.04),
-            Paint()..color = trim..strokeWidth = 2);
+        _submarine(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
         break;
       case ShipKind.destroyer:
-        _turret(canvas, w * 0.26, h * 0.46, w * 0.12, trim, hull);
-        _mast(canvas, w * 0.5, h * 0.46, h * 0.3, trim);
-        canvas.drawRect(Rect.fromLTWH(w * 0.60, h * 0.30, w * 0.12, h * 0.18), deckPaint);
-        canvas.drawRect(Rect.fromLTWH(w * 0.60, h * 0.30, w * 0.12, h * 0.18), deckStroke);
+        _destroyer(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
         break;
     }
 
-    // ---- Damage smoke / fire on hit sections ----
-    if (hitCount > 0 && !sunk) {
-      final rng = Random(spec.kind.index * 7 + 3);
-      for (var i = 0; i < hitCount; i++) {
-        final fx = w * (0.2 + rng.nextDouble() * 0.6);
-        final fy = h * (0.4 + rng.nextDouble() * 0.2);
-        final flicker = 0.5 + 0.5 * sin(wavePhase * 2 * pi * 2 + i * 1.7);
-        final firePaint = Paint()
-          ..color = Colors.orange.withValues(alpha: 0.55 + 0.35 * flicker)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
-        canvas.drawCircle(Offset(fx, fy), h * (0.06 + 0.03 * flicker), firePaint);
-      }
-    }
-
-    canvas.restore();
-
-    // ---- Sunk overlay: skull-ish X ----
-    if (sunk) {
-      final p = Paint()
-        ..color = Colors.red.withValues(alpha: 0.7)
+    // Hit damage marks: little dark X craters along the deck
+    if (hitCount > 0) {
+      final crater = Paint()
+        ..color = AppColors.outline.withValues(alpha: 0.85)
         ..strokeWidth = 3
         ..strokeCap = StrokeCap.round;
-      canvas.drawLine(Offset(w * 0.2, h * 0.2), Offset(w * 0.8, h * 0.8), p);
-      canvas.drawLine(Offset(w * 0.8, h * 0.2), Offset(w * 0.2, h * 0.8), p);
+      for (var i = 0; i < hitCount && i < spec.size; i++) {
+        final cx = w * (0.18 + 0.64 * (i / math.max(1, spec.size - 1)));
+        final cy = h * 0.5 + (i.isOdd ? h * 0.12 : -h * 0.12);
+        const d = 4.5;
+        canvas.drawLine(Offset(cx - d, cy - d), Offset(cx + d, cy + d), crater);
+        canvas.drawLine(Offset(cx - d, cy + d), Offset(cx + d, cy - d), crater);
+      }
+    }
+    canvas.restore();
+  }
+
+  void _drawHull(Canvas canvas, double w, double h, Paint fill, Paint outline) {
+    final path = Path()
+      ..moveTo(w * 0.06, h * 0.24)
+      ..quadraticBezierTo(w * 0.02, h * 0.5, w * 0.06, h * 0.76)
+      ..lineTo(w * 0.78, h * 0.76)
+      ..quadraticBezierTo(w * 0.95, h * 0.68, w * 0.99, h * 0.5) // bow tip
+      ..quadraticBezierTo(w * 0.95, h * 0.32, w * 0.78, h * 0.24)
+      ..close();
+    canvas.drawPath(path, fill);
+    canvas.drawPath(path, outline);
+  }
+
+  void _carrier(Canvas canvas, double w, double h, Paint fill, Paint detail,
+      Paint outline, Paint detailStroke) {
+    _drawHull(canvas, w, h, fill, outline);
+    // Flat flight deck strip
+    final deck = RRect.fromRectAndRadius(
+      Rect.fromLTWH(w * 0.10, h * 0.34, w * 0.72, h * 0.32),
+      Radius.circular(h * 0.12),
+    );
+    canvas.drawRRect(deck, detail);
+    canvas.drawRRect(deck, detailStroke);
+    // Deck dashes (runway)
+    final dash = Paint()
+      ..color = AppColors.outline.withValues(alpha: 0.8)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < 3; i++) {
+      final y = h * (0.40 + i * 0.10);
+      canvas.drawLine(Offset(w * 0.16, y), Offset(w * 0.30, y), dash);
+    }
+    // Tiny parked planes (triangles)
+    final plane = Paint()..color = AppColors.outline.withValues(alpha: 0.85);
+    for (var i = 0; i < 3; i++) {
+      final x = w * (0.48 + i * 0.11);
+      final p = Path()
+        ..moveTo(x, h * 0.40)
+        ..lineTo(x + w * 0.05, h * 0.50)
+        ..lineTo(x, h * 0.60)
+        ..close();
+      canvas.drawPath(p, plane);
     }
   }
 
-  void _turret(Canvas canvas, double x, double y, double s, Color trim, Color hull) {
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Rect.fromLTWH(x - s / 2, y - s / 3, s, s * 0.66),
-          Radius.circular(s * 0.2)),
-      Paint()..color = hull.withValues(alpha: 1),
+  void _battleship(Canvas canvas, double w, double h, Paint fill, Paint detail,
+      Paint outline, Paint detailStroke) {
+    _drawHull(canvas, w, h, fill, outline);
+    // Deck inset
+    final deck = RRect.fromRectAndRadius(
+      Rect.fromLTWH(w * 0.12, h * 0.34, w * 0.66, h * 0.32),
+      Radius.circular(h * 0.12),
     );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Rect.fromLTWH(x - s / 2, y - s / 3, s, s * 0.66),
-          Radius.circular(s * 0.2)),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2
-        ..color = trim,
-    );
-    // Barrel
-    canvas.drawLine(
-      Offset(x, y),
-      Offset(x + s * 0.9, y - s * 0.28),
-      Paint()
-        ..color = trim
-        ..strokeWidth = 2.4
-        ..strokeCap = StrokeCap.round,
-    );
+    canvas.drawRRect(deck, detail);
+    canvas.drawRRect(deck, detailStroke);
+    // Big round bow + stern gun turrets
+    final turret = Paint()..color = AppColors.outline.withValues(alpha: 0.85);
+    canvas.drawCircle(Offset(w * 0.74, h * 0.50), h * 0.11, turret);
+    canvas.drawCircle(Offset(w * 0.18, h * 0.50), h * 0.11, turret);
+    // Vent lines
+    final vent = Paint()
+      ..color = AppColors.outline.withValues(alpha: 0.7)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < 3; i++) {
+      final y = h * (0.41 + i * 0.09);
+      canvas.drawLine(Offset(w * 0.34, y), Offset(w * 0.56, y), vent);
+    }
   }
 
-  void _mast(Canvas canvas, double x, double y, double hgt, Color trim) {
-    canvas.drawLine(
-      Offset(x, y),
-      Offset(x, y - hgt),
-      Paint()
-        ..color = trim
-        ..strokeWidth = 2
-        ..strokeCap = StrokeCap.round,
+  void _cruiser(Canvas canvas, double w, double h, Paint fill, Paint detail,
+      Paint outline, Paint detailStroke) {
+    _drawHull(canvas, w, h, fill, outline);
+    final deck = RRect.fromRectAndRadius(
+      Rect.fromLTWH(w * 0.14, h * 0.35, w * 0.60, h * 0.30),
+      Radius.circular(h * 0.12),
     );
-    canvas.drawCircle(
-      Offset(x, y - hgt),
-      2.4,
-      Paint()..color = Colors.redAccent,
+    canvas.drawRRect(deck, detail);
+    canvas.drawRRect(deck, detailStroke);
+    // Single stern turret + vents
+    canvas.drawCircle(Offset(w * 0.22, h * 0.5), h * 0.10,
+        Paint()..color = AppColors.outline.withValues(alpha: 0.85));
+    final vent = Paint()
+      ..color = AppColors.outline.withValues(alpha: 0.7)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < 3; i++) {
+      final y = h * (0.42 + i * 0.08);
+      canvas.drawLine(Offset(w * 0.38, y), Offset(w * 0.62, y), vent);
+    }
+  }
+
+  void _submarine(Canvas canvas, double w, double h, Paint fill, Paint detail,
+      Paint outline, Paint detailStroke) {
+    // Long capsule body
+    final body = RRect.fromRectAndRadius(
+      Rect.fromLTWH(w * 0.05, h * 0.30, w * 0.90, h * 0.40),
+      Radius.circular(h * 0.20),
     );
+    canvas.drawRRect(body, fill);
+    canvas.drawRRect(body, outline);
+    // Conning tower bump
+    final tower = RRect.fromRectAndRadius(
+      Rect.fromLTWH(w * 0.42, h * 0.16, w * 0.20, h * 0.28),
+      Radius.circular(h * 0.10),
+    );
+    canvas.drawRRect(tower, detail);
+    canvas.drawRRect(tower, outline);
+    // Portholes
+    final port = Paint()..color = AppColors.outline.withValues(alpha: 0.85);
+    for (var i = 0; i < 3; i++) {
+      canvas.drawCircle(
+          Offset(w * (0.24 + i * 0.26), h * 0.50), h * 0.06, port);
+    }
+  }
+
+  void _destroyer(Canvas canvas, double w, double h, Paint fill, Paint detail,
+      Paint outline, Paint detailStroke) {
+    _drawHull(canvas, w, h, fill, outline);
+    final deck = RRect.fromRectAndRadius(
+      Rect.fromLTWH(w * 0.16, h * 0.36, w * 0.56, h * 0.28),
+      Radius.circular(h * 0.12),
+    );
+    canvas.drawRRect(deck, detail);
+    canvas.drawRRect(deck, detailStroke);
+    // Bow turret + twin vents
+    canvas.drawCircle(Offset(w * 0.72, h * 0.5), h * 0.09,
+        Paint()..color = AppColors.outline.withValues(alpha: 0.85));
+    final vent = Paint()
+      ..color = AppColors.outline.withValues(alpha: 0.7)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(Offset(w * 0.30, h * 0.44), Offset(w * 0.52, h * 0.44), vent);
+    canvas.drawLine(Offset(w * 0.30, h * 0.56), Offset(w * 0.52, h * 0.56), vent);
   }
 
   @override
@@ -199,7 +227,7 @@ class ShipPainter extends CustomPainter {
       oldDelegate.skin.hull != skin.hull;
 }
 
-/// Standalone animated ship widget (used in customization & placement tray).
+/// Standalone flat ship widget (dock tray, customization previews).
 class AnimatedShip extends StatefulWidget {
   final ShipSpec spec;
   final ShipSkin skin;
@@ -245,7 +273,10 @@ class _AnimatedShipState extends State<AnimatedShip>
           skin: widget.skin,
           wavePhase: _ctrl.value,
         );
-        final child = CustomPaint(painter: painter, size: Size(widget.size, widget.size * 0.55));
+        final child = CustomPaint(
+          painter: painter,
+          size: Size(widget.size, widget.size * 0.55),
+        );
         if (!widget.vertical) return child;
         return RotatedBox(quarterTurns: 1, child: child);
       },

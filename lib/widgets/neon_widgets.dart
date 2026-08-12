@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import '../core/theme.dart';
 import '../services/sound_service.dart';
 
-/// Glowing neon button with press animation.
+/// Chunky flat-cartoon button with hard drop shadow and press squash.
+/// (Kept under the legacy name NeonButton so call sites stay the same.)
 class NeonButton extends StatefulWidget {
   final String label;
   final IconData? icon;
@@ -16,7 +17,7 @@ class NeonButton extends StatefulWidget {
     required this.label,
     this.icon,
     this.onPressed,
-    this.color = AppColors.sonar,
+    this.color = AppColors.blue,
     this.compact = false,
   });
 
@@ -24,102 +25,75 @@ class NeonButton extends StatefulWidget {
   State<NeonButton> createState() => _NeonButtonState();
 }
 
-class _NeonButtonState extends State<NeonButton>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _scale;
+class _NeonButtonState extends State<NeonButton> {
+  bool _pressed = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 120),
-    );
-    _scale = Tween(begin: 1.0, end: 0.94).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
+  Color _shade(Color c) {
+    final hsl = HSLColor.fromColor(c);
+    return hsl.withLightness((hsl.lightness * 0.82).clamp(0.0, 1.0)).toColor();
   }
 
   @override
   Widget build(BuildContext context) {
     final enabled = widget.onPressed != null;
     return GestureDetector(
-      onTapDown: enabled ? (_) => _ctrl.forward() : null,
+      onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
       onTapUp: enabled
           ? (_) {
-              _ctrl.reverse();
+              setState(() => _pressed = false);
               SoundService.instance.click();
               widget.onPressed!();
             }
           : null,
-      onTapCancel: () => _ctrl.reverse(),
-      child: ScaleTransition(
-        scale: _scale,
-        child: AnimatedOpacity(
-          duration: const Duration(milliseconds: 200),
-          opacity: enabled ? 1 : 0.45,
-          child: Container(
-            padding: EdgeInsets.symmetric(
-              horizontal: widget.compact ? 16 : 26,
-              vertical: widget.compact ? 10 : 15,
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 90),
+        transform: Matrix4.translationValues(0, _pressed ? 3 : 0, 0),
+        padding: EdgeInsets.symmetric(
+          horizontal: widget.compact ? 14 : 22,
+          vertical: widget.compact ? 10 : 15,
+        ),
+        decoration: BoxDecoration(
+          color: enabled ? widget.color : AppColors.miss,
+          borderRadius: BorderRadius.circular(widget.compact ? 12 : 14),
+          border: Border.all(color: AppColors.outline, width: 3),
+          boxShadow: [
+            BoxShadow(
+              color: enabled ? _shade(widget.color) : AppColors.inkSoft,
+              offset: Offset(0, _pressed ? 1 : 4),
+              blurRadius: 0,
             ),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  widget.color.withValues(alpha: 0.22),
-                  widget.color.withValues(alpha: 0.08),
-                ],
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (widget.icon != null) ...[
+              Icon(widget.icon,
+                  color: AppColors.cream, size: widget.compact ? 17 : 21),
+              const SizedBox(width: 8),
+            ],
+            Flexible(
+              child: Text(
+                widget.label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: widget.compact ? 12 : 15,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0.6,
+                  color: AppColors.cream,
+                ),
               ),
-              border: Border.all(color: widget.color, width: 1.6),
-              boxShadow: [
-                BoxShadow(
-                  color: widget.color.withValues(alpha: 0.35),
-                  blurRadius: 16,
-                  spreadRadius: -2,
-                ),
-              ],
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (widget.icon != null) ...[
-                  Icon(widget.icon, color: widget.color, size: widget.compact ? 16 : 20),
-                  const SizedBox(width: 8),
-                ],
-                Flexible(
-                  child: Text(
-                    widget.label,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: widget.compact ? 12 : 15,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 1.8,
-                      color: widget.color,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          ],
         ),
       ),
     );
   }
 }
 
-/// Small HUD chip (timer, RP, streak).
+/// Small rounded HUD chip (timer, RP, streak).
 class HudChip extends StatelessWidget {
   final IconData icon;
   final String text;
@@ -130,35 +104,34 @@ class HudChip extends StatelessWidget {
     super.key,
     required this.icon,
     required this.text,
-    this.color = AppColors.sonar,
+    this.color = AppColors.navy,
     this.pulse = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final chip = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
-        color: AppColors.ink.withValues(alpha: 0.75),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withValues(alpha: 0.7), width: 1.2),
-        boxShadow: [
-          BoxShadow(color: color.withValues(alpha: 0.25), blurRadius: 10),
+        color: color,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.outline, width: 2.5),
+        boxShadow: const [
+          BoxShadow(color: Color(0x44000000), offset: Offset(0, 3), blurRadius: 0),
         ],
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: color, size: 15),
+          Icon(icon, color: AppColors.cream, size: 15),
           const SizedBox(width: 6),
           Text(
             text,
-            style: TextStyle(
-              fontFamily: 'monospace',
-              fontWeight: FontWeight.w800,
+            style: const TextStyle(
+              fontWeight: FontWeight.w900,
               fontSize: 12.5,
-              letterSpacing: 1,
-              color: color,
+              letterSpacing: 0.5,
+              color: AppColors.cream,
             ),
           ),
         ],
@@ -186,7 +159,7 @@ class _PulsingState extends State<_Pulsing>
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 700),
+      duration: const Duration(milliseconds: 650),
     )..repeat(reverse: true);
   }
 
@@ -198,8 +171,10 @@ class _PulsingState extends State<_Pulsing>
 
   @override
   Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: Tween(begin: 0.65, end: 1.0).animate(_ctrl),
+    return ScaleTransition(
+      scale: Tween(begin: 0.97, end: 1.04).animate(
+        CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
+      ),
       child: widget.child,
     );
   }

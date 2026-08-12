@@ -9,7 +9,7 @@ import '../services/storage_service.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 
-/// Victory / defeat screen with animated RP reveal and confetti.
+/// Victory / defeat screen — cartoon badge, RP reveal, chunky buttons.
 class ResultScreen extends StatefulWidget {
   const ResultScreen({super.key});
 
@@ -70,140 +70,165 @@ class _ResultScreenState extends State<ResultScreen>
               );
             },
             child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(28),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // ---- Banner ----
-                    ScaleTransition(
-                      scale: CurvedAnimation(
-                        parent: _revealCtrl,
-                        curve: Curves.elasticOut,
-                      ),
-                      child: Column(
-                        children: [
-                          Text(
-                            won ? '🏆' : '☠️',
-                            style: const TextStyle(fontSize: 64),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            won ? 'VICTORY!' : 'DEFEAT',
-                            style: AppText.title(
-                              size: 36,
-                              color: won ? AppColors.gold : AppColors.danger,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            controller.endReason,
-                            style: AppText.body(size: 13),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 26),
-
-                    // ---- RP reveal ----
-                    FadeTransition(
-                      opacity: CurvedAnimation(
-                        parent: _revealCtrl,
-                        curve: const Interval(0.4, 1),
-                      ),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 22, vertical: 14),
-                        decoration: BoxDecoration(
-                          color: AppColors.ink.withValues(alpha: 0.75),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                            color: (controller.rpDelta >= 0
-                                    ? AppColors.gold
-                                    : AppColors.danger)
-                                .withValues(alpha: 0.7),
-                            width: 1.4,
-                          ),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // ---- Banner badge ----
+                      ScaleTransition(
+                        scale: CurvedAnimation(
+                          parent: _revealCtrl,
+                          curve: Curves.elasticOut,
                         ),
                         child: Column(
                           children: [
-                            Text('RANK POINTS',
-                                style: AppText.label(size: 10)),
-                            const SizedBox(height: 6),
-                            Text(
-                              '${controller.rpDelta >= 0 ? '+' : ''}${controller.rpDelta} RP',
-                              style: AppText.title(
-                                size: 30,
-                                color: controller.rpDelta >= 0
-                                    ? AppColors.gold
-                                    : AppColors.danger,
+                            Container(
+                              width: 110,
+                              height: 110,
+                              decoration: BoxDecoration(
+                                color:
+                                    won ? AppColors.gold : AppColors.inkSoft,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                    color: AppColors.outline, width: 4),
+                                boxShadow: const [
+                                  BoxShadow(
+                                    color: Color(0x55000000),
+                                    offset: Offset(0, 5),
+                                  ),
+                                ],
+                              ),
+                              child: Icon(
+                                won ? Icons.emoji_events : Icons.anchor,
+                                size: 56,
+                                color: AppColors.cream,
                               ),
                             ),
-                            if (won && profile.streak >= 2) ...[
-                              const SizedBox(height: 4),
-                              Text(
-                                '🔥 STREAK x${profile.streak}  (+${profile.streakBonus} bonus)',
-                                style: AppText.label(
-                                    size: 10, color: AppColors.fire),
+                            const SizedBox(height: 14),
+                            Text(
+                              won ? 'VICTORY!' : 'DEFEAT',
+                              style: AppText.title(
+                                size: 36,
+                                color: won ? AppColors.navy : AppColors.hit,
                               ),
-                            ],
+                            ),
                             const SizedBox(height: 8),
                             Text(
-                              '${profile.rankTitle}  •  ${profile.rp} RP',
-                              style:
-                                  AppText.body(size: 12, color: AppColors.radar),
+                              controller.endReason,
+                              style: AppText.body(
+                                  size: 13, color: AppColors.navy),
+                              textAlign: TextAlign.center,
                             ),
                           ],
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 22),
+                      const SizedBox(height: 24),
 
-                    // ---- Battle summary ----
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        _summaryPip('ENEMY SUNK', '${controller.mySunk}/5',
-                            AppColors.ember),
-                        const SizedBox(width: 16),
-                        _summaryPip('FLEET LOST', '${controller.enemySunk}/5',
-                            AppColors.sonar),
-                      ],
-                    ),
-                    const SizedBox(height: 30),
-
-                    // ---- Actions ----
-                    Row(
-                      children: [
-                        Expanded(
-                          child: NeonButton(
-                            label: 'REMATCH',
-                            icon: Icons.refresh,
-                            color: AppColors.victory,
-                            onPressed: () {
-                              controller.reset();
-                              Navigator.of(context)
-                                  .popUntil((route) => route.isFirst);
-                            },
+                      // ---- RP reveal panel ----
+                      FadeTransition(
+                        opacity: CurvedAnimation(
+                          parent: _revealCtrl,
+                          curve: const Interval(0.4, 1),
+                        ),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 22, vertical: 16),
+                          decoration: cartoonBox(AppColors.navy, radius: 18),
+                          child: Column(
+                            children: [
+                              Text(
+                                'RANK POINTS',
+                                style: AppText.label(
+                                  size: 10,
+                                  color:
+                                      AppColors.cream.withValues(alpha: 0.75),
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '${controller.rpDelta >= 0 ? '+' : ''}${controller.rpDelta} RP',
+                                style: AppText.title(
+                                  size: 30,
+                                  color: controller.rpDelta >= 0
+                                      ? AppColors.gold
+                                      : AppColors.hit,
+                                ),
+                              ),
+                              if (won && profile.streak >= 2) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  'STREAK x${profile.streak}  (+${profile.streakBonus} bonus)',
+                                  style: AppText.label(
+                                      size: 10, color: AppColors.hitGlow),
+                                ),
+                              ],
+                              const SizedBox(height: 8),
+                              Text(
+                                '${profile.rankTitle}  •  ${profile.rp} RP',
+                                style: AppText.body(
+                                    size: 12, color: AppColors.cream),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: NeonButton(
-                            label: 'MAIN MENU',
-                            icon: Icons.home,
-                            color: AppColors.sonar,
-                            onPressed: () {
-                              controller.reset();
-                              Navigator.of(context)
-                                  .popUntil((route) => route.isFirst);
-                            },
-                          ),
+                      ),
+                      const SizedBox(height: 20),
+
+                      // ---- Battle summary ----
+                      Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        decoration:
+                            cartoonBox(AppColors.coralLight, radius: 16),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _summaryPip('ENEMY SUNK',
+                                '${controller.mySunk}/5', AppColors.hit),
+                            Container(
+                                width: 2,
+                                height: 34,
+                                color: AppColors.outline),
+                            _summaryPip('FLEET LOST',
+                                '${controller.enemySunk}/5', AppColors.navy),
+                          ],
                         ),
-                      ],
-                    ),
-                  ],
+                      ),
+                      const SizedBox(height: 26),
+
+                      // ---- Actions ----
+                      Row(
+                        children: [
+                          Expanded(
+                            child: NeonButton(
+                              label: 'REMATCH',
+                              icon: Icons.refresh,
+                              color: AppColors.green,
+                              onPressed: () {
+                                controller.reset();
+                                Navigator.of(context)
+                                    .popUntil((route) => route.isFirst);
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: NeonButton(
+                              label: 'MAIN MENU',
+                              icon: Icons.home,
+                              color: AppColors.blue,
+                              onPressed: () {
+                                controller.reset();
+                                Navigator.of(context)
+                                    .popUntil((route) => route.isFirst);
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -218,7 +243,7 @@ class _ResultScreenState extends State<ResultScreen>
       children: [
         Text(value, style: AppText.heading(size: 20, color: color)),
         const SizedBox(height: 2),
-        Text(label, style: AppText.label(size: 9)),
+        Text(label, style: AppText.label(size: 9, color: AppColors.navy)),
       ],
     );
   }
@@ -236,11 +261,11 @@ class _Confetti {
         rot = rng.nextDouble() * 2 * pi,
         rotSpeed = (rng.nextDouble() - 0.5) * 4,
         color = [
-          const Color(0xFFFBBF24),
-          const Color(0xFF22D3EE),
-          const Color(0xFFFF6B35),
-          const Color(0xFF34D399),
-          const Color(0xFFE11D48),
+          const Color(0xFFF7B32B), // gold
+          const Color(0xFF35A3D6), // ship blue
+          const Color(0xFFF25F5C), // ship red
+          const Color(0xFF3CB54A), // green
+          const Color(0xFFFFF4EC), // cream
         ][rng.nextInt(5)];
 }
 

@@ -1,19 +1,17 @@
-import 'dart:math';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
 import '../core/theme.dart';
 import '../services/storage_service.dart';
 
-/// Animated cannon turret with:
-///  - radial cooldown sweep
-///  - aim rotation toward last tapped cell
-///  - recoil + muzzle flash on fire
+/// Big round cartoon FIRE button (reference-style): thick black ring,
+/// cannon-barrel center, cooldown sweep around the rim, recoil squash.
 class CannonWidget extends StatefulWidget {
   final CannonSkin skin;
   final double cooldownFraction; // 0 = reloading, 1 = ready
   final bool enabled;
-  final VoidCallback? onFire; // tap when ready fires forward
+  final VoidCallback? onFire;
   final String label;
   final double size;
   final Stream<void>? fireTrigger;
@@ -25,7 +23,7 @@ class CannonWidget extends StatefulWidget {
     this.enabled = true,
     this.onFire,
     this.label = 'FIRE',
-    this.size = 84,
+    this.size = 92,
     this.fireTrigger,
   });
 
@@ -36,41 +34,28 @@ class CannonWidget extends StatefulWidget {
 class _CannonWidgetState extends State<CannonWidget>
     with TickerProviderStateMixin {
   late final AnimationController _recoil;
-  late final AnimationController _glow;
-  double _aim = 0; // radians, 0 = straight up
-  double _targetAim = 0;
+  late final AnimationController _pulse;
 
   @override
   void initState() {
     super.initState();
     _recoil = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 260),
+      duration: const Duration(milliseconds: 220),
     );
-    _glow = AnimationController(
+    _pulse = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 900),
+      duration: const Duration(milliseconds: 800),
     )..repeat(reverse: true);
     widget.fireTrigger?.listen((_) => fire());
   }
 
   @override
-  void didUpdateWidget(CannonWidget oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.cooldownFraction < 1 && widget.cooldownFraction >= 1) {
-      // Ready flash
-      _recoil.forward(from: 0).then((_) => _recoil.reverse());
-    }
-  }
-
-  @override
   void dispose() {
     _recoil.dispose();
-    _glow.dispose();
+    _pulse.dispose();
     super.dispose();
   }
-
-  void aimAt(double radians) => setState(() => _targetAim = radians.clamp(-0.9, 0.9));
 
   void fire() {
     _recoil.forward(from: 0).then((_) => _recoil.reverse());
@@ -78,55 +63,27 @@ class _CannonWidgetState extends State<CannonWidget>
 
   @override
   Widget build(BuildContext context) {
-    final ready = widget.cooldownFraction >= 1;
-    _aim += (_targetAim - _aim) * 0.25;
-
+    final ready = widget.cooldownFraction >= 1 && widget.enabled;
     return AnimatedBuilder(
-      animation: Listenable.merge([_recoil, _glow]),
+      animation: Listenable.merge([_recoil, _pulse]),
       builder: (context, _) {
+        final squash = 1 - _recoil.value * 0.12;
+        final pulseScale = ready ? 1 + _pulse.value * 0.04 : 1.0;
         return GestureDetector(
-          onTap: widget.enabled && ready ? widget.onFire : null,
-          child: SizedBox(
-            width: widget.size,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SizedBox(
-                  width: widget.size,
-                  height: widget.size,
-                  child: CustomPaint(
-                    painter: _CannonPainter(
-                      skin: widget.skin,
-                      cooldown: widget.cooldownFraction,
-                      aim: _aim,
-                      recoil: _recoil.value,
-                      glowT: _glow.value,
-                      ready: ready && widget.enabled,
-                    ),
-                  ),
+          onTap: ready ? widget.onFire : null,
+          child: Transform.scale(
+            scale: squash * pulseScale,
+            child: SizedBox(
+              width: widget.size,
+              height: widget.size,
+              child: CustomPaint(
+                painter: _FireButtonPainter(
+                  skin: widget.skin,
+                  cooldown: widget.cooldownFraction,
+                  recoil: _recoil.value,
+                  ready: ready,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  ready
-                      ? widget.label
-                      : 'RELOAD ${(widget.cooldownFraction * 100).round()}%',
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 10,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 1.4,
-                    color: ready ? AppColors.ember : AppColors.steel,
-                    shadows: ready
-                        ? [
-                            Shadow(
-                              color: AppColors.ember.withValues(alpha: 0.7),
-                              blurRadius: 8,
-                            )
-                          ]
-                        : null,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         );
@@ -135,147 +92,110 @@ class _CannonWidgetState extends State<CannonWidget>
   }
 }
 
-class _CannonPainter extends CustomPainter {
+class _FireButtonPainter extends CustomPainter {
   final CannonSkin skin;
   final double cooldown;
-  final double aim;
   final double recoil;
-  final double glowT;
   final bool ready;
 
-  _CannonPainter({
+  _FireButtonPainter({
     required this.skin,
     required this.cooldown,
-    required this.aim,
     required this.recoil,
-    required this.glowT,
     required this.ready,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final baseR = size.width * 0.34;
+    final outerR = size.width * 0.48;
 
-    // ---- Cooldown sweep ring ----
-    final ringR = size.width * 0.47;
+    // Soft ground shadow ellipse (reference style)
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: center + Offset(0, outerR * 0.30),
+        width: outerR * 2.3,
+        height: outerR * 1.0,
+      ),
+      Paint()..color = AppColors.coralDeep.withValues(alpha: 0.55),
+    );
+
+    // Thick outer black ring
+    canvas.drawCircle(center, outerR, Paint()..color = AppColors.outline);
+
+    // Cooldown progress ring inside the black ring
+    final ringR = outerR * 0.86;
     canvas.drawCircle(
       center,
       ringR,
       Paint()
+        ..color = AppColors.navyDark
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3
-        ..color = AppColors.fog.withValues(alpha: 0.35),
+        ..strokeWidth = outerR * 0.16,
     );
-    final arcPaint = Paint()
+    final progressPaint = Paint()
+      ..color = ready ? skin.projectile : AppColors.waterLight
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.4
-      ..strokeCap = StrokeCap.round
-      ..color = ready ? AppColors.ember : AppColors.sonar;
+      ..strokeWidth = outerR * 0.16
+      ..strokeCap = StrokeCap.round;
     canvas.drawArc(
       Rect.fromCircle(center: center, radius: ringR),
-      -pi / 2,
-      2 * pi * cooldown,
+      -math.pi / 2,
+      2 * math.pi * cooldown,
       false,
-      arcPaint,
+      progressPaint,
     );
 
-    // ---- Ready glow pulse ----
-    if (ready) {
-      canvas.drawCircle(
-        center,
-        ringR * (1.0 + 0.06 * glowT),
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.4
-          ..color = AppColors.ember.withValues(alpha: 0.35 + 0.3 * glowT),
-      );
-    }
-
-    // ---- Rotating turret ----
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-    canvas.rotate(aim);
-    final kick = recoil * size.width * 0.07;
-
-    // Barrel
-    final barrelPaint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [skin.barrel.withValues(alpha: 0.95), Colors.black87],
-      ).createShader(Rect.fromLTWH(-baseR * 0.16, -size.height * 0.44 + kick,
-          baseR * 0.32, size.height * 0.44));
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(
-            -baseR * 0.16, -size.height * 0.46 + kick, baseR * 0.32, size.height * 0.42),
-        Radius.circular(baseR * 0.12),
+    // Inner dome (cannon mouth)
+    final domeR = outerR * 0.62;
+    canvas.drawCircle(
+        center, domeR, Paint()..color = ready ? AppColors.navy : AppColors.inkSoft);
+    canvas.drawCircle(
+      center,
+      domeR,
+      Paint()
+        ..color = AppColors.outline
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5,
+    );
+    // Barrel slit
+    final slit = RRect.fromRectAndRadius(
+      Rect.fromCenter(
+        center: center - Offset(0, domeR * 0.12),
+        width: domeR * 0.5,
+        height: domeR * 1.05,
       ),
-      barrelPaint,
+      Radius.circular(domeR * 0.22),
     );
-    // Barrel stripes
-    final stripe = Paint()..color = skin.projectile.withValues(alpha: 0.8);
-    canvas.drawRect(
-      Rect.fromLTWH(-baseR * 0.16, -size.height * 0.30 + kick, baseR * 0.32, 2.4),
-      stripe,
-    );
-    canvas.drawRect(
-      Rect.fromLTWH(-baseR * 0.16, -size.height * 0.40 + kick, baseR * 0.32, 2.4),
-      stripe,
+    canvas.drawRRect(slit, Paint()..color = AppColors.outline);
+    // Highlight dot
+    canvas.drawCircle(
+      center + Offset(-domeR * 0.3, -domeR * 0.38),
+      domeR * 0.16,
+      Paint()..color = Colors.white.withValues(alpha: ready ? 0.5 : 0.2),
     );
 
     // Muzzle flash while recoiling
     if (recoil > 0.05) {
-      final flashPaint = Paint()
-        ..color = skin.projectile.withValues(alpha: (1 - recoil) * 0.95)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+      final flashCenter = center - Offset(0, outerR * 1.15);
       canvas.drawCircle(
-        Offset(0, -size.height * 0.48 + kick),
-        size.width * 0.13 * recoil + 4,
-        flashPaint,
+        flashCenter,
+        outerR * (0.30 + recoil * 0.45),
+        Paint()..color = skin.projectile.withValues(alpha: (1 - recoil) * 0.9),
       );
-      // Star burst
       final star = Paint()
         ..color = Colors.white.withValues(alpha: (1 - recoil))
-        ..strokeWidth = 2
+        ..strokeWidth = 3.4
         ..strokeCap = StrokeCap.round;
-      for (var i = 0; i < 5; i++) {
-        final a = -pi / 2 + (i - 2) * 0.45;
-        final l = size.width * 0.16 * recoil;
-        canvas.drawLine(
-          Offset(0, -size.height * 0.48 + kick),
-          Offset(cos(a) * l, -size.height * 0.48 + kick + sin(a) * l),
-          star,
-        );
+      for (var i = 0; i < 6; i++) {
+        final a = -math.pi / 2 + (i - 2.5) * 0.4;
+        final l = outerR * 0.4 * recoil;
+        canvas.drawLine(flashCenter,
+            flashCenter + Offset(math.cos(a) * l, math.sin(a) * l), star);
       }
     }
-
-    // Turret dome
-    final domePaint = Paint()
-      ..shader = RadialGradient(
-        colors: [skin.barrel, Colors.black87],
-        stops: const [0.2, 1],
-      ).createShader(Rect.fromCircle(center: Offset.zero, radius: baseR));
-    canvas.drawCircle(Offset.zero, baseR, domePaint);
-    canvas.drawCircle(
-      Offset.zero,
-      baseR,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..color = skin.projectile.withValues(alpha: 0.9),
-    );
-    // Rivets
-    final rivet = Paint()..color = Colors.black54;
-    for (var i = 0; i < 6; i++) {
-      final a = i * pi / 3;
-      canvas.drawCircle(
-          Offset(cos(a) * baseR * 0.72, sin(a) * baseR * 0.72), 2, rivet);
-    }
-    canvas.restore();
   }
 
   @override
-  bool shouldRepaint(_CannonPainter oldDelegate) => true;
+  bool shouldRepaint(_FireButtonPainter oldDelegate) => true;
 }

@@ -15,7 +15,7 @@ import 'customize_screen.dart';
 import 'multiplayer_screen.dart';
 import 'placement_screen.dart';
 
-/// Animated home / main menu.
+/// Cartoon main menu: coral deck, navy panels, chunky outlined buttons.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -33,7 +33,7 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _titleCtrl = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 3),
+      duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
   }
 
@@ -78,62 +78,88 @@ class _HomeScreenState extends State<HomeScreen>
                     padding: const EdgeInsets.symmetric(horizontal: 24),
                     child: Column(
                       children: [
-                        const SizedBox(height: 20),
+                        const SizedBox(height: 16),
                         // ---- Profile bar ----
                         Row(
                           children: [
                             Expanded(child: _profileCard(profile)),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 10),
                             _soundButton(profile),
                           ],
                         ),
-                        const SizedBox(height: 26),
-                        // ---- Animated title ----
-                        AnimatedBuilder(
-                          animation: _titleCtrl,
-                          builder: (context, _) {
-                            final glow = 0.6 + 0.4 * sin(_titleCtrl.value * pi);
-                            return Column(
-                              children: [
-                                Text(
-                                  'BATTLESHIP',
-                                  style: AppText.title(
-                                    size: 34,
-                                    color: AppColors.radar.withValues(alpha: glow),
-                                  ),
+                        const SizedBox(height: 22),
+                        // ---- Title card ----
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          decoration: cartoonBox(AppColors.navy, radius: 20),
+                          child: Column(
+                            children: [
+                              Text(
+                                'BATTLESHIP',
+                                style: AppText.title(size: 32),
+                              ),
+                              AnimatedBuilder(
+                                animation: _titleCtrl,
+                                builder: (context, _) {
+                                  final bump =
+                                      1.0 + 0.06 * sin(_titleCtrl.value * pi);
+                                  return Transform.scale(
+                                    scale: bump,
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        const Icon(Icons.bolt,
+                                            color: AppColors.gold, size: 26),
+                                        Text(
+                                          'BLITZ',
+                                          style: AppText.title(
+                                              size: 28,
+                                              color: AppColors.gold),
+                                        ),
+                                        const Icon(Icons.bolt,
+                                            color: AppColors.gold, size: 26),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'REAL-TIME NAVAL WARFARE',
+                                style: AppText.label(
+                                  size: 10,
+                                  color:
+                                      AppColors.cream.withValues(alpha: 0.7),
                                 ),
-                                Text(
-                                  '⚡ BLITZ ⚡',
-                                  style: AppText.title(
-                                    size: 26,
-                                    color: AppColors.ember.withValues(alpha: glow),
-                                  ),
-                                ),
-                              ],
-                            );
-                          },
+                              ),
+                            ],
+                          ),
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'REAL-TIME NAVAL WARFARE',
-                          style: AppText.label(color: AppColors.steel),
+                        const SizedBox(height: 16),
+                        // ---- Hero ship on a water plate ----
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          decoration: cartoonBox(AppColors.water, radius: 20),
+                          child: AnimatedShip(
+                            spec: kFleet.first,
+                            skin: profile.shipSkin,
+                            size: 170,
+                          ),
                         ),
                         const SizedBox(height: 18),
-                        // ---- Hero ship ----
-                        AnimatedShip(
-                          spec: kFleet.first,
-                          skin: profile.shipSkin,
-                          size: 220,
-                        ),
-                        const SizedBox(height: 24),
-                        // ---- Mode buttons ----
+                        // ---- Difficulty selector ----
                         _difficultySelector(),
                         const SizedBox(height: 14),
+                        // ---- Mode buttons ----
                         SizedBox(
                           width: double.infinity,
                           child: NeonButton(
-                            label: '⚓  BATTLE vs AI',
-                            color: AppColors.sonar,
+                            label: 'BATTLE vs AI',
+                            icon: Icons.anchor,
+                            color: AppColors.blue,
                             onPressed: _startVsAI,
                           ),
                         ),
@@ -144,7 +170,7 @@ class _HomeScreenState extends State<HomeScreen>
                               child: NeonButton(
                                 label: 'LOCAL',
                                 icon: Icons.people,
-                                color: AppColors.victory,
+                                color: AppColors.green,
                                 compact: true,
                                 onPressed: _startLocal,
                               ),
@@ -160,7 +186,8 @@ class _HomeScreenState extends State<HomeScreen>
                                   SoundService.instance.click();
                                   Navigator.of(context).push(
                                     MaterialPageRoute(
-                                      builder: (_) => const MultiplayerScreen(),
+                                      builder: (_) =>
+                                          const MultiplayerScreen(),
                                     ),
                                   );
                                 },
@@ -172,7 +199,8 @@ class _HomeScreenState extends State<HomeScreen>
                         SizedBox(
                           width: double.infinity,
                           child: NeonButton(
-                            label: '🎨  SHIPYARD — CUSTOMIZE',
+                            label: 'SHIPYARD — CUSTOMIZE',
+                            icon: Icons.palette,
                             color: AppColors.gold,
                             onPressed: () {
                               Navigator.of(context).push(
@@ -183,7 +211,7 @@ class _HomeScreenState extends State<HomeScreen>
                             },
                           ),
                         ),
-                        const SizedBox(height: 20),
+                        const SizedBox(height: 18),
                         _statsRow(profile),
                         const SizedBox(height: 24),
                       ],
@@ -202,25 +230,28 @@ class _HomeScreenState extends State<HomeScreen>
     return GestureDetector(
       onTap: () => _editName(profile),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppColors.ink.withValues(alpha: 0.7),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.sonar.withValues(alpha: 0.5)),
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: cartoonBox(AppColors.navy, radius: 14),
         child: Row(
           children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: AppColors.sonarDim,
-              child: Text(
-                profile.playerName.isNotEmpty
-                    ? profile.playerName[0].toUpperCase()
-                    : 'C',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w900,
-                  fontFamily: 'monospace',
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: AppColors.blue,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.outline, width: 2.5),
+              ),
+              child: Center(
+                child: Text(
+                  profile.playerName.isNotEmpty
+                      ? profile.playerName[0].toUpperCase()
+                      : 'C',
+                  style: const TextStyle(
+                    color: AppColors.cream,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                  ),
                 ),
               ),
             ),
@@ -244,15 +275,19 @@ class _HomeScreenState extends State<HomeScreen>
             ),
             if (profile.streak >= 2)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                 decoration: BoxDecoration(
-                  color: AppColors.fire.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.fire),
+                  color: AppColors.hit,
+                  borderRadius: BorderRadius.circular(9),
+                  border: Border.all(color: AppColors.outline, width: 2),
                 ),
                 child: Text(
-                  '🔥${profile.streak}',
-                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
+                  'x${profile.streak}',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.cream,
+                  ),
                 ),
               ),
           ],
@@ -269,18 +304,13 @@ class _HomeScreenState extends State<HomeScreen>
       },
       child: Container(
         padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: AppColors.ink.withValues(alpha: 0.7),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: profile.soundOn
-                ? AppColors.sonar.withValues(alpha: 0.6)
-                : AppColors.fog.withValues(alpha: 0.4),
-          ),
+        decoration: cartoonBox(
+          profile.soundOn ? AppColors.blue : AppColors.inkSoft,
+          radius: 14,
         ),
         child: Icon(
           profile.soundOn ? Icons.volume_up : Icons.volume_off,
-          color: profile.soundOn ? AppColors.sonar : AppColors.fog,
+          color: AppColors.cream,
           size: 20,
         ),
       ),
@@ -290,11 +320,7 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _difficultySelector() {
     return Container(
       padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: AppColors.ink.withValues(alpha: 0.6),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.sonarDim.withValues(alpha: 0.6)),
-      ),
+      decoration: cartoonBox(AppColors.coralLight, radius: 14),
       child: Row(
         children: AIDifficulty.values.map((d) {
           final selected = d == _difficulty;
@@ -305,26 +331,31 @@ class _HomeScreenState extends State<HomeScreen>
                 setState(() => _difficulty = d);
               },
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
+                duration: const Duration(milliseconds: 180),
                 padding: const EdgeInsets.symmetric(vertical: 9),
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(9),
-                  color: selected
-                      ? AppColors.sonar.withValues(alpha: 0.22)
-                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                  color: selected ? AppColors.blue : Colors.transparent,
                   border: selected
-                      ? Border.all(color: AppColors.sonar, width: 1.2)
+                      ? Border.all(color: AppColors.outline, width: 2.5)
+                      : null,
+                  boxShadow: selected
+                      ? const [
+                          BoxShadow(
+                            color: Color(0x33000000),
+                            offset: Offset(0, 2),
+                          ),
+                        ]
                       : null,
                 ),
                 child: Text(
-                  d.label,
+                  d.label.toUpperCase(),
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontFamily: 'monospace',
                     fontSize: 11,
                     fontWeight: FontWeight.w900,
-                    letterSpacing: 1.4,
-                    color: selected ? AppColors.radar : AppColors.steel,
+                    letterSpacing: 1.2,
+                    color: selected ? AppColors.cream : AppColors.navy,
                   ),
                 ),
               ),
@@ -339,30 +370,33 @@ class _HomeScreenState extends State<HomeScreen>
     Widget stat(String label, String value, Color color) => Expanded(
           child: Column(
             children: [
-              Text(value,
-                  style: AppText.heading(size: 18, color: color)),
+              Text(value, style: AppText.heading(size: 18, color: color)),
               const SizedBox(height: 2),
-              Text(label, style: AppText.label(size: 9)),
+              Text(
+                label,
+                style: AppText.label(
+                  size: 9,
+                  color: AppColors.cream.withValues(alpha: 0.75),
+                ),
+              ),
             ],
           ),
         );
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14),
-      decoration: BoxDecoration(
-        color: AppColors.ink.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.sonarDim.withValues(alpha: 0.4)),
-      ),
+      decoration: cartoonBox(AppColors.navyDark, radius: 16),
       child: Row(
         children: [
-          stat('WINS', '${p.wins}', AppColors.victory),
-          stat('LOSSES', '${p.losses}', AppColors.danger),
+          stat('WINS', '${p.wins}', AppColors.green),
+          stat('LOSSES', '${p.losses}', AppColors.hit),
           stat('BEST STREAK', '${p.bestStreak}', AppColors.gold),
-          stat('WIN RATE',
-              p.wins + p.losses == 0
-                  ? '—'
-                  : '${(p.wins / (p.wins + p.losses) * 100).round()}%',
-              AppColors.radar),
+          stat(
+            'WIN RATE',
+            p.wins + p.losses == 0
+                ? '—'
+                : '${(p.wins / (p.wins + p.losses) * 100).round()}%',
+            AppColors.waterLight,
+          ),
         ],
       ),
     );
@@ -373,37 +407,41 @@ class _HomeScreenState extends State<HomeScreen>
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.deepSea,
+        backgroundColor: AppColors.navy,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: AppColors.sonar.withValues(alpha: 0.5)),
+          borderRadius: BorderRadius.circular(18),
+          side: const BorderSide(color: AppColors.outline, width: 3),
         ),
-        title: Text('CALLSIGN', style: AppText.heading(size: 15, color: AppColors.radar)),
+        title: Text('CALLSIGN', style: AppText.heading(size: 16)),
         content: TextField(
           controller: ctrl,
           maxLength: 14,
-          style: AppText.body(color: Colors.white),
+          style: AppText.body(),
           decoration: InputDecoration(
             counterStyle: AppText.label(size: 10),
-            enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: AppColors.sonar.withValues(alpha: 0.5)),
+            enabledBorder: const UnderlineInputBorder(
+              borderSide: BorderSide(color: AppColors.cream),
             ),
             focusedBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: AppColors.sonar),
+              borderSide: BorderSide(color: AppColors.gold, width: 2),
             ),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: Text('CANCEL', style: AppText.label(color: AppColors.steel)),
+            child: Text(
+              'CANCEL',
+              style: AppText.label(
+                  color: AppColors.cream.withValues(alpha: 0.7)),
+            ),
           ),
           TextButton(
             onPressed: () {
               profile.setName(ctrl.text);
               Navigator.pop(ctx);
             },
-            child: Text('SAVE', style: AppText.label(color: AppColors.sonar)),
+            child: Text('SAVE', style: AppText.label(color: AppColors.gold)),
           ),
         ],
       ),

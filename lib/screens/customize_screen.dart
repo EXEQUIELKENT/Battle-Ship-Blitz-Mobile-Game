@@ -10,6 +10,7 @@ import '../widgets/ocean_background.dart';
 import '../widgets/ship_painter.dart';
 
 /// Shipyard — unlock & equip ship hulls and cannons with RP.
+/// Cartoon style: navy header, cream item cards with thick outlines.
 class CustomizeScreen extends StatefulWidget {
   const CustomizeScreen({super.key});
 
@@ -42,50 +43,61 @@ class _CustomizeScreenState extends State<CustomizeScreen>
         child: SafeArea(
           child: Column(
             children: [
-              const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
+              // ---- Navy header ----
+              Container(
+                width: double.infinity,
+                color: AppColors.navy,
+                padding: const EdgeInsets.fromLTRB(8, 10, 14, 12),
                 child: Row(
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.arrow_back, color: AppColors.steel),
+                      icon: const Icon(Icons.arrow_back,
+                          color: AppColors.cream),
                       onPressed: () => Navigator.pop(context),
                     ),
                     Expanded(
                       child: Text(
-                        '🎨 SHIPYARD',
-                        textAlign: TextAlign.center,
-                        style: AppText.heading(size: 18, color: AppColors.radar),
+                        'SHIPYARD',
+                        style: AppText.title(size: 20),
                       ),
                     ),
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 6),
+                          horizontal: 12, vertical: 7),
                       decoration: BoxDecoration(
-                        color: AppColors.ink.withValues(alpha: 0.7),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                            color: AppColors.gold.withValues(alpha: 0.6)),
+                        color: AppColors.gold,
+                        borderRadius: BorderRadius.circular(12),
+                        border:
+                            Border.all(color: AppColors.outline, width: 2.5),
                       ),
                       child: Text(
-                        '⭐ ${profile.rp} RP',
-                        style: AppText.label(size: 11, color: AppColors.gold),
+                        '${profile.rp} RP',
+                        style: AppText.label(
+                            size: 11, color: AppColors.outline),
                       ),
                     ),
-                    const SizedBox(width: 10),
                   ],
                 ),
               ),
-              TabBar(
-                controller: _tab,
-                indicatorColor: AppColors.ember,
-                labelStyle: AppText.label(size: 11, color: AppColors.ember),
-                unselectedLabelStyle:
-                    AppText.label(size: 11, color: AppColors.steel),
-                tabs: const [
-                  Tab(text: 'SHIP HULLS'),
-                  Tab(text: 'CANNONS'),
-                ],
+              Container(
+                color: AppColors.navy,
+                child: TabBar(
+                  controller: _tab,
+                  indicatorColor: AppColors.gold,
+                  indicatorWeight: 4,
+                  labelColor: AppColors.cream,
+                  unselectedLabelColor:
+                      AppColors.cream.withValues(alpha: 0.55),
+                  labelStyle: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 12,
+                    letterSpacing: 1.2,
+                  ),
+                  tabs: const [
+                    Tab(text: 'SHIP HULLS'),
+                    Tab(text: 'CANNONS'),
+                  ],
+                ),
               ),
               Expanded(
                 child: TabBarView(
@@ -133,9 +145,11 @@ class _ShipsTab extends StatelessWidget {
               SoundService.instance.denied();
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text('Not enough RP! Need ${skin.cost} RP.',
-                      style: const TextStyle(fontFamily: 'monospace')),
-                  backgroundColor: AppColors.danger,
+                  content: Text(
+                    'Not enough RP! Need ${skin.cost} RP.',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  backgroundColor: AppColors.hit,
                   behavior: SnackBarBehavior.floating,
                 ),
               );
@@ -144,63 +158,69 @@ class _ShipsTab extends StatelessWidget {
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 250),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              color: AppColors.ink.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(18),
+              color: AppColors.cream,
               border: Border.all(
-                color: equipped
-                    ? AppColors.victory
-                    : skin.trim.withValues(alpha: 0.6),
-                width: equipped ? 2 : 1.2,
+                color: equipped ? AppColors.green : AppColors.outline,
+                width: equipped ? 4 : 3,
               ),
-              boxShadow: equipped
-                  ? [
-                      BoxShadow(
-                          color: AppColors.victory.withValues(alpha: 0.3),
-                          blurRadius: 14)
-                    ]
-                  : null,
+              boxShadow: const [
+                BoxShadow(color: Color(0x44000000), offset: Offset(0, 4)),
+              ],
             ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(10),
-                    child: AnimatedShip(
-                      spec: kFleet[1], // battleship preview
-                      skin: skin,
-                      size: 110,
+                  child: Container(
+                    margin: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.water,
+                      borderRadius: BorderRadius.circular(12),
+                      border:
+                          Border.all(color: AppColors.cellBorder, width: 2),
+                    ),
+                    child: Center(
+                      child: AnimatedShip(
+                        spec: kFleet[1], // battleship preview
+                        skin: skin,
+                        size: 100,
+                      ),
                     ),
                   ),
                 ),
-                Text(skin.name,
-                    style: AppText.label(size: 10, color: Colors.white)),
-                const SizedBox(height: 4),
+                Text(
+                  skin.name,
+                  style: AppText.label(size: 10, color: AppColors.navy),
+                ),
+                const SizedBox(height: 5),
                 Container(
                   margin: const EdgeInsets.only(bottom: 10),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(9),
                     color: equipped
-                        ? AppColors.victory.withValues(alpha: 0.2)
+                        ? AppColors.green
                         : owned
-                            ? AppColors.sonar.withValues(alpha: 0.15)
-                            : AppColors.gold.withValues(alpha: 0.12),
+                            ? AppColors.blue
+                            : (affordable
+                                ? AppColors.gold
+                                : AppColors.inkSoft),
+                    border:
+                        Border.all(color: AppColors.outline, width: 2),
                   ),
                   child: Text(
                     equipped
                         ? 'EQUIPPED'
                         : owned
                             ? 'TAP TO EQUIP'
-                            : '⭐ ${skin.cost} RP',
+                            : '${skin.cost} RP',
                     style: AppText.label(
                       size: 9,
-                      color: equipped
-                          ? AppColors.victory
-                          : owned
-                              ? AppColors.radar
-                              : (affordable ? AppColors.gold : AppColors.danger),
+                      color: (!owned && affordable)
+                          ? AppColors.outline
+                          : AppColors.cream,
                     ),
                   ),
                 ),
@@ -236,9 +256,11 @@ class _CannonsTab extends StatelessWidget {
               SoundService.instance.denied();
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text('Not enough RP! Need ${cannon.cost} RP.',
-                      style: const TextStyle(fontFamily: 'monospace')),
-                  backgroundColor: AppColors.danger,
+                  content: Text(
+                    'Not enough RP! Need ${cannon.cost} RP.',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  backgroundColor: AppColors.hit,
                   behavior: SnackBarBehavior.floating,
                 ),
               );
@@ -249,50 +271,77 @@ class _CannonsTab extends StatelessWidget {
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              color: AppColors.ink.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(18),
+              color: AppColors.cream,
               border: Border.all(
-                color: equipped
-                    ? AppColors.victory
-                    : cannon.projectile.withValues(alpha: 0.55),
-                width: equipped ? 2 : 1.2,
+                color: equipped ? AppColors.green : AppColors.outline,
+                width: equipped ? 4 : 3,
               ),
+              boxShadow: const [
+                BoxShadow(color: Color(0x44000000), offset: Offset(0, 4)),
+              ],
             ),
             child: Row(
               children: [
-                CannonWidget(
-                  skin: cannon,
-                  cooldownFraction: 1,
-                  enabled: false,
-                  label: '',
-                  size: 74,
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: AppColors.water,
+                    shape: BoxShape.circle,
+                    border:
+                        Border.all(color: AppColors.cellBorder, width: 2),
+                  ),
+                  child: CannonWidget(
+                    skin: cannon,
+                    cooldownFraction: 1,
+                    enabled: false,
+                    label: '',
+                    size: 70,
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(cannon.name,
-                          style: AppText.heading(size: 13, color: Colors.white)),
-                      const SizedBox(height: 3),
-                      Text(cannon.description,
-                          style: AppText.body(size: 11)),
-                      const SizedBox(height: 6),
                       Text(
-                        equipped
-                            ? '✔ EQUIPPED'
-                            : owned
-                                ? 'TAP TO EQUIP'
-                                : '⭐ ${cannon.cost} RP',
-                        style: AppText.label(
-                          size: 10,
+                        cannon.name,
+                        style:
+                            AppText.heading(size: 13, color: AppColors.navy),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        cannon.description,
+                        style: AppText.body(size: 11, color: AppColors.inkSoft),
+                      ),
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
                           color: equipped
-                              ? AppColors.victory
+                              ? AppColors.green
                               : owned
-                                  ? AppColors.radar
+                                  ? AppColors.blue
                                   : (affordable
                                       ? AppColors.gold
-                                      : AppColors.danger),
+                                      : AppColors.inkSoft),
+                          border: Border.all(
+                              color: AppColors.outline, width: 2),
+                        ),
+                        child: Text(
+                          equipped
+                              ? 'EQUIPPED'
+                              : owned
+                                  ? 'TAP TO EQUIP'
+                                  : '${cannon.cost} RP',
+                          style: AppText.label(
+                            size: 9,
+                            color: (!owned && affordable)
+                                ? AppColors.outline
+                                : AppColors.cream,
+                          ),
                         ),
                       ),
                     ],

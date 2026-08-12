@@ -11,7 +11,7 @@ import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'placement_screen.dart';
 
-/// Hotspot (LAN) + Online matchmaking lobby.
+/// Hotspot (LAN) + Online matchmaking lobby — cartoon style.
 class MultiplayerScreen extends StatefulWidget {
   const MultiplayerScreen({super.key});
 
@@ -147,8 +147,8 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   void _toast(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(msg, style: const TextStyle(fontFamily: 'monospace')),
-        backgroundColor: AppColors.ink,
+        content: Text(msg, style: const TextStyle(fontWeight: FontWeight.w800)),
+        backgroundColor: AppColors.navy,
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -163,36 +163,49 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         child: SafeArea(
           child: Column(
             children: [
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back, color: AppColors.steel),
-                    onPressed: () {
-                      net.stop();
-                      Navigator.pop(context);
-                    },
-                  ),
-                  Expanded(
-                    child: Text(
-                      '📡 MULTIPLAYER LOBBY',
-                      textAlign: TextAlign.center,
-                      style: AppText.heading(size: 17, color: AppColors.radar),
+              // ---- Navy header ----
+              Container(
+                width: double.infinity,
+                color: AppColors.navy,
+                padding: const EdgeInsets.fromLTRB(8, 10, 14, 0),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back,
+                          color: AppColors.cream),
+                      onPressed: () {
+                        net.stop();
+                        Navigator.pop(context);
+                      },
                     ),
-                  ),
-                  const SizedBox(width: 48),
-                ],
+                    Expanded(
+                      child: Text(
+                        'MULTIPLAYER LOBBY',
+                        style: AppText.title(size: 19),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              TabBar(
-                controller: _tab,
-                indicatorColor: AppColors.ember,
-                labelStyle: AppText.label(size: 11, color: AppColors.ember),
-                unselectedLabelStyle:
-                    AppText.label(size: 11, color: AppColors.steel),
-                tabs: const [
-                  Tab(text: '📶 HOTSPOT / LAN'),
-                  Tab(text: '🌐 ONLINE'),
-                ],
+              Container(
+                color: AppColors.navy,
+                child: TabBar(
+                  controller: _tab,
+                  indicatorColor: AppColors.gold,
+                  indicatorWeight: 4,
+                  labelColor: AppColors.cream,
+                  unselectedLabelColor:
+                      AppColors.cream.withValues(alpha: 0.55),
+                  labelStyle: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 12,
+                    letterSpacing: 1.2,
+                  ),
+                  tabs: const [
+                    Tab(text: 'HOTSPOT / LAN'),
+                    Tab(text: 'ONLINE'),
+                  ],
+                ),
               ),
               Expanded(
                 child: TabBarView(
@@ -217,10 +230,14 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
-          child: Text(
-            'Hotspot multiplayer runs on Android devices.\n\nInstall the APK on two phones on the same Wi-Fi / hotspot network!',
-            textAlign: TextAlign.center,
-            style: AppText.body(size: 13),
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            decoration: cartoonBox(AppColors.cream, radius: 18),
+            child: Text(
+              'Hotspot multiplayer runs on Android devices.\n\nInstall the APK on two phones on the same Wi-Fi / hotspot network!',
+              textAlign: TextAlign.center,
+              style: AppText.body(size: 13, color: AppColors.navy),
+            ),
           ),
         ),
       );
@@ -238,13 +255,13 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
             children: [
               Text(
                 'Creates a room on this device. Your friend connects to the same Wi-Fi or hotspot and joins.',
-                style: AppText.body(size: 11.5),
+                style: AppText.body(size: 11.5, color: AppColors.inkSoft),
               ),
               const SizedBox(height: 12),
               if (net.roomCode.isNotEmpty && _hosting) ...[
                 Center(
                   child: Text('ROOM CODE',
-                      style: AppText.label(size: 10)),
+                      style: AppText.label(size: 10, color: AppColors.inkSoft)),
                 ),
                 Center(
                   child: Text(net.roomCode,
@@ -253,7 +270,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                 Center(
                   child: Text(
                     '${net.localIp}:$kGamePort',
-                    style: AppText.label(size: 10, color: AppColors.steel),
+                    style: AppText.label(size: 10, color: AppColors.inkSoft),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -262,17 +279,19 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     width: 22,
                     height: 22,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2, color: AppColors.ember),
+                        strokeWidth: 3, color: AppColors.ember),
                   ),
                 ),
                 const SizedBox(height: 6),
                 Center(
                   child: Text(net.statusMessage,
-                      style: AppText.body(size: 11)),
+                      style:
+                          AppText.body(size: 11, color: AppColors.inkSoft)),
                 ),
               ] else
                 NeonButton(
-                  label: _hosting ? 'HOSTING…' : '⚓ HOST GAME',
+                  label: _hosting ? 'HOSTING…' : 'HOST GAME',
+                  icon: Icons.anchor,
                   color: AppColors.ember,
                   onPressed: _hosting ? null : () => _host(NetMode.hotspot),
                 ),
@@ -284,13 +303,14 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         _card(
           title: 'JOIN A MATCH',
           icon: Icons.radar,
-          color: AppColors.sonar,
+          color: AppColors.blue,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               NeonButton(
-                label: net.isSearching ? 'SCANNING…' : '🔍 SCAN FOR GAMES',
-                color: AppColors.sonar,
+                label: net.isSearching ? 'SCANNING…' : 'SCAN FOR GAMES',
+                icon: Icons.search,
+                color: AppColors.blue,
                 compact: true,
                 onPressed: net.isSearching
                     ? null
@@ -305,22 +325,24 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   (room) => Container(
                     margin: const EdgeInsets.only(bottom: 8),
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                          color: AppColors.victory.withValues(alpha: 0.6)),
-                      color: AppColors.victory.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(12),
+                      border:
+                          Border.all(color: AppColors.outline, width: 2.5),
+                      color: AppColors.coralLight,
                     ),
                     child: ListTile(
                       dense: true,
                       leading: const Icon(Icons.directions_boat,
-                          color: AppColors.victory),
+                          color: AppColors.shipRed),
                       title: Text(room.playerName,
-                          style: AppText.heading(size: 12)),
+                          style: AppText.heading(
+                              size: 12, color: AppColors.navy)),
                       subtitle: Text('${room.host} • ${room.code}',
-                          style: AppText.label(size: 9)),
+                          style: AppText.label(
+                              size: 9, color: AppColors.inkSoft)),
                       trailing: NeonButton(
                         label: 'JOIN',
-                        color: AppColors.victory,
+                        color: AppColors.green,
                         compact: true,
                         onPressed:
                             _connecting ? null : () => _join(room.host),
@@ -333,7 +355,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   net.isSearching
                       ? 'Listening for nearby captains…'
                       : 'No rooms found yet — scan or enter an IP below.',
-                  style: AppText.body(size: 11),
+                  style: AppText.body(size: 11, color: AppColors.inkSoft),
                   textAlign: TextAlign.center,
                 ),
               const SizedBox(height: 12),
@@ -343,14 +365,14 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     child: TextField(
                       controller: _ipCtrl,
                       keyboardType: TextInputType.number,
-                      style: AppText.body(size: 13, color: Colors.white),
+                      style: AppText.body(size: 13, color: AppColors.navy),
                       decoration: _inputDeco('HOST IP — e.g. 192.168.1.5'),
                     ),
                   ),
                   const SizedBox(width: 8),
                   NeonButton(
                     label: _connecting ? '…' : 'JOIN',
-                    color: AppColors.victory,
+                    color: AppColors.green,
                     compact: true,
                     onPressed: _connecting
                         ? null
@@ -368,7 +390,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
               if (net.statusMessage.isNotEmpty && !_hosting) ...[
                 const SizedBox(height: 8),
                 Text(net.statusMessage,
-                    style: AppText.label(size: 9, color: AppColors.steel),
+                    style: AppText.label(size: 9, color: AppColors.inkSoft),
                     textAlign: TextAlign.center),
               ],
             ],
@@ -388,7 +410,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         _card(
           title: 'ONLINE MATCHMAKING',
           icon: Icons.public,
-          color: AppColors.victory,
+          color: AppColors.green,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -397,7 +419,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   Icon(
                     relayReady ? Icons.check_circle : Icons.warning_amber,
                     size: 16,
-                    color: relayReady ? AppColors.victory : AppColors.ember,
+                    color: relayReady ? AppColors.green : AppColors.ember,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -407,26 +429,29 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                           : relayReady
                               ? 'Relay online — play with anyone, anywhere!'
                               : 'Relay offline. Online mode uses the same room system as hotspot: host and share your IP, or play over hotspot instead.',
-                      style: AppText.body(size: 11),
+                      style:
+                          AppText.body(size: 11, color: AppColors.inkSoft),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 14),
               NeonButton(
-                label: _hosting ? 'HOSTING…' : '🌐 HOST ONLINE GAME',
-                color: AppColors.victory,
+                label: _hosting ? 'HOSTING…' : 'HOST ONLINE GAME',
+                icon: Icons.public,
+                color: AppColors.green,
                 onPressed: _hosting ? null : () => _host(NetMode.online),
               ),
               if (net.roomCode.isNotEmpty && _hosting) ...[
                 const SizedBox(height: 10),
                 Center(
                   child: Text('ROOM CODE: ${net.roomCode}',
-                      style: AppText.title(size: 22, color: AppColors.victory)),
+                      style: AppText.title(size: 22, color: AppColors.green)),
                 ),
                 Center(
                   child: Text('Share this code with your friend!',
-                      style: AppText.label(size: 9)),
+                      style:
+                          AppText.label(size: 9, color: AppColors.inkSoft)),
                 ),
               ],
               const SizedBox(height: 14),
@@ -437,7 +462,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                       controller: _codeCtrl,
                       textCapitalization: TextCapitalization.characters,
                       maxLength: 4,
-                      style: AppText.body(size: 14, color: Colors.white),
+                      style: AppText.body(size: 14, color: AppColors.navy),
                       decoration: _inputDeco('ROOM CODE'),
                     ),
                   ),
@@ -453,7 +478,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
               if (net.statusMessage.isNotEmpty && !_hosting) ...[
                 const SizedBox(height: 8),
                 Text(net.statusMessage,
-                    style: AppText.label(size: 9, color: AppColors.steel),
+                    style: AppText.label(size: 9, color: AppColors.inkSoft),
                     textAlign: TextAlign.center),
               ],
             ],
@@ -471,18 +496,22 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        color: AppColors.ink.withValues(alpha: 0.65),
-        border: Border.all(color: color.withValues(alpha: 0.5), width: 1.2),
-      ),
+      decoration: cartoonBox(AppColors.cream, radius: 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
-              Icon(icon, color: color, size: 18),
-              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(9),
+                  border: Border.all(color: AppColors.outline, width: 2),
+                ),
+                child: Icon(icon, color: AppColors.cream, size: 16),
+              ),
+              const SizedBox(width: 10),
               Text(title, style: AppText.label(size: 12, color: color)),
             ],
           ),
@@ -495,20 +524,19 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
 
   InputDecoration _inputDeco(String hint) => InputDecoration(
         hintText: hint,
-        hintStyle: AppText.body(size: 11, color: AppColors.fog),
+        hintStyle: AppText.body(size: 11, color: AppColors.inkSoft),
         counterText: '',
         filled: true,
-        fillColor: AppColors.abyss.withValues(alpha: 0.6),
+        fillColor: AppColors.coralLight,
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
-          borderSide:
-              BorderSide(color: AppColors.sonarDim.withValues(alpha: 0.5)),
+          borderSide: const BorderSide(color: AppColors.outline, width: 2.5),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: AppColors.sonar),
+          borderSide: const BorderSide(color: AppColors.blue, width: 2.5),
         ),
       );
 }
