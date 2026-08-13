@@ -25,8 +25,9 @@ import 'result_screen.dart';
 ///  • Middle band: two ship-status rows (top solid / bottom faded),
 ///    EXIT pill on the edge and the white dots badge.
 ///  • Battle starts with a giant translucent 3-2-1 countdown mirrored on
-///    both halves; every turn change pops a big circular "Your turn" badge
-///    (mirrored so both players can read it).
+///    both halves, then a one-time "Your turn" badge after GO.
+///  • Battle grids are EMPTY (ships hidden) — you guess where the enemy
+///    fleet is. A HIT lets you fire again; only a MISS passes the turn.
 class BattleScreen extends StatefulWidget {
   const BattleScreen({super.key});
 
@@ -63,6 +64,7 @@ class _BattleScreenState extends State<BattleScreen>
   bool _showProjectile = false;
   List<int>? _pendingImpact; // cell waiting for the ball to land
   bool _pendingByP1 = true; // who fired the ball in flight
+  ShotResult? _pendingResult; // outcome of the ball in flight
 
   /// Screen-space geometry of each half, refreshed every layout pass.
   final Map<bool, _HalfGeom> _geom = {}; // key: isTopHalf
@@ -167,6 +169,7 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() {
       _pendingByP1 = false;
       _pendingImpact = [e.row, e.col];
+      _pendingResult = e.result;
       _projFrom = from;
       _projTo = to;
       _projCell = bottom.cell;
@@ -179,7 +182,9 @@ class _BattleScreenState extends State<BattleScreen>
   void _resolveImpact() {
     final cell = _pendingImpact;
     final byP1 = _pendingByP1;
+    final result = _pendingResult;
     _pendingImpact = null;
+    _pendingResult = null;
     if (cell == null) return;
     final controller = context.read<GameController>();
     for (final e in controller.events.reversed) {
@@ -192,8 +197,11 @@ class _BattleScreenState extends State<BattleScreen>
       }
     }
     controller.touch();
+    // 1:1 video rule: a HIT lets the same player keep firing; only a MISS
+    // passes the turn (and the device) to the other player.
     if (controller.mode == GameMode.local &&
         controller.phase == BattlePhase.battling &&
+        result == ShotResult.miss &&
         !_handoffPending) {
       _handoffPending = true;
       Future.delayed(const Duration(milliseconds: 800), () {
@@ -240,6 +248,7 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() {
       _pendingByP1 = byP1;
       _pendingImpact = [r, c];
+      _pendingResult = res;
       _projFrom = bottom.cannonMouthScreen;
       _projTo = top.cellCenterScreen(r, c);
       _projCell = top.cell;
@@ -278,11 +287,9 @@ class _BattleScreenState extends State<BattleScreen>
       ),
     ));
     if (!mounted) return;
-    setState(() {
-      _p2Active = nextIsP2;
-      _showTurnBadge = true;
-    });
-    _badgeCtrl.forward(from: 0);
+    // Swap which player is at the bottom. NO "Your turn" badge here —
+    // the video only shows that badge once, right after the opening GO.
+    setState(() => _p2Active = nextIsP2);
     SoundService.instance.whir();
   }
 
@@ -407,7 +414,6 @@ class _BattleScreenState extends State<BattleScreen>
   }) {
     // This half shows the OWNER's grid: the enemy's shots land here.
     final shotsOnThisGrid = halfIsP1 ? controller.p2Shots : controller.myShots;
-    final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
     final cooldown =
         halfIsP1 ? controller.cooldownFraction1 : controller.cooldownFraction2;
     final cannonStream = halfIsP1 ? _cannon1Fire : _cannon2Fire;
@@ -476,12 +482,11 @@ class _BattleScreenState extends State<BattleScreen>
                   child: BattleGrid(
                     key: ValueKey('grid-$halfIsP1-$bottomIsP1'),
                     shots: shownShots,
-                    ships: board.ships,
-                    skin: halfIsP1
-                        ? const ShipSkin('p1', 'P1', AppColors.shipRed,
-                            AppColors.shipRedDark, 0)
-                        : const ShipSkin('p2', 'P2', AppColors.shipBlue,
-                            AppColors.shipBlueDark, 0),
+                    // 1:1 video: battle grids are EMPTY — you never see
+                    // either player's ships, only your hit/miss markers.
+                    // (Guessing where the enemy fleet hides IS the game.)
+                    ships: null,
+                    skin: null,
                     enabled: tappable,
                     glowColor: AppColors.steelBlueDark,
                     cellColor: AppColors.steelBlue,
