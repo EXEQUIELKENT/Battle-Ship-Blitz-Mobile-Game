@@ -23,6 +23,10 @@ class CombatEvent {
   final String? sunkShipName;
   final DateTime time;
 
+  /// When the projectile actually landed (set by the battle screen after the
+  /// cannonball flight animation completes). Null until impact.
+  DateTime? impactAt;
+
   CombatEvent({
     required this.row,
     required this.col,
@@ -405,6 +409,10 @@ class GameController extends ChangeNotifier {
     combatLog.insert(0, msg);
     if (combatLog.length > 30) combatLog.removeLast();
   }
+
+  /// Forces a rebuild without changing logical state (used after mutating
+  /// event metadata like [CombatEvent.impactAt] from the battle screen).
+  void touch() => notifyListeners();
 
   @override
   void dispose() {

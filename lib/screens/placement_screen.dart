@@ -13,6 +13,10 @@ import '../widgets/neon_widgets.dart';
 import '../widgets/ship_painter.dart';
 import 'battle_screen.dart';
 
+/// Red / blue flat skins matching the 1:1 gameplay video.
+const _p1PlaceSkin = ShipSkin('p1v', 'P1', AppColors.shipRed, AppColors.shipRedDark, 0);
+const _p2PlaceSkin = ShipSkin('p2v', 'P2', AppColors.shipBlue, AppColors.shipBlueDark, 0);
+
 /// "Deploy your ships" — reference-style placement:
 /// drag ships from the top dock onto the grid (or tap an empty cell),
 /// tap a placed ship to rotate it, RANDOM + green SAVE buttons.
@@ -185,17 +189,18 @@ class _PlacementScreenState extends State<PlacementScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final profile = context.watch<ProfileStore>();
     final controller = context.read<GameController>();
+    final isP2 = controller.mode == GameMode.local && widget.isPlayer2;
     final playerLabel = controller.mode == GameMode.local
         ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
-        : profile.playerName.toUpperCase();
+        : context.watch<ProfileStore>().playerName.toUpperCase();
+    final skin = isP2 ? _p2PlaceSkin : _p1PlaceSkin;
 
     if (_showHandoff) {
       return HandoffScreen(
-        title: 'PASS THE DEVICE',
+        title: 'Pass the screen\nto your friend\nand don\'t look :-)',
         subtitle: 'Player 2 — deploy your fleet in secret!',
-        buttonLabel: 'PLAYER 2 READY',
+        buttonLabel: 'OK',
         onReady: () {
           Navigator.of(context).pushReplacement(
             MaterialPageRoute(
@@ -208,7 +213,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
 
     return Scaffold(
       body: Container(
-        color: AppColors.coral,
+        color: AppColors.coralVideo,
         child: SafeArea(
           child: Column(
             children: [
@@ -238,7 +243,8 @@ class _PlacementScreenState extends State<PlacementScreen> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '$playerLabel — drag to move, tap ship to rotate',
+                      '$playerLabel — drag to move and tap to rotate, or try random placement',
+                      textAlign: TextAlign.center,
                       style: AppText.body(
                           size: 12, color: AppColors.cream.withValues(alpha: 0.75)),
                     ),
@@ -259,7 +265,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
                               ? 'SAVE'
                               : 'SAVE  ${_board.ships.length}/5',
                           icon: Icons.bolt,
-                          color: _allPlaced ? AppColors.green : AppColors.inkSoft,
+                          color: _allPlaced ? AppColors.seafoam : AppColors.inkSoft,
                           onPressed: _allPlaced ? _save : null,
                         ),
                       ],
@@ -285,7 +291,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
                     for (final spec in kFleet)
                       _DockShip(
                         spec: spec,
-                        skin: profile.shipSkin,
+                        skin: skin,
                         placed: _board.shipOfKind(spec.kind) != null,
                         selected: _selected == spec.kind,
                         onTap: () {
@@ -340,7 +346,9 @@ class _PlacementScreenState extends State<PlacementScreen> {
                             shots: List.generate(kBoardSize,
                                 (_) => List.filled(kBoardSize, 0)),
                             ships: _board.ships,
-                            skin: profile.shipSkin,
+                            skin: skin,
+                            cellColor: AppColors.steelBlue,
+                            glowColor: AppColors.steelBlueDark,
                             onTapCell: _onGridTap,
                             onShipTap: _rotateShip,
                             onShipDragEnd: _moveShip,
@@ -473,6 +481,8 @@ class _ExitButton extends StatelessWidget {
 }
 
 /// Interstitial when passing the device between local players.
+/// Matches the 1:1 gameplay video: full steel-blue screen, big friendly
+/// message, chunky green OK button.
 class HandoffScreen extends StatelessWidget {
   final String title;
   final String subtitle;
@@ -491,7 +501,7 @@ class HandoffScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        color: AppColors.navy,
+        color: AppColors.steelBlue,
         child: SafeArea(
           child: Center(
             child: Padding(
@@ -499,23 +509,23 @@ class HandoffScreen extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.screen_rotation,
-                      size: 64, color: AppColors.cream),
-                  const SizedBox(height: 24),
                   Text(title,
-                      style: AppText.title(size: 24), textAlign: TextAlign.center),
-                  const SizedBox(height: 12),
+                      style: AppText.title(size: 30), textAlign: TextAlign.center),
+                  const SizedBox(height: 16),
                   Text(
                     subtitle,
-                    style: AppText.body(color: AppColors.cream.withValues(alpha: 0.8)),
+                    style: AppText.body(
+                        size: 16, color: AppColors.cream.withValues(alpha: 0.85)),
                     textAlign: TextAlign.center,
                   ),
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 40),
                   NeonButton(
                     label: buttonLabel,
-                    icon: Icons.play_arrow,
-                    color: AppColors.green,
-                    onPressed: onReady,
+                    color: AppColors.seafoam,
+                    onPressed: () {
+                      SoundService.instance.click();
+                      onReady();
+                    },
                   ),
                 ],
               ),

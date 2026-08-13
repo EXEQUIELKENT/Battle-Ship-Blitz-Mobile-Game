@@ -405,8 +405,6 @@ class _BattleScreenState extends State<BattleScreen>
     required double halfTopY,
     required bool bottomIsP1,
   }) {
-    final isLocal = controller.mode == GameMode.local;
-
     // This half shows the OWNER's grid: the enemy's shots land here.
     final shotsOnThisGrid = halfIsP1 ? controller.p2Shots : controller.myShots;
     final board = halfIsP1 ? controller.boards[0] : controller.boards[1];

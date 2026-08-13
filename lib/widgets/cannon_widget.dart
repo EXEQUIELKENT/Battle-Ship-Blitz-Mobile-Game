@@ -18,6 +18,9 @@ class CannonWidget extends StatefulWidget {
   final double size;
   final Stream<void>? fireTrigger;
 
+  /// Overrides the ready-state accent color (e.g. per-player red/blue rings).
+  final Color? accentOverride;
+
   const CannonWidget({
     super.key,
     required this.skin,
@@ -27,6 +30,7 @@ class CannonWidget extends StatefulWidget {
     this.label = 'FIRE',
     this.size = 92,
     this.fireTrigger,
+    this.accentOverride,
   });
 
   @override
@@ -80,7 +84,9 @@ class _CannonWidgetState extends State<CannonWidget>
               height: widget.size,
               child: CustomPaint(
                 painter: CannonPainter(
-                  accent: ready ? widget.skin.projectile : AppColors.inkSoft,
+                  accent: ready
+                      ? (widget.accentOverride ?? widget.skin.projectile)
+                      : AppColors.inkSoft,
                   cooldown: widget.cooldownFraction,
                   recoil: _recoil.value,
                   ready: ready,
