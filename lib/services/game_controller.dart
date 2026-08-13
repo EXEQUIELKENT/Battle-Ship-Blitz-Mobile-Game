@@ -304,7 +304,12 @@ class GameController extends ChangeNotifier {
   double _aiThinkAccumulator = 0;
 
   void _aiThink() {
-    if (cooldown2 > 0) return;
+    // Wait for the cannon to fully reload before firing again (this also
+    // gives the previous cannonball time to land before the next launch).
+    if (cooldown2 > 0) {
+      _aiThinkAccumulator = 0;
+      return;
+    }
     _aiThinkAccumulator += 0.1;
     // Difficulty = reaction delay
     final delay = switch (difficulty) {

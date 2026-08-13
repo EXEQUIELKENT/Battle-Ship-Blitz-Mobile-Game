@@ -80,6 +80,10 @@ class _BattleScreenState extends State<BattleScreen>
   // ----- Cannon slide (active player's cannon moves to its grid center) ---
   late final AnimationController _slideCtrl;
 
+  /// The currently-aimed target cell on the OPPONENT's grid (crosshair).
+  /// Tapping the active player's own cannon fires the ball here.
+  List<int> _aim = [4, 4];
+
   @override
   void initState() {
     super.initState();
@@ -264,17 +268,30 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ------------------------------------------------------------- FIRING
 
-  /// The active player tapped a cell on the opponent's grid (top half).
-  void _fireFromTap(
-    GameController controller, {
-    required bool byP1,
-    required int r,
-    required int c,
-  }) {
+  /// The active player tapped a cell on the OPPONENT's grid: move the
+  /// crosshair (aim) there. They then tap their OWN cannon to fire.
+  void _aimAt(GameController controller, {required int r, required int c}) {
     if (_countingDown || _showProjectile) return;
+    final activeIsP1 = !_p2Active;
+    final tracking = activeIsP1 ? controller.myShots : controller.p2Shots;
+    if (tracking[r][c] != 0) {
+      SoundService.instance.denied();
+      return; // already fired there — don't aim at a used cell
+    }
+    setState(() => _aim = [r, c]);
+    SoundService.instance.click();
+  }
+
+  /// The active player tapped their OWN cannon → fire the ball at the
+  /// currently-aimed cell on the opponent's grid.
+  void _fireActive(GameController controller) {
+    if (_countingDown || _showProjectile) return;
+    final byP1 = !_p2Active;
+    final r = _aim[0];
+    final c = _aim[1];
     final tracking = byP1 ? controller.myShots : controller.p2Shots;
     if (tracking[r][c] != 0) {
-      _toast('Already fired there!');
+      _toast('Pick a fresh target on the enemy grid!');
       SoundService.instance.denied();
       return;
     }
@@ -285,19 +302,30 @@ class _BattleScreenState extends State<BattleScreen>
       return;
     }
     if (res == ShotResult.duplicate || res == ShotResult.invalid) {
-      _toast('Already fired there!');
       SoundService.instance.denied();
       return;
     }
+    _launchBall(controller, byP1: byP1, r: r, c: c, res: res);
+  }
+
+  /// Shared ball-launch used by the player's cannon tap.
+  void _launchBall(
+    GameController controller, {
+    required bool byP1,
+    required int r,
+    required int c,
+    required ShotResult res,
+  }) {
     final top = _geom[true];
     final bottom = _geom[false];
     if (top == null || bottom == null) return;
     // The shooter fires from wherever its cannon currently sits (slid out
-    // to its grid center during its turn, or parked at home). The ball
-    // arcs toward the tapped cell on the OPPONENT's grid.
+    // to its grid center during its turn). The ball arcs toward the aimed
+    // cell on the OPPONENT's grid.
     final shooterGeom = byP1 ? bottom : top;
     final targetGeom = byP1 ? top : bottom;
-    final from = _cannonMouth(shooterGeom, byP1 ? _slideCtrl.value : 1 - _slideCtrl.value);
+    final from =
+        _cannonMouth(shooterGeom, byP1 ? _slideCtrl.value : 1 - _slideCtrl.value);
     final to = targetGeom.cellCenterScreen(r, c) +
         _mouthDir(targetGeom) * (targetGeom.cannonSize * 0.25);
     setState(() {
@@ -371,8 +399,6 @@ class _BattleScreenState extends State<BattleScreen>
   Widget build(BuildContext context) {
     final controller = context.watch<GameController>();
     final profile = context.watch<ProfileStore>();
-    // ignore: unused_local_variable
-    final isLocal = controller.mode == GameMode.local;
     // LOCAL FIX: the halves NEVER swap sides — P1 is always on the bottom
     // (upright) and P2 always on top (rotated 180°), because the players
     // sit across from each other. Only the "whose turn" flag changes.
@@ -435,10 +461,15 @@ class _BattleScreenState extends State<BattleScreen>
                           builder: (context, _) {
                             final t = _projCtrl.value;
                             final p = Offset.lerp(_projFrom, _projTo, t)!;
+                            // Vertical ARC for the up-and-down lob effect.
                             final arc =
                                 math.sin(t * math.pi) * _projCell * 3.0;
                             final pos = p - Offset(0, arc);
-                            final d = _projCell * 0.52;
+                            // Cannonball starts BIG at the muzzle and SHRINKS
+                            // as it sails toward the tapped cell (the arc +
+                            // shrink together give the up-and-down lob feel).
+                            final scale = 1.0 - 0.6 * t; // 1.0 → 0.4
+                            final d = _projCell * 1.1 * scale;
                             return Stack(
                               children: [
                                 Positioned(
@@ -487,16 +518,22 @@ class _BattleScreenState extends State<BattleScreen>
     final readyStream = halfIsP1 ? _cannon1Ready : _cannon2Ready;
     final accent = halfIsP1 ? AppColors.hit : AppColors.blue;
 
-    // A grid is TAPPABLE only by the player who does NOT own it (you fire
-    // at the enemy's grid) and only while it's that player's turn:
-    //   • vs AI / online  → the human (P1) always taps the TOP (P2) grid.
-    //   • local pass-play → P1's turn: P1 taps the TOP grid.
-    //                       P2's turn: P2 taps the BOTTOM grid.
+    // VIDEO interaction model: the ACTIVE player's cannon sits at the
+    // middle of their OWN grid (a "ready to fire" indicator). The OPPONENT's
+    // grid shows the aiming CROSSHAIR. The player taps the opponent's grid
+    // to MOVE the crosshair, then taps their OWN cannon to FIRE.
+    //
+    // This half is the ACTIVE player's own half when halfIsP1 == !_p2Active.
     final isLocalMode = controller.mode == GameMode.local;
-    final tappable = (isLocalMode ? (halfIsP1 != _p2Active) : isTopHalf) &&
-        !_countingDown &&
-        controller.battling &&
-        !_showProjectile;
+    final thisIsActive = isLocalMode ? (halfIsP1 == !_p2Active) : halfIsP1;
+    final thisIsOpponentOfActive =
+        isLocalMode ? (halfIsP1 == _p2Active) : !halfIsP1;
+    final inBattle = !_countingDown && controller.battling && !_showProjectile;
+
+    // The OPPONENT's grid is tappable (to move the crosshair) on your turn.
+    final gridAimable = thisIsOpponentOfActive && inBattle;
+    // The ACTIVE player's OWN cannon is tappable (to fire).
+    final cannonTappable = thisIsActive && inBattle;
 
     // Only show markers whose cannonball has already landed.
     final events = controller.events
@@ -520,11 +557,15 @@ class _BattleScreenState extends State<BattleScreen>
         final cell = gridSide / kBoardSize;
         final gridLeft = (w - gridSide) / 2;
         final gridTop = 6.0; // grid near the outer edge of the half
-        final cannonSize = gridSide * 0.42;
+        final cannonSize = gridSide * 0.30;
+        // Cannon HOME: in the gap between the grid and the middle band.
         final cannonCenter =
-            Offset(w / 2, gridTop + gridSide + (halfH - gridSide) * 0.52);
-        final gridCenterLocal =
-            Offset(gridLeft + gridSide / 2, gridTop + gridSide / 2);
+            Offset(w / 2, gridTop + gridSide + (halfH - gridSide) * 0.60);
+        // Cannon "ready" (active) position: parked just past the grid's
+        // edge toward the middle band — prominent, close, and NOT covering
+        // any grid cells so the whole grid stays tappable.
+        final gridCenterLocal = Offset(
+            w / 2, gridTop + gridSide + cannonSize * 0.62);
 
         // Record screen-space geometry (accounting for the 180° rotation
         // of the top half) so the cannonball can fly between halves.
@@ -563,21 +604,27 @@ class _BattleScreenState extends State<BattleScreen>
                     // (Guessing where the enemy fleet hides IS the game.)
                     ships: null,
                     skin: null,
-                    enabled: tappable,
+                    enabled: gridAimable,
                     glowColor: AppColors.steelBlueDark,
                     cellColor: AppColors.steelBlue,
                     recentEvents: events,
-                    onTapCell: tappable
-                        ? (r, c) => _fireFromTap(controller,
-                            byP1: bottomIsP1, r: r, c: c)
+                    // Crosshair shows on the grid the active player is
+                    // aiming at (the opponent's grid).
+                    crosshair: thisIsOpponentOfActive && controller.battling
+                        ? _aim
+                        : null,
+                    // Tapping the opponent's grid moves the crosshair.
+                    onTapCell: gridAimable
+                        ? (r, c) => _aimAt(controller, r: r, c: c)
                         : null,
                   ),
                 ),
               ),
 
               // Own cannon. During its owner's turn it slides to the middle
-              // of its own grid (its firing position); otherwise it sits at
-              // home near the middle band. P1 = _slideCtrl.value, P2 = 1-value.
+              // of its own grid (its "ready to fire" position) and becomes
+              // TAPPABLE to fire at the crosshair; otherwise it sits at home
+              // near the middle band. P1 = _slideCtrl.value, P2 = 1-value.
               AnimatedBuilder(
                 animation: _slideCtrl,
                 builder: (context, _) {
@@ -588,16 +635,17 @@ class _BattleScreenState extends State<BattleScreen>
                   return Positioned(
                     left: pos.dx - cannonSize / 2,
                     top: pos.dy - cannonSize / 2,
-                    child: IgnorePointer(
-                      child: CannonWidget(
-                        skin: profile.cannonSkin,
-                        cooldownFraction: cooldown,
-                        enabled: controller.battling && !_countingDown,
-                        size: cannonSize,
-                        fireTrigger: cannonStream.stream,
-                        readyTrigger: readyStream.stream,
-                        accentOverride: accent,
-                      ),
+                    child: CannonWidget(
+                      skin: profile.cannonSkin,
+                      cooldownFraction: cooldown,
+                      enabled: controller.battling && !_countingDown,
+                      size: cannonSize,
+                      fireTrigger: cannonStream.stream,
+                      readyTrigger: readyStream.stream,
+                      accentOverride: accent,
+                      onFire: cannonTappable
+                          ? () => _fireActive(controller)
+                          : null,
                     ),
                   );
                 },
@@ -739,8 +787,8 @@ class _BattleScreenState extends State<BattleScreen>
   /// for P2) so both players can tell whose turn it is — never mirrored
   /// to both halves at once.
   Widget _turnBadgeOverlay(bool bottomIsP1, double bandH) {
-    final activeIsP1 =
-        bottomIsP1; // bottom half is always P1; P2 active ⇒ badge on top
+    // Driven by the LIVE turn flag so it always matches whose turn it is.
+    final activeIsP1 = !_p2Active;
     final color = activeIsP1 ? AppColors.hit : AppColors.blue;
     final controller = context.read<GameController>();
     final isLocal = controller.mode == GameMode.local;
