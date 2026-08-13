@@ -89,6 +89,11 @@ class GameController extends ChangeNotifier {
   final List<List<int>> _aiShots = List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0));
   final List<List<int>> _aiQueue = [];
 
+  /// Whether it's currently the AI's turn to fire. The battle starts on the
+  /// HUMAN's turn; a miss hands the turn over, a hit keeps it. This makes
+  /// vs-AI obey the same "hit keeps turn / miss passes turn" rule as local.
+  bool aiTurnToFire = false;
+
   bool get battling => phase == BattlePhase.battling;
 
   double get cooldownFraction1 =>
@@ -118,6 +123,7 @@ class GameController extends ChangeNotifier {
     cooldownMax2 = mode == GameMode.local ? cooldownMax1 : kCooldownSeconds.toDouble();
     cooldown1 = 0;
     cooldown2 = 0;
+    aiTurnToFire = false; // battle always opens on the human's turn
     events.clear();
     combatLog.clear();
     _aiQueue.clear();
@@ -173,6 +179,11 @@ class GameController extends ChangeNotifier {
 
     final (result, sunk) = boards[1].receiveShot(r, c);
     _registerShot(shooterIsP1: true, r: r, c: c, result: result, sunk: sunk);
+    // A hit keeps the human's turn (fire again); only a miss hands the
+    // turn to the AI. Same rule as local pass-and-play.
+    if (mode == GameMode.vsAI && result == ShotResult.miss) {
+      aiTurnToFire = true;
+    }
     return result;
   }
 
@@ -284,7 +295,7 @@ class GameController extends ChangeNotifier {
     if (!battling) return;
     if (cooldown1 > 0) cooldown1 = max(0, cooldown1 - 0.1);
     if (cooldown2 > 0) cooldown2 = max(0, cooldown2 - 0.1);
-    if (mode == GameMode.vsAI) _aiThink();
+    if (mode == GameMode.vsAI && aiTurnToFire) _aiThink();
     notifyListeners();
   }
 
@@ -325,6 +336,10 @@ class GameController extends ChangeNotifier {
         }
       }
       if (result == ShotResult.sunk) _aiQueue.clear();
+      // A hit keeps the AI's turn (it fires again); only a miss passes it.
+    } else {
+      // Miss → hand the turn back to the human.
+      aiTurnToFire = false;
     }
 
     _registerShot(shooterIsP1: false, r: r, c: c, result: result, sunk: sunk);

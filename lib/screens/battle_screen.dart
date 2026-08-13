@@ -15,20 +15,24 @@ import '../widgets/ship_painter.dart';
 import 'result_screen.dart';
 
 /// Battle arena — 1:1 copy of the reference gameplay video:
-///  • BOTH player halves are on screen at once. The opponent's half sits on
-///    top rotated 180° (so it faces them across the table); the active
-///    player's half is at the bottom, upright.
+///  • BOTH player halves are on screen at once and NEVER swap sides:
+///    P1's half is always at the bottom (upright), P2's half is always on
+///    top rotated 180° (so they face each other across the table).
 ///  • Each half shows that player's OWN grid + their OWN cannon
 ///    (red ring = P1, blue ring = P2). You tap the OTHER player's grid to
 ///    fire at it (it lives on the opposite half).
 ///  • Middle band: two ship-status rows (top solid / bottom faded),
 ///    EXIT pill on the edge and the white dots badge.
 ///  • Battle starts with a giant translucent 3-2-1 countdown mirrored on
-///    both halves, then a one-time "Your turn" badge after GO.
+///    both halves, then a one-time "Your turn" badge after GO. In local
+///    play the badge appears only on the STARTING player's half, so both
+///    players can tell whose turn it is.
 ///  • Battle grids are EMPTY (ships hidden) — you guess where the enemy
-///    fleet is. A HIT lets you fire again; only a MISS passes the turn,
-///    and the handoff is seamless: the halves swap and the newly-active
-///    player's cannon flashes "ready" (no blocking popup).
+///    fleet is. A HIT lets you fire again; only a MISS passes the turn.
+///  • During a player's turn their cannon slides to the middle of THEIR
+///    grid (their firing position); when the turn passes it slides back
+///    home near the middle band, and the newly-active cannon slides out
+///    to its grid while flashing "ready".
 class BattleScreen extends StatefulWidget {
   const BattleScreen({super.key});
 
@@ -43,7 +47,9 @@ class _BattleScreenState extends State<BattleScreen>
   final _cannon1Ready = StreamController<void>.broadcast();
   final _cannon2Ready = StreamController<void>.broadcast();
 
-  /// Local pass-and-play: which player's half is currently at the bottom.
+  /// Local pass-and-play: whose turn it is (P1's grid stays on the BOTTOM,
+  /// P2's on TOP — the halves never swap sides; players sit across from
+  /// each other). Only the "whose turn" flag changes.
   bool _p2Active = false;
 
   bool _navigatedToResult = false;
@@ -71,11 +77,20 @@ class _BattleScreenState extends State<BattleScreen>
   /// Screen-space geometry of each half, refreshed every layout pass.
   final Map<bool, _HalfGeom> _geom = {}; // key: isTopHalf
 
+  // ----- Cannon slide (active player's cannon moves to its grid center) ---
+  late final AnimationController _slideCtrl;
+
   @override
   void initState() {
     super.initState();
     final controller = context.read<GameController>();
     controller.addListener(_onUpdate);
+
+    _slideCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 340),
+      value: 1.0, // P1 starts active: P1 out at its grid, P2 parked at home
+    );
 
     _badgeCtrl = AnimationController(
       vsync: this,
@@ -141,9 +156,16 @@ class _BattleScreenState extends State<BattleScreen>
       final e = controller.events.last;
       final age = DateTime.now().difference(e.time).inMilliseconds;
       // Opponent (AI / remote) shots animate from their cannon here; the
-      // local player's own ball is launched at tap time.
+      // local player's own ball is launched at tap time. If a ball is
+      // already in flight, don't clobber its pending state — just mark
+      // the impact so the marker appears (local turn-taking means this
+      // only matters for the async AI/remote modes).
       if (!e.byPlayer && age < 200 && mounted) {
-        _launchOpponentBall(e);
+        if (_projCtrl.isAnimating) {
+          e.impactAt ??= DateTime.now();
+        } else {
+          _launchOpponentBall(e);
+        }
       }
     }
     if (controller.phase == BattlePhase.finished && !_navigatedToResult) {
@@ -166,8 +188,11 @@ class _BattleScreenState extends State<BattleScreen>
       e.impactAt ??= DateTime.now();
       return;
     }
-    final from = top.cannonMouthScreen;
-    final to = bottom.cellCenterScreen(e.row, e.col);
+    // The AI's cannon may be slid out to its grid center (during its turn)
+    // or parked at home — fire from wherever it currently sits.
+    final from = _cannonMouth(top, _slideCtrl.value);
+    final to = bottom.cellCenterScreen(e.row, e.col) +
+        _mouthDir(bottom) * (bottom.cannonSize * 0.25);
     setState(() {
       _pendingByP1 = false;
       _pendingImpact = [e.row, e.col];
@@ -200,24 +225,37 @@ class _BattleScreenState extends State<BattleScreen>
     }
     controller.touch();
     // 1:1 video rule: a HIT lets the same player keep firing; only a MISS
-    // passes the turn to the other player. The swap is seamless (no popup)
-    // and the new active player's cannon flashes "ready".
-    if (controller.mode == GameMode.local &&
-        controller.phase == BattlePhase.battling &&
-        result == ShotResult.miss) {
+    // passes the turn to the other player (local AND vs AI — same rule).
+    // The handoff is seamless (no popup): the active flag flips, the
+    // cannons slide (outgoing → home, incoming → its grid center) and the
+    // newly-active cannon flashes "ready".
+    if (controller.phase == BattlePhase.battling &&
+        result == ShotResult.miss &&
+        (controller.mode == GameMode.local ||
+            controller.mode == GameMode.vsAI)) {
+      final passToP2 = byP1; // P1 missed → P2's turn; P2/AI missed → P1's
       Future.delayed(const Duration(milliseconds: 500), () {
         if (!mounted || controller.phase != BattlePhase.battling) return;
-        _swapActivePlayer();
+        _passTurn(passToP2);
       });
     }
   }
 
-  /// Seamlessly flip which player's half is at the bottom and flash the
-  /// newly-active cannon to signal it's their turn — no blocking popup.
-  void _swapActivePlayer() {
+  /// Seamlessly pass the turn: flip the active flag, slide the cannons
+  /// (the outgoing player's cannon returns home; the incoming player's
+  /// cannon slides out to the middle of its grid) and flash the new
+  /// active cannon "ready" — no blocking popup. The halves themselves
+  /// NEVER swap sides (P1 stays bottom, P2 stays top).
+  void _passTurn(bool toP2) {
     SoundService.instance.whir();
-    setState(() => _p2Active = !_p2Active);
-    // Flash the cannon that is now at the bottom (the new active player).
+    setState(() => _p2Active = toP2);
+    // Animate the slide: value 1 = P1 out (P2 home), 0 = P2 out (P1 home).
+    if (toP2) {
+      _slideCtrl.reverse();
+    } else {
+      _slideCtrl.forward();
+    }
+    // Flash the newly-active cannon once the slide has begun.
     Future.delayed(const Duration(milliseconds: 120), () {
       if (!mounted) return;
       (_p2Active ? _cannon2Ready : _cannon1Ready).add(null);
@@ -254,17 +292,50 @@ class _BattleScreenState extends State<BattleScreen>
     final top = _geom[true];
     final bottom = _geom[false];
     if (top == null || bottom == null) return;
+    // The shooter fires from wherever its cannon currently sits (slid out
+    // to its grid center during its turn, or parked at home). The ball
+    // arcs toward the tapped cell on the OPPONENT's grid.
+    final shooterGeom = byP1 ? bottom : top;
+    final targetGeom = byP1 ? top : bottom;
+    final from = _cannonMouth(shooterGeom, byP1 ? _slideCtrl.value : 1 - _slideCtrl.value);
+    final to = targetGeom.cellCenterScreen(r, c) +
+        _mouthDir(targetGeom) * (targetGeom.cannonSize * 0.25);
     setState(() {
       _pendingByP1 = byP1;
       _pendingImpact = [r, c];
       _pendingResult = res;
-      _projFrom = bottom.cannonMouthScreen;
-      _projTo = top.cellCenterScreen(r, c);
-      _projCell = top.cell;
+      _projFrom = from;
+      _projTo = to;
+      _projCell = targetGeom.cell;
       _showProjectile = true;
     });
     (byP1 ? _cannon1Fire : _cannon2Fire).add(null);
     _projCtrl.forward(from: 0);
+  }
+
+  // ----------------------------------------------------- CANNON SLIDE ---
+
+  /// Unit direction from a half's cannon toward its grid mouth, in SCREEN
+  /// space (+y = down the screen). For the upright bottom half the mouth
+  /// faces up (−y); for the 180°-rotated top half it faces down (+y).
+  Offset _mouthDir(_HalfGeom g) => Offset(0, g.rotated ? 1.0 : -1.0);
+
+  /// A half's cannon CENTER (in that half's local, unrotated space),
+  /// interpolated between its home position near the middle band (t=0)
+  /// and the middle of its own grid (t=1, its firing position).
+  Offset _cannonCenterLocal(_HalfGeom g, double t) =>
+      Offset.lerp(g.cannonCenter, g.gridCenterLocal, t)!;
+
+  /// Absolute screen position of a half's cannon MOUTH, accounting for the
+  /// 180° rotation of the top half, given the cannon's slide amount [t].
+  Offset _cannonMouth(_HalfGeom g, double t) {
+    final c = _cannonCenterLocal(g, t);
+    final lx = c.dx;
+    final ly = c.dy - g.cannonSize * 0.25;
+    if (g.rotated) {
+      return Offset(g.halfW - lx, g.halfTopY + (g.halfH - ly));
+    }
+    return Offset(lx, g.halfTopY + ly);
   }
 
   void _toast(String msg) {
@@ -290,6 +361,7 @@ class _BattleScreenState extends State<BattleScreen>
     _cannon2Ready.close();
     _badgeCtrl.dispose();
     _projCtrl.dispose();
+    _slideCtrl.dispose();
     super.dispose();
   }
 
@@ -299,8 +371,12 @@ class _BattleScreenState extends State<BattleScreen>
   Widget build(BuildContext context) {
     final controller = context.watch<GameController>();
     final profile = context.watch<ProfileStore>();
+    // ignore: unused_local_variable
     final isLocal = controller.mode == GameMode.local;
-    final bottomIsP1 = !isLocal || !_p2Active;
+    // LOCAL FIX: the halves NEVER swap sides — P1 is always on the bottom
+    // (upright) and P2 always on top (rotated 180°), because the players
+    // sit across from each other. Only the "whose turn" flag changes.
+    const bottomIsP1 = true;
 
     return Scaffold(
       body: Container(
@@ -314,7 +390,7 @@ class _BattleScreenState extends State<BattleScreen>
                 children: [
                   Column(
                     children: [
-                      // ===== TOP HALF — opponent, rotated 180° =====
+                      // ===== TOP HALF — P2, rotated 180° (fixed side) =====
                       SizedBox(
                         height: halfH,
                         child: RotatedBox(
@@ -334,7 +410,7 @@ class _BattleScreenState extends State<BattleScreen>
                       // ===== MIDDLE BAND =====
                       _buildMiddleBand(controller, bottomIsP1, bandH),
 
-                      // ===== BOTTOM HALF — active player, upright =====
+                      // ===== BOTTOM HALF — P1, upright (fixed side) =====
                       SizedBox(
                         height: halfH,
                         child: _buildHalf(
@@ -380,7 +456,7 @@ class _BattleScreenState extends State<BattleScreen>
                   // ===== Countdown overlay (mirrored) =====
                   if (_countingDown) _countdownOverlay(bandH),
 
-                  // ===== "Your turn" badge (mirrored) =====
+                  // ===== "Your turn" badge (single-sided, active player) =====
                   if (_showTurnBadge) _turnBadgeOverlay(bottomIsP1, bandH),
                 ],
               );
@@ -411,8 +487,13 @@ class _BattleScreenState extends State<BattleScreen>
     final readyStream = halfIsP1 ? _cannon1Ready : _cannon2Ready;
     final accent = halfIsP1 ? AppColors.hit : AppColors.blue;
 
-    // The ACTIVE player (bottom) fires at the top half's grid.
-    final tappable = isTopHalf &&
+    // A grid is TAPPABLE only by the player who does NOT own it (you fire
+    // at the enemy's grid) and only while it's that player's turn:
+    //   • vs AI / online  → the human (P1) always taps the TOP (P2) grid.
+    //   • local pass-play → P1's turn: P1 taps the TOP grid.
+    //                       P2's turn: P2 taps the BOTTOM grid.
+    final isLocalMode = controller.mode == GameMode.local;
+    final tappable = (isLocalMode ? (halfIsP1 != _p2Active) : isTopHalf) &&
         !_countingDown &&
         controller.battling &&
         !_showProjectile;
@@ -442,6 +523,8 @@ class _BattleScreenState extends State<BattleScreen>
         final cannonSize = gridSide * 0.42;
         final cannonCenter =
             Offset(w / 2, gridTop + gridSide + (halfH - gridSide) * 0.52);
+        final gridCenterLocal =
+            Offset(gridLeft + gridSide / 2, gridTop + gridSide / 2);
 
         // Record screen-space geometry (accounting for the 180° rotation
         // of the top half) so the cannonball can fly between halves.
@@ -453,6 +536,7 @@ class _BattleScreenState extends State<BattleScreen>
           halfH: halfH,
           halfW: w,
           cannonCenter: cannonCenter,
+          gridCenterLocal: gridCenterLocal,
           cannonSize: cannonSize,
           rotated: isTopHalf,
         );
@@ -472,7 +556,7 @@ class _BattleScreenState extends State<BattleScreen>
                   width: gridSide,
                   height: gridSide,
                   child: BattleGrid(
-                    key: ValueKey('grid-$halfIsP1-$bottomIsP1'),
+                    key: ValueKey('grid-$halfIsP1'),
                     shots: shownShots,
                     // 1:1 video: battle grids are EMPTY — you never see
                     // either player's ships, only your hit/miss markers.
@@ -491,21 +575,32 @@ class _BattleScreenState extends State<BattleScreen>
                 ),
               ),
 
-              // Own cannon below the grid (toward the middle band).
-              Positioned(
-                left: cannonCenter.dx - cannonSize / 2,
-                top: cannonCenter.dy - cannonSize / 2,
-                child: IgnorePointer(
-                  child: CannonWidget(
-                    skin: profile.cannonSkin,
-                    cooldownFraction: cooldown,
-                    enabled: controller.battling && !_countingDown,
-                    size: cannonSize,
-                    fireTrigger: cannonStream.stream,
-                    readyTrigger: readyStream.stream,
-                    accentOverride: accent,
-                  ),
-                ),
+              // Own cannon. During its owner's turn it slides to the middle
+              // of its own grid (its firing position); otherwise it sits at
+              // home near the middle band. P1 = _slideCtrl.value, P2 = 1-value.
+              AnimatedBuilder(
+                animation: _slideCtrl,
+                builder: (context, _) {
+                  final slide =
+                      halfIsP1 ? _slideCtrl.value : 1 - _slideCtrl.value;
+                  final pos =
+                      Offset.lerp(cannonCenter, gridCenterLocal, slide)!;
+                  return Positioned(
+                    left: pos.dx - cannonSize / 2,
+                    top: pos.dy - cannonSize / 2,
+                    child: IgnorePointer(
+                      child: CannonWidget(
+                        skin: profile.cannonSkin,
+                        cooldownFraction: cooldown,
+                        enabled: controller.battling && !_countingDown,
+                        size: cannonSize,
+                        fireTrigger: cannonStream.stream,
+                        readyTrigger: readyStream.stream,
+                        accentOverride: accent,
+                      ),
+                    ),
+                  );
+                },
               ),
             ],
           ),
@@ -639,60 +734,80 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
-  /// Big circular white-outline "Your turn" badge, mirrored so both
-  /// players can read it (video style).
+  /// Big circular white-outline "Your turn" badge. SINGLE-SIDED: it shows
+  /// only on the ACTIVE player's half (bottom/upright for P1, top/rotated
+  /// for P2) so both players can tell whose turn it is — never mirrored
+  /// to both halves at once.
   Widget _turnBadgeOverlay(bool bottomIsP1, double bandH) {
-    final color = bottomIsP1 ? AppColors.hit : AppColors.blue;
+    final activeIsP1 =
+        bottomIsP1; // bottom half is always P1; P2 active ⇒ badge on top
+    final color = activeIsP1 ? AppColors.hit : AppColors.blue;
+    final controller = context.read<GameController>();
+    final isLocal = controller.mode == GameMode.local;
     return Positioned.fill(
       child: IgnorePointer(
         child: AnimatedBuilder(
           animation: _badgeCtrl,
           builder: (context, _) {
             final scale = _badgeScale.value;
-            Widget badge({required bool mirrored}) => Center(
-                  child: RotatedBox(
-                    quarterTurns: mirrored ? 2 : 0,
-                    child: Transform.scale(
-                      scale: scale,
-                      child: Container(
-                        width: 180,
-                        height: 180,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: color,
-                          border: Border.all(color: Colors.white, width: 7),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Color(0x55000000),
-                              blurRadius: 12,
-                              offset: Offset(0, 5),
-                            ),
-                          ],
+            final badge = Center(
+              child: RotatedBox(
+                // Rotate for the top (P2) half so P2 reads it upright.
+                quarterTurns: activeIsP1 ? 0 : 2,
+                child: Transform.scale(
+                  scale: scale,
+                  child: Container(
+                    width: 180,
+                    height: 180,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: color,
+                      border: Border.all(color: Colors.white, width: 7),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x55000000),
+                          blurRadius: 12,
+                          offset: Offset(0, 5),
                         ),
-                        child: const Center(
-                          child: Text(
-                            'Your\nturn',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w900,
-                              fontSize: 32,
-                              height: 1.05,
-                              shadows: [
-                                Shadow(color: Color(0x66000000), blurRadius: 4)
-                              ],
-                            ),
-                          ),
+                      ],
+                    ),
+                    child: const Center(
+                      child: Text(
+                        'Your\nturn',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 32,
+                          height: 1.05,
+                          shadows: [
+                            Shadow(color: Color(0x66000000), blurRadius: 4)
+                          ],
                         ),
                       ),
                     ),
                   ),
-                );
+                ),
+              ),
+            );
+            if (!isLocal) {
+              // vs AI / online: the human is always the bottom player.
+              return Column(
+                children: [
+                  const Expanded(child: SizedBox.shrink()),
+                  SizedBox(height: bandH),
+                  Expanded(child: badge),
+                ],
+              );
+            }
+            // Local pass-and-play: show on the ACTIVE player's half only.
             return Column(
               children: [
-                Expanded(child: badge(mirrored: true)),
+                Expanded(
+                    child: activeIsP1 ? const SizedBox.shrink() : badge),
                 SizedBox(height: bandH),
-                Expanded(child: badge(mirrored: false)),
+                Expanded(
+                    child: activeIsP1 ? badge : const SizedBox.shrink()),
               ],
             );
           },
@@ -757,7 +872,8 @@ class _HalfGeom {
   final double halfTopY;
   final double halfH;
   final double halfW;
-  final Offset cannonCenter; // within the half (unrotated space)
+  final Offset cannonCenter; // home pos within the half (unrotated space)
+  final Offset gridCenterLocal; // grid center within the half (unrotated)
   final double cannonSize;
   final bool rotated; // top half is drawn rotated 180°
 
@@ -769,6 +885,7 @@ class _HalfGeom {
     required this.halfH,
     required this.halfW,
     required this.cannonCenter,
+    required this.gridCenterLocal,
     required this.cannonSize,
     required this.rotated,
   });
@@ -778,16 +895,6 @@ class _HalfGeom {
   Offset cellCenterScreen(int r, int c) {
     final lx = gridLeft + c * cell + cell / 2;
     final ly = gridTop + r * cell + cell / 2;
-    if (rotated) {
-      return Offset(halfW - lx, halfTopY + (halfH - ly));
-    }
-    return Offset(lx, halfTopY + ly);
-  }
-
-  /// Absolute screen position of the cannon mouth.
-  Offset get cannonMouthScreen {
-    final lx = cannonCenter.dx;
-    final ly = cannonCenter.dy - cannonSize * 0.25;
     if (rotated) {
       return Offset(halfW - lx, halfTopY + (halfH - ly));
     }
