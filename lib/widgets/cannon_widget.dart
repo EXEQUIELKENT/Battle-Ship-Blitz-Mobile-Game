@@ -21,6 +21,9 @@ class CannonWidget extends StatefulWidget {
   /// Overrides the ready-state accent color (e.g. per-player red/blue rings).
   final Color? accentOverride;
 
+  /// Emits when this cannon should flash "ready" (turn handoff cue).
+  final Stream<void>? readyTrigger;
+
   const CannonWidget({
     super.key,
     required this.skin,
@@ -31,6 +34,7 @@ class CannonWidget extends StatefulWidget {
     this.size = 92,
     this.fireTrigger,
     this.accentOverride,
+    this.readyTrigger,
   });
 
   @override
@@ -54,6 +58,7 @@ class _CannonWidgetState extends State<CannonWidget>
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
     widget.fireTrigger?.listen((_) => fire());
+    widget.readyTrigger?.listen((_) => readyFlash());
   }
 
   @override
@@ -65,6 +70,16 @@ class _CannonWidgetState extends State<CannonWidget>
 
   void fire() {
     _recoil.forward(from: 0).then((_) => _recoil.reverse());
+  }
+
+  /// Pronounced ready-flash: a quick double-pulse to signal "your cannon
+  /// is loaded — fire!" without interrupting the flow with a popup.
+  void readyFlash() {
+    _recoil.forward(from: 0).then((_) => _recoil.reverse()).then((_) {
+      if (mounted) {
+        _recoil.forward(from: 0).then((_) => _recoil.reverse());
+      }
+    });
   }
 
   @override

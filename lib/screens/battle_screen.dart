@@ -12,7 +12,6 @@ import '../services/storage_service.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/ship_painter.dart';
-import 'placement_screen.dart';
 import 'result_screen.dart';
 
 /// Battle arena — 1:1 copy of the reference gameplay video:
@@ -27,7 +26,9 @@ import 'result_screen.dart';
 ///  • Battle starts with a giant translucent 3-2-1 countdown mirrored on
 ///    both halves, then a one-time "Your turn" badge after GO.
 ///  • Battle grids are EMPTY (ships hidden) — you guess where the enemy
-///    fleet is. A HIT lets you fire again; only a MISS passes the turn.
+///    fleet is. A HIT lets you fire again; only a MISS passes the turn,
+///    and the handoff is seamless: the halves swap and the newly-active
+///    player's cannon flashes "ready" (no blocking popup).
 class BattleScreen extends StatefulWidget {
   const BattleScreen({super.key});
 
@@ -39,12 +40,13 @@ class _BattleScreenState extends State<BattleScreen>
     with TickerProviderStateMixin {
   final _cannon1Fire = StreamController<void>.broadcast();
   final _cannon2Fire = StreamController<void>.broadcast();
+  final _cannon1Ready = StreamController<void>.broadcast();
+  final _cannon2Ready = StreamController<void>.broadcast();
 
   /// Local pass-and-play: which player's half is currently at the bottom.
   bool _p2Active = false;
 
   bool _navigatedToResult = false;
-  bool _handoffPending = false;
 
   // ----- Countdown -----
   bool _countingDown = false;
@@ -198,21 +200,28 @@ class _BattleScreenState extends State<BattleScreen>
     }
     controller.touch();
     // 1:1 video rule: a HIT lets the same player keep firing; only a MISS
-    // passes the turn (and the device) to the other player.
+    // passes the turn to the other player. The swap is seamless (no popup)
+    // and the new active player's cannon flashes "ready".
     if (controller.mode == GameMode.local &&
         controller.phase == BattlePhase.battling &&
-        result == ShotResult.miss &&
-        !_handoffPending) {
-      _handoffPending = true;
-      Future.delayed(const Duration(milliseconds: 800), () {
-        if (!mounted || controller.phase != BattlePhase.battling) {
-          _handoffPending = false;
-          return;
-        }
-        _handoffPending = false;
-        _showHandoff();
+        result == ShotResult.miss) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (!mounted || controller.phase != BattlePhase.battling) return;
+        _swapActivePlayer();
       });
     }
+  }
+
+  /// Seamlessly flip which player's half is at the bottom and flash the
+  /// newly-active cannon to signal it's their turn — no blocking popup.
+  void _swapActivePlayer() {
+    SoundService.instance.whir();
+    setState(() => _p2Active = !_p2Active);
+    // Flash the cannon that is now at the bottom (the new active player).
+    Future.delayed(const Duration(milliseconds: 120), () {
+      if (!mounted) return;
+      (_p2Active ? _cannon2Ready : _cannon1Ready).add(null);
+    });
   }
 
   // ------------------------------------------------------------- FIRING
@@ -273,30 +282,12 @@ class _BattleScreenState extends State<BattleScreen>
       ));
   }
 
-  // ------------------------------------------------------------- HANDOFF
-
-  Future<void> _showHandoff() async {
-    final nextIsP2 = !_p2Active;
-    SoundService.instance.whir();
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (ctx) => HandoffScreen(
-        title: 'Pass the screen\nto your friend\nand don\'t look :-)',
-        subtitle: nextIsP2 ? 'Player 2 — your turn!' : 'Player 1 — your turn!',
-        buttonLabel: 'OK',
-        onReady: () => Navigator.of(ctx).pop(),
-      ),
-    ));
-    if (!mounted) return;
-    // Swap which player is at the bottom. NO "Your turn" badge here —
-    // the video only shows that badge once, right after the opening GO.
-    setState(() => _p2Active = nextIsP2);
-    SoundService.instance.whir();
-  }
-
   @override
   void dispose() {
     _cannon1Fire.close();
     _cannon2Fire.close();
+    _cannon1Ready.close();
+    _cannon2Ready.close();
     _badgeCtrl.dispose();
     _projCtrl.dispose();
     super.dispose();
@@ -417,6 +408,7 @@ class _BattleScreenState extends State<BattleScreen>
     final cooldown =
         halfIsP1 ? controller.cooldownFraction1 : controller.cooldownFraction2;
     final cannonStream = halfIsP1 ? _cannon1Fire : _cannon2Fire;
+    final readyStream = halfIsP1 ? _cannon1Ready : _cannon2Ready;
     final accent = halfIsP1 ? AppColors.hit : AppColors.blue;
 
     // The ACTIVE player (bottom) fires at the top half's grid.
@@ -510,6 +502,7 @@ class _BattleScreenState extends State<BattleScreen>
                     enabled: controller.battling && !_countingDown,
                     size: cannonSize,
                     fireTrigger: cannonStream.stream,
+                    readyTrigger: readyStream.stream,
                     accentOverride: accent,
                   ),
                 ),
