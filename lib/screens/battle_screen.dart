@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -13,18 +12,21 @@ import '../services/storage_service.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/ship_painter.dart';
+import 'placement_screen.dart';
 import 'result_screen.dart';
 
-/// Battle arena — 1:1 reference layout:
-///  • Top half  : blue targeting grid with the player's BIG cannon and
-///    translucent ghost circles overlapping it. TAP A CELL TO FIRE.
-///  • Middle band: two rows of ship status icons (enemy = solid top row,
-///    own fleet = faded bottom row), a white pill badge with blue/red
-///    status dots on the left edge and the vertical EXIT pill on the right.
-///  • Bottom half: coral field with your own grid (same size, no ships
-///    drawn while hidden) and the small black peg.
-/// The screen never flips — it stays still and simply swaps which player's
-/// data is shown, with a blurred cannon popup on every turn change.
+/// Battle arena — 1:1 copy of the reference gameplay video:
+///  • BOTH player halves are on screen at once. The opponent's half sits on
+///    top rotated 180° (so it faces them across the table); the active
+///    player's half is at the bottom, upright.
+///  • Each half shows that player's OWN grid + their OWN cannon
+///    (red ring = P1, blue ring = P2). You tap the OTHER player's grid to
+///    fire at it (it lives on the opposite half).
+///  • Middle band: two ship-status rows (top solid / bottom faded),
+///    EXIT pill on the edge and the white dots badge.
+///  • Battle starts with a giant translucent 3-2-1 countdown mirrored on
+///    both halves; every turn change pops a big circular "Your turn" badge
+///    (mirrored so both players can read it).
 class BattleScreen extends StatefulWidget {
   const BattleScreen({super.key});
 
@@ -37,93 +39,107 @@ class _BattleScreenState extends State<BattleScreen>
   final _cannon1Fire = StreamController<void>.broadcast();
   final _cannon2Fire = StreamController<void>.broadcast();
 
-  bool _p2View = false; // local mode perspective
+  /// Local pass-and-play: which player's half is currently at the bottom.
+  bool _p2Active = false;
+
   bool _navigatedToResult = false;
+  bool _handoffPending = false;
 
-  /// Local mode: whether the viewing player has revealed their fleet
-  /// (their grid stays hidden until they fire at least once).
-  bool _p1Revealed = false;
-  bool _p2Revealed = false;
+  // ----- Countdown -----
+  bool _countingDown = false;
+  int _countdownValue = 3;
+  bool _countdownGo = false;
 
-  /// Turn-change popup ("…when the other one turns, pop up their cannon").
-  bool _showTurnPopup = false;
-  bool _turnPopupForP1 = true;
+  // ----- "Your turn" badge -----
+  bool _showTurnBadge = false;
+  late final AnimationController _badgeCtrl;
+  late final Animation<double> _badgeScale;
 
-  /// White crosshair briefly shown on the cell you fired at.
-  List<int>? _lastTarget;
-  Timer? _targetTimer;
-
-  /// Projectile flight animation (cannon → tapped cell).
+  // ----- Cannonball flight + impact -----
   late final AnimationController _projCtrl;
-  late final Animation<Offset> _projPos;
   Offset _projFrom = Offset.zero;
   Offset _projTo = Offset.zero;
+  double _projCell = 32;
   bool _showProjectile = false;
+  List<int>? _pendingImpact; // cell waiting for the ball to land
+  bool _pendingByP1 = true; // who fired the ball in flight
 
-  /// Turn popup animation.
-  late final AnimationController _turnCtrl;
-  late final Animation<double> _turnScale;
-  late final Animation<double> _turnFade;
+  /// Screen-space geometry of each half, refreshed every layout pass.
+  final Map<bool, _HalfGeom> _geom = {}; // key: isTopHalf
 
   @override
   void initState() {
     super.initState();
-    context.read<GameController>().addListener(_onUpdate);
+    final controller = context.read<GameController>();
+    controller.addListener(_onUpdate);
+
+    _badgeCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..addStatusListener((s) {
+        if (s == AnimationStatus.completed && mounted) {
+          setState(() => _showTurnBadge = false);
+        }
+      });
+    _badgeScale = TweenSequence<double>([
+      TweenSequenceItem(
+          tween: Tween(begin: 0.0, end: 1.1)
+              .chain(CurveTween(curve: Curves.easeOutBack)),
+          weight: 30),
+      TweenSequenceItem(tween: ConstantTween(1.0), weight: 45),
+      TweenSequenceItem(
+          tween: Tween(begin: 1.1, end: 0.0)
+              .chain(CurveTween(curve: Curves.easeIn)),
+          weight: 25),
+    ]).animate(_badgeCtrl);
 
     _projCtrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 420),
+      duration: const Duration(milliseconds: 430),
     )..addStatusListener((s) {
         if (s == AnimationStatus.completed && mounted) {
           setState(() => _showProjectile = false);
+          _resolveImpact();
         }
       });
-    _projPos = Tween<Offset>(begin: Offset.zero, end: Offset.zero).animate(
-      CurvedAnimation(parent: _projCtrl, curve: Curves.easeInQuad),
-    );
 
-    _turnCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 950),
-    )..addStatusListener((s) {
-        if (s == AnimationStatus.completed && mounted) {
-          setState(() => _showTurnPopup = false);
-        }
-      });
-    _turnScale = TweenSequence<double>([
-      TweenSequenceItem(
-          tween: Tween(begin: 0.0, end: 1.12)
-              .chain(CurveTween(curve: Curves.easeOutBack)),
-          weight: 32),
-      TweenSequenceItem(
-          tween: Tween(begin: 1.12, end: 1.0)
-              .chain(CurveTween(curve: Curves.easeOut)),
-          weight: 14),
-      TweenSequenceItem(tween: ConstantTween(1.0), weight: 34),
-      TweenSequenceItem(
-          tween: Tween(begin: 1.0, end: 0.0)
-              .chain(CurveTween(curve: Curves.easeIn)),
-          weight: 20),
-    ]).animate(_turnCtrl);
-    _turnFade = TweenSequence<double>([
-      TweenSequenceItem(
-          tween: Tween(begin: 0.0, end: 1.0)
-              .chain(CurveTween(curve: Curves.easeOut)),
-          weight: 20),
-      TweenSequenceItem(tween: ConstantTween(1.0), weight: 60),
-      TweenSequenceItem(
-          tween: Tween(begin: 1.0, end: 0.0)
-              .chain(CurveTween(curve: Curves.easeIn)),
-          weight: 20),
-    ]).animate(_turnCtrl);
+    // Start-of-battle countdown (video: big 3-2-1 over both halves).
+    if (controller.battling) {
+      _countingDown = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _runCountdown());
+    }
+  }
+
+  Future<void> _runCountdown() async {
+    final sfx = SoundService.instance;
+    for (var n = 3; n >= 1; n--) {
+      if (!mounted) return;
+      setState(() => _countdownValue = n);
+      sfx.countBeep();
+      await Future.delayed(const Duration(milliseconds: 640));
+    }
+    if (!mounted) return;
+    setState(() => _countdownGo = true);
+    sfx.countGo();
+    await Future.delayed(const Duration(milliseconds: 520));
+    if (!mounted) return;
+    setState(() {
+      _countingDown = false;
+      _countdownGo = false;
+      _showTurnBadge = true; // "Your turn" right after GO
+    });
+    _badgeCtrl.forward(from: 0);
   }
 
   void _onUpdate() {
     final controller = context.read<GameController>();
     if (controller.events.isNotEmpty) {
       final e = controller.events.last;
-      if (DateTime.now().difference(e.time).inMilliseconds < 150) {
-        (e.byPlayer ? _cannon1Fire : _cannon2Fire).add(null);
+      final age = DateTime.now().difference(e.time).inMilliseconds;
+      // Opponent (AI / remote) shots animate from their cannon here; the
+      // local player's own ball is launched at tap time.
+      if (!e.byPlayer && age < 200 && mounted) {
+        _launchOpponentBall(e);
       }
     }
     if (controller.phase == BattlePhase.finished && !_navigatedToResult) {
@@ -137,20 +153,101 @@ class _BattleScreenState extends State<BattleScreen>
     }
   }
 
-  @override
-  void dispose() {
-    _cannon1Fire.close();
-    _cannon2Fire.close();
-    _projCtrl.dispose();
-    _turnCtrl.dispose();
-    _targetTimer?.cancel();
-    super.dispose();
+  /// AI / remote opponent fired at the BOTTOM player's grid.
+  void _launchOpponentBall(CombatEvent e) {
+    final top = _geom[true];
+    final bottom = _geom[false];
+    if (top == null || bottom == null || _projCtrl.isAnimating) {
+      // No geometry yet (or ball already flying) — mark impact immediately.
+      e.impactAt ??= DateTime.now();
+      return;
+    }
+    final from = top.cannonMouthScreen;
+    final to = bottom.cellCenterScreen(e.row, e.col);
+    setState(() {
+      _pendingByP1 = false;
+      _pendingImpact = [e.row, e.col];
+      _projFrom = from;
+      _projTo = to;
+      _projCell = bottom.cell;
+      _showProjectile = true;
+    });
+    _cannon2Fire.add(null);
+    _projCtrl.forward(from: 0);
   }
 
-  List<CombatEventLike> _eventsFor(GameController c, bool p1) => c.events
-      .where((e) => e.byPlayer == p1)
-      .map((e) => CombatEventLike(e.row, e.col, e.result))
-      .toList();
+  void _resolveImpact() {
+    final cell = _pendingImpact;
+    final byP1 = _pendingByP1;
+    _pendingImpact = null;
+    if (cell == null) return;
+    final controller = context.read<GameController>();
+    for (final e in controller.events.reversed) {
+      if (e.row == cell[0] &&
+          e.col == cell[1] &&
+          e.byPlayer == byP1 &&
+          e.impactAt == null) {
+        e.impactAt = DateTime.now();
+        break;
+      }
+    }
+    controller.touch();
+    if (controller.mode == GameMode.local &&
+        controller.phase == BattlePhase.battling &&
+        !_handoffPending) {
+      _handoffPending = true;
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (!mounted || controller.phase != BattlePhase.battling) {
+          _handoffPending = false;
+          return;
+        }
+        _handoffPending = false;
+        _showHandoff();
+      });
+    }
+  }
+
+  // ------------------------------------------------------------- FIRING
+
+  /// The active player tapped a cell on the opponent's grid (top half).
+  void _fireFromTap(
+    GameController controller, {
+    required bool byP1,
+    required int r,
+    required int c,
+  }) {
+    if (_countingDown || _showProjectile) return;
+    final tracking = byP1 ? controller.myShots : controller.p2Shots;
+    if (tracking[r][c] != 0) {
+      _toast('Already fired there!');
+      SoundService.instance.denied();
+      return;
+    }
+    final res = byP1 ? controller.fireAt(r, c) : controller.p2FireAt(r, c);
+    if (res == ShotResult.cooldown) {
+      _toast('Cannon reloading…');
+      SoundService.instance.denied();
+      return;
+    }
+    if (res == ShotResult.duplicate || res == ShotResult.invalid) {
+      _toast('Already fired there!');
+      SoundService.instance.denied();
+      return;
+    }
+    final top = _geom[true];
+    final bottom = _geom[false];
+    if (top == null || bottom == null) return;
+    setState(() {
+      _pendingByP1 = byP1;
+      _pendingImpact = [r, c];
+      _projFrom = bottom.cannonMouthScreen;
+      _projTo = top.cellCenterScreen(r, c);
+      _projCell = top.cell;
+      _showProjectile = true;
+    });
+    (byP1 ? _cannon1Fire : _cannon2Fire).add(null);
+    _projCtrl.forward(from: 0);
+  }
 
   void _toast(String msg) {
     ScaffoldMessenger.of(context)
@@ -167,427 +264,333 @@ class _BattleScreenState extends State<BattleScreen>
       ));
   }
 
-  /// Tap-to-fire: tapping a cell on the enemy grid fires immediately,
-  /// then the projectile flies from the big cannon to the tapped cell.
-  void _fireAtCell(GameController controller, bool showingP1, int r, int c) {
-    final trackingGrid = showingP1 ? controller.myShots : controller.p2Shots;
-    if (trackingGrid[r][c] != 0) {
-      _toast('Already fired there!');
-      SoundService.instance.denied();
-      return;
-    }
-    final res =
-        showingP1 ? controller.fireAt(r, c) : controller.p2FireAt(r, c);
-    if (res == ShotResult.cooldown) {
-      _toast('Cannon reloading…');
-      return;
-    }
-    if (res == ShotResult.duplicate) {
-      _toast('Already fired there!');
-      return;
-    }
+  // ------------------------------------------------------------- HANDOFF
 
-    // Crosshair + projectile are launched from build() using the grid's
-    // layout rect — here we only remember which cell was targeted.
+  Future<void> _showHandoff() async {
+    final nextIsP2 = !_p2Active;
+    SoundService.instance.whir();
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (ctx) => HandoffScreen(
+        title: 'Pass the screen\nto your friend\nand don\'t look :-)',
+        subtitle: nextIsP2 ? 'Player 2 — your turn!' : 'Player 1 — your turn!',
+        buttonLabel: 'OK',
+        onReady: () => Navigator.of(ctx).pop(),
+      ),
+    ));
+    if (!mounted) return;
     setState(() {
-      _lastTarget = [r, c];
-      if (showingP1) {
-        _p1Revealed = true;
-      } else {
-        _p2Revealed = true;
-      }
+      _p2Active = nextIsP2;
+      _showTurnBadge = true;
     });
-    _targetTimer?.cancel();
-    _targetTimer = Timer(const Duration(milliseconds: 950), () {
-      if (mounted) setState(() => _lastTarget = null);
-    });
-
-    // Local pass-and-play: reveal this player's fleet, then hand the
-    // device over after a beat so the result of the shot is visible.
-    if (controller.mode == GameMode.local) {
-      // Fleet stays hidden — just hand the device over after a beat.
-      Future.delayed(const Duration(milliseconds: 750), () {
-        if (!mounted || controller.phase != BattlePhase.battling) return;
-        _switchTurn(!_p2View);
-      });
-    }
+    _badgeCtrl.forward(from: 0);
+    SoundService.instance.whir();
   }
 
-  /// Switch which player is shown. The screen itself never rotates — we
-  /// just swap the data and pop the blurred cannon overlay.
-  void _switchTurn(bool toP2) {
-    setState(() {
-      _p2View = toP2;
-      _lastTarget = null;
-      _showTurnPopup = true;
-      _turnPopupForP1 = !toP2;
-    });
-    _turnCtrl.forward(from: 0);
-    SoundService.instance.click();
+  @override
+  void dispose() {
+    _cannon1Fire.close();
+    _cannon2Fire.close();
+    _badgeCtrl.dispose();
+    _projCtrl.dispose();
+    super.dispose();
   }
 
-  // ------------------------------------------------------------------ BUILD
+  // ---------------------------------------------------------------- BUILD
 
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<GameController>();
     final profile = context.watch<ProfileStore>();
     final isLocal = controller.mode == GameMode.local;
-    final showingP1 = !isLocal || !_p2View;
-
-    // In non-local modes the opponent takes their shot after a short beat —
-    // pop the blurred "their turn" cannon while they aim (reference style).
-    if (!isLocal && controller.battling && controller.events.isNotEmpty) {
-      final e = controller.events.last;
-      final age = DateTime.now().difference(e.time).inMilliseconds;
-      if (e.byPlayer && age < 200 && !_showTurnPopup) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || _showTurnPopup) return;
-          setState(() {
-            _showTurnPopup = true;
-            _turnPopupForP1 = false; // opponent's turn next
-          });
-          _turnCtrl.forward(from: 0);
-        });
-      }
-    }
-
-    final trackingGrid = showingP1 ? controller.myShots : controller.p2Shots;
-    final ownBoard = showingP1 ? controller.boards[0] : controller.boards[1];
-    final enemyTracking = showingP1 ? controller.p2Shots : controller.myShots;
-    final cooldown =
-        showingP1 ? controller.cooldownFraction1 : controller.cooldownFraction2;
-    final cannonStream = showingP1 ? _cannon1Fire : _cannon2Fire;
-    final enemyBoardForStatus =
-        showingP1 ? controller.boards[1] : controller.boards[0];
-    final ownBoardForStatus =
-        showingP1 ? controller.boards[0] : controller.boards[1];
-
-    // No ships are visible on the grids when the game starts. In local
-    // pass-and-play the fleet ALWAYS stays hidden (the other player must
-    // not see it during the hand-off). In solo/online modes your fleet is
-    // revealed only after you fire your first shot.
-    final ownRevealed =
-        !isLocal && (showingP1 ? _p1Revealed : _p2Revealed);
+    final bottomIsP1 = !isLocal || !_p2Active;
 
     return Scaffold(
       body: Container(
-        color: AppColors.coral,
+        color: AppColors.coralVideo,
         child: SafeArea(
-          child: Stack(
-            children: [
-              Column(
+          child: LayoutBuilder(
+            builder: (context, full) {
+              const bandH = 58.0;
+              final halfH = (full.maxHeight - bandH) / 2;
+              return Stack(
                 children: [
-                  // ================= TOP HALF — BLUE WATERS =================
-                  Expanded(
-                    child: Container(
-                      width: double.infinity,
-                      color: AppColors.water,
-                      child: LayoutBuilder(
-                        builder: (context, box) {
-                          final gridSide =
-                              math.min(box.maxWidth, box.maxHeight);
-                          final cannonSize = gridSide * 0.46;
-                          final cannonCenter = Offset(
-                            box.maxWidth / 2,
-                            gridSide * 0.34,
-                          );
-                          return Stack(
-                            clipBehavior: Clip.none,
-                            children: [
-                              // Targeting grid (tap to fire)
-                              Center(
-                                child: SizedBox(
-                                  width: gridSide,
-                                  height: gridSide,
-                                  child: BattleGrid(
-                                    key: ValueKey('enemy-$showingP1'),
-                                    shots: trackingGrid,
-                                    glowColor: AppColors.water,
-                                    recentEvents:
-                                        _eventsFor(controller, showingP1),
-                                    enabled: controller.battling,
-                                    crosshair: _lastTarget,
-                                    onTapCell: (r, c) {
-                                      final validTarget = trackingGrid[r][c] == 0;
-                                      if (validTarget) {
-                                        // Launch the projectile from the
-                                        // cannon mouth toward this cell.
-                                        final cell = gridSide / kBoardSize;
-                                        final gridLeft =
-                                            (box.maxWidth - gridSide) / 2;
-                                        final gridTop =
-                                            (box.maxHeight - gridSide) / 2;
-                                        _projFrom = cannonCenter +
-                                            Offset(0, -cannonSize * 0.22);
-                                        _projTo = Offset(
-                                          gridLeft + c * cell + cell / 2,
-                                          gridTop + r * cell + cell / 2,
-                                        );
-                                        _projPos = Tween<Offset>(
-                                          begin: _projFrom,
-                                          end: _projTo,
-                                        ).animate(CurvedAnimation(
-                                          parent: _projCtrl,
-                                          curve: Curves.easeInQuad,
-                                        ));
-                                        setState(() => _showProjectile = true);
-                                        _projCtrl.forward(from: 0);
-                                      }
-                                      _fireAtCell(controller, showingP1, r, c);
-                                    },
-                                  ),
-                                ),
-                              ),
-
-                              // Translucent ghost circles (reference blur
-                              // spots) behind the cannon.
-                              Positioned(
-                                left: cannonCenter.dx - gridSide * 0.42,
-                                top: cannonCenter.dy + gridSide * 0.08,
-                                child: _ghostCircle(gridSide * 0.30),
-                              ),
-                              Positioned(
-                                left: cannonCenter.dx - gridSide * 0.16,
-                                top: cannonCenter.dy + gridSide * 0.20,
-                                child: _ghostCircle(gridSide * 0.20),
-                              ),
-                              Positioned(
-                                left: cannonCenter.dx + gridSide * 0.10,
-                                top: cannonCenter.dy + gridSide * 0.24,
-                                child: _ghostCircle(gridSide * 0.24),
-                              ),
-
-                              // The BIG cannon overlapping the grid.
-                              Positioned(
-                                left: cannonCenter.dx - cannonSize / 2,
-                                top: cannonCenter.dy - cannonSize / 2,
-                                child: IgnorePointer(
-                                  child: CannonWidget(
-                                    skin: profile.cannonSkin,
-                                    cooldownFraction: cooldown,
-                                    enabled: controller.battling,
-                                    size: cannonSize,
-                                    fireTrigger: cannonStream.stream,
-                                  ),
-                                ),
-                              ),
-
-                              // Small black peg below the cannon.
-                              Positioned(
-                                left: box.maxWidth / 2 - gridSide * 0.09,
-                                top: gridSide * 0.66,
-                                child: CustomPaint(
-                                  size: Size.square(gridSide * 0.18),
-                                  painter: _PegPainter(),
-                                ),
-                              ),
-
-                              // Cannonball projectile (cannon → target).
-                              if (_showProjectile)
-                                AnimatedBuilder(
-                                  animation: _projCtrl,
-                                  builder: (context, _) {
-                                    final p = _projPos.value;
-                                    final arc = math.sin(
-                                            _projCtrl.value * math.pi) *
-                                        gridSide *
-                                        0.14;
-                                    final pos = p - Offset(0, arc);
-                                    return Positioned(
-                                      left: pos.dx - 7,
-                                      top: pos.dy - 7,
-                                      child: _cannonball(14),
-                                    );
-                                  },
-                                ),
-                            ],
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-
-                  // ============== MIDDLE BAND — SHIP STATUS ROWS ============
-                  SizedBox(
-                    height: 58,
-                    child: Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        Column(
-                          children: [
-                            // Row 1 — enemy fleet status (SOLID, red).
-                            Expanded(
-                              child: Container(
-                                color: AppColors.water,
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 56),
-                                child: _statusRow(
-                                  enemyBoardForStatus,
-                                  faded: false,
-                                ),
-                              ),
-                            ),
-                            // Row 2 — own fleet status (FADED).
-                            Expanded(
-                              child: Container(
-                                color: AppColors.coral,
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 56),
-                                child: _statusRow(
-                                  ownBoardForStatus,
-                                  faded: true,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        // Left white pill badge with blue/red dots.
-                        Positioned(
-                          left: -2,
-                          top: 4,
-                          bottom: 4,
-                          child: _DotsBadge(
-                            enemyLeft: 5 - controller.mySunk,
-                            ownLeft: 5 - controller.enemySunk,
+                  Column(
+                    children: [
+                      // ===== TOP HALF — opponent, rotated 180° =====
+                      SizedBox(
+                        height: halfH,
+                        child: RotatedBox(
+                          quarterTurns: 2,
+                          child: _buildHalf(
+                            controller,
+                            profile,
+                            halfIsP1: !bottomIsP1,
+                            isTopHalf: true,
+                            halfH: halfH,
+                            halfTopY: 0,
+                            bottomIsP1: bottomIsP1,
                           ),
                         ),
-                        // Vertical EXIT pill on the right edge.
-                        Positioned(
-                          right: -2,
-                          top: 2,
-                          bottom: 2,
-                          child: _ExitPill(
-                              onTap: () => _confirmSurrender(controller)),
+                      ),
+
+                      // ===== MIDDLE BAND =====
+                      _buildMiddleBand(controller, bottomIsP1, bandH),
+
+                      // ===== BOTTOM HALF — active player, upright =====
+                      SizedBox(
+                        height: halfH,
+                        child: _buildHalf(
+                          controller,
+                          profile,
+                          halfIsP1: bottomIsP1,
+                          isTopHalf: false,
+                          halfH: halfH,
+                          halfTopY: halfH + bandH,
+                          bottomIsP1: bottomIsP1,
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
 
-                  // ================= BOTTOM HALF — CORAL =================
-                  Expanded(
-                    child: Container(
-                      width: double.infinity,
-                      color: AppColors.coral,
-                      child: LayoutBuilder(
-                        builder: (context, box) {
-                          final gridSide =
-                              math.min(box.maxWidth, box.maxHeight);
-                          return Center(
-                            child: SizedBox(
-                              width: gridSide,
-                              height: gridSide,
-                              child: ownRevealed
-                                  ? BattleGrid(
-                                      key: ValueKey('own-$showingP1'),
-                                      shots: enemyTracking,
-                                      // No ships are visible until the
-                                      // player reveals their fleet by
-                                      // firing (fog of war).
-                                      ships: ownBoard.ships,
-                                      skin: profile.shipSkin,
-                                      enabled: false,
-                                      glowColor: AppColors.coralDeep,
-                                      recentEvents: _eventsFor(
-                                          controller, !showingP1),
-                                    )
-                                  : _HiddenFleet(
-                                      label:
-                                          '${showingP1 ? 'PLAYER 1' : 'PLAYER 2'}\nTAP THE TOP GRID TO FIRE',
-                                    ),
-                            ),
-                          );
-                        },
+                  // ===== Cannonball flight (spans both halves) =====
+                  if (_showProjectile)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: AnimatedBuilder(
+                          animation: _projCtrl,
+                          builder: (context, _) {
+                            final t = _projCtrl.value;
+                            final p = Offset.lerp(_projFrom, _projTo, t)!;
+                            final arc =
+                                math.sin(t * math.pi) * _projCell * 3.0;
+                            final pos = p - Offset(0, arc);
+                            final d = _projCell * 0.52;
+                            return Stack(
+                              children: [
+                                Positioned(
+                                  left: pos.dx - d / 2,
+                                  top: pos.dy - d / 2,
+                                  child: _cannonball(d),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                       ),
                     ),
-                  ),
+
+                  // ===== Countdown overlay (mirrored) =====
+                  if (_countingDown) _countdownOverlay(bandH),
+
+                  // ===== "Your turn" badge (mirrored) =====
+                  if (_showTurnBadge) _turnBadgeOverlay(bottomIsP1, bandH),
                 ],
-              ),
-
-              // ---------- Turn-change popup: blurred field + big cannon ----------
-              if (_showTurnPopup)
-                Positioned.fill(
-                  child: AnimatedBuilder(
-                    animation: _turnCtrl,
-                    builder: (context, _) {
-                      final accent = _turnPopupForP1
-                          ? profile.cannonSkin.projectile
-                          : AppColors.hit;
-                      return Opacity(
-                        opacity: _turnFade.value,
-                        child: BackdropFilter(
-                          filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
-                          child: Container(
-                            color: Colors.black.withValues(alpha: 0.18),
-                            child: Center(
-                              child: Transform.scale(
-                                scale: _turnScale.value,
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Stack(
-                                      alignment: Alignment.center,
-                                      children: [
-                                        _ghostCircle(150),
-                                        _ghostCircle(110),
-                                        SizedBox(
-                                          width: 170,
-                                          height: 170,
-                                          child: CustomPaint(
-                                            painter: CannonPainter(
-                                              accent: accent,
-                                              cooldown: 1,
-                                              ready: true,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 10),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 18, vertical: 8),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.cream,
-                                        borderRadius:
-                                            BorderRadius.circular(14),
-                                        border: Border.all(
-                                            color: AppColors.outline,
-                                            width: 3),
-                                      ),
-                                      child: Text(
-                                        '${_turnPopupForP1 ? 'PLAYER 1' : 'PLAYER 2'} TURN',
-                                        style: AppText.heading(
-                                            size: 15,
-                                            color: AppColors.outline),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-            ],
+              );
+            },
           ),
         ),
       ),
     );
   }
 
-  /// One row of five ship status icons — flat red = enemy fleet,
-  /// flat blue = your fleet (matches the reference exactly).
-  static const ShipSkin _enemyStatusSkin =
-      ShipSkin('enemy', 'Enemy', AppColors.shipRed, AppColors.shipRedDark, 0);
-  static const ShipSkin _ownStatusSkin =
-      ShipSkin('own', 'Own', AppColors.shipBlue, AppColors.shipBlueDark, 0);
+  // -------------------------------------------------------------- HALVES
 
-  Widget _statusRow(Board board, {required bool faded}) {
-    final skin = faded ? _ownStatusSkin : _enemyStatusSkin;
+  /// One player's half of the table: their own grid + their own cannon.
+  Widget _buildHalf(
+    GameController controller,
+    ProfileStore profile, {
+    required bool halfIsP1,
+    required bool isTopHalf,
+    required double halfH,
+    required double halfTopY,
+    required bool bottomIsP1,
+  }) {
+    final isLocal = controller.mode == GameMode.local;
+
+    // This half shows the OWNER's grid: the enemy's shots land here.
+    final shotsOnThisGrid = halfIsP1 ? controller.p2Shots : controller.myShots;
+    final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
+    final cooldown =
+        halfIsP1 ? controller.cooldownFraction1 : controller.cooldownFraction2;
+    final cannonStream = halfIsP1 ? _cannon1Fire : _cannon2Fire;
+    final accent = halfIsP1 ? AppColors.hit : AppColors.blue;
+
+    // The ACTIVE player (bottom) fires at the top half's grid.
+    final tappable = isTopHalf &&
+        !_countingDown &&
+        controller.battling &&
+        !_showProjectile;
+
+    // Only show markers whose cannonball has already landed.
+    final events = controller.events
+        .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)
+        .map((e) => CombatEventLike(e.row, e.col, e.result))
+        .toList();
+    final shownShots = [
+      for (var r = 0; r < kBoardSize; r++)
+        [
+          for (var c = 0; c < kBoardSize; c++)
+            _shotVisible(shotsOnThisGrid, halfIsP1, r, c)
+                ? shotsOnThisGrid[r][c]
+                : 0
+        ]
+    ];
+
+    return LayoutBuilder(
+      builder: (context, box) {
+        final w = box.maxWidth;
+        final gridSide = math.min(w, halfH * 0.78);
+        final cell = gridSide / kBoardSize;
+        final gridLeft = (w - gridSide) / 2;
+        final gridTop = 6.0; // grid near the outer edge of the half
+        final cannonSize = gridSide * 0.42;
+        final cannonCenter =
+            Offset(w / 2, gridTop + gridSide + (halfH - gridSide) * 0.52);
+
+        // Record screen-space geometry (accounting for the 180° rotation
+        // of the top half) so the cannonball can fly between halves.
+        _geom[isTopHalf] = _HalfGeom(
+          gridLeft: gridLeft,
+          gridTop: gridTop,
+          cell: cell,
+          halfTopY: halfTopY,
+          halfH: halfH,
+          halfW: w,
+          cannonCenter: cannonCenter,
+          cannonSize: cannonSize,
+          rotated: isTopHalf,
+        );
+
+        return Container(
+          width: double.infinity,
+          height: halfH,
+          color: AppColors.coralVideo,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              // Own grid
+              Positioned(
+                left: gridLeft,
+                top: gridTop,
+                child: SizedBox(
+                  width: gridSide,
+                  height: gridSide,
+                  child: BattleGrid(
+                    key: ValueKey('grid-$halfIsP1-$bottomIsP1'),
+                    shots: shownShots,
+                    ships: board.ships,
+                    skin: halfIsP1
+                        ? const ShipSkin('p1', 'P1', AppColors.shipRed,
+                            AppColors.shipRedDark, 0)
+                        : const ShipSkin('p2', 'P2', AppColors.shipBlue,
+                            AppColors.shipBlueDark, 0),
+                    enabled: tappable,
+                    glowColor: AppColors.steelBlueDark,
+                    cellColor: AppColors.steelBlue,
+                    recentEvents: events,
+                    onTapCell: tappable
+                        ? (r, c) => _fireFromTap(controller,
+                            byP1: bottomIsP1, r: r, c: c)
+                        : null,
+                  ),
+                ),
+              ),
+
+              // Own cannon below the grid (toward the middle band).
+              Positioned(
+                left: cannonCenter.dx - cannonSize / 2,
+                top: cannonCenter.dy - cannonSize / 2,
+                child: IgnorePointer(
+                  child: CannonWidget(
+                    skin: profile.cannonSkin,
+                    cooldownFraction: cooldown,
+                    enabled: controller.battling && !_countingDown,
+                    size: cannonSize,
+                    fireTrigger: cannonStream.stream,
+                    accentOverride: accent,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// Hide cells whose shot is still "in flight" (impact hasn't landed).
+  bool _shotVisible(List<List<int>> shots, bool halfIsP1, int r, int c) {
+    if (shots[r][c] == 0) return false;
+    if (_pendingImpact != null &&
+        _pendingImpact![0] == r &&
+        _pendingImpact![1] == c &&
+        _pendingByP1 != halfIsP1) {
+      // A ball is flying toward a cell on this grid.
+      return false;
+    }
+    return true;
+  }
+
+  // -------------------------------------------------------- MIDDLE BAND
+
+  Widget _buildMiddleBand(
+      GameController controller, bool bottomIsP1, double bandH) {
+    final topBoard = bottomIsP1 ? controller.boards[1] : controller.boards[0];
+    final bottomBoard =
+        bottomIsP1 ? controller.boards[0] : controller.boards[1];
+    return SizedBox(
+      height: bandH,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Column(
+            children: [
+              Expanded(
+                child: Container(
+                  color: AppColors.steelBlueDark,
+                  padding: const EdgeInsets.symmetric(horizontal: 56),
+                  child: _statusRow(topBoard,
+                      faded: false, isP1Fleet: !bottomIsP1),
+                ),
+              ),
+              Expanded(
+                child: Container(
+                  color: AppColors.coralVideo,
+                  padding: const EdgeInsets.symmetric(horizontal: 56),
+                  child: _statusRow(bottomBoard,
+                      faded: true, isP1Fleet: bottomIsP1),
+                ),
+              ),
+            ],
+          ),
+          Positioned(
+            left: -2,
+            top: 4,
+            bottom: 4,
+            child: _DotsBadge(
+              topLeft: 5 - topBoard.sunkCount,
+              bottomLeft: 5 - bottomBoard.sunkCount,
+            ),
+          ),
+          Positioned(
+            right: -2,
+            top: 2,
+            bottom: 2,
+            child: _ExitPill(onTap: () => _confirmSurrender(controller)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const ShipSkin _p1StatusSkin =
+      ShipSkin('p1', 'P1', AppColors.shipRed, AppColors.shipRedDark, 0);
+  static const ShipSkin _p2StatusSkin =
+      ShipSkin('p2', 'P2', AppColors.shipBlue, AppColors.shipBlueDark, 0);
+
+  Widget _statusRow(Board board,
+      {required bool faded, required bool isP1Fleet}) {
+    final skin = isP1Fleet ? _p1StatusSkin : _p2StatusSkin;
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
@@ -607,25 +610,112 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
-  Widget _ghostCircle(double d) => Container(
-        width: d,
-        height: d,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: Colors.white.withValues(alpha: 0.30),
+  // ---------------------------------------------------------- OVERLAYS
+
+  Widget _countdownOverlay(double bandH) {
+    final label = _countdownGo ? 'GO!' : '$_countdownValue';
+    Widget number({required bool mirrored}) => Center(
+          child: RotatedBox(
+            quarterTurns: mirrored ? 2 : 0,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 150,
+                fontWeight: FontWeight.w900,
+                color: Colors.white.withValues(alpha: 0.75),
+                shadows: const [
+                  Shadow(color: Color(0x55000000), blurRadius: 8),
+                ],
+              ),
+            ),
+          ),
+        );
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Column(
+          children: [
+            Expanded(child: number(mirrored: true)),
+            SizedBox(height: bandH),
+            Expanded(child: number(mirrored: false)),
+          ],
         ),
-      );
+      ),
+    );
+  }
+
+  /// Big circular white-outline "Your turn" badge, mirrored so both
+  /// players can read it (video style).
+  Widget _turnBadgeOverlay(bool bottomIsP1, double bandH) {
+    final color = bottomIsP1 ? AppColors.hit : AppColors.blue;
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: _badgeCtrl,
+          builder: (context, _) {
+            final scale = _badgeScale.value;
+            Widget badge({required bool mirrored}) => Center(
+                  child: RotatedBox(
+                    quarterTurns: mirrored ? 2 : 0,
+                    child: Transform.scale(
+                      scale: scale,
+                      child: Container(
+                        width: 180,
+                        height: 180,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: color,
+                          border: Border.all(color: Colors.white, width: 7),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x55000000),
+                              blurRadius: 12,
+                              offset: Offset(0, 5),
+                            ),
+                          ],
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'Your\nturn',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w900,
+                              fontSize: 32,
+                              height: 1.05,
+                              shadows: [
+                                Shadow(color: Color(0x66000000), blurRadius: 4)
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+            return Column(
+              children: [
+                Expanded(child: badge(mirrored: true)),
+                SizedBox(height: bandH),
+                Expanded(child: badge(mirrored: false)),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
 
   Widget _cannonball(double d) => Container(
         width: d,
         height: d,
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           shape: BoxShape.circle,
-          color: AppColors.outline,
-          border: Border.all(color: Colors.black, width: 1.4),
-          boxShadow: const [
-            BoxShadow(color: Color(0x55000000), blurRadius: 2),
-          ],
+          gradient: RadialGradient(
+            center: Alignment(-0.35, -0.4),
+            radius: 0.9,
+            colors: [Color(0xFF8A949E), Color(0xFF2A323B)],
+          ),
+          boxShadow: [BoxShadow(color: Color(0x55000000), blurRadius: 2)],
         ),
       );
 
@@ -641,13 +731,14 @@ class _BattleScreenState extends State<BattleScreen>
         title: Text('SURRENDER?', style: AppText.heading(size: 16)),
         content: Text(
           'Abandon the battle?\nThis counts as a loss.',
-          style:
-              AppText.body(size: 13, color: AppColors.cream.withValues(alpha: 0.85)),
+          style: AppText.body(
+              size: 13, color: AppColors.cream.withValues(alpha: 0.85)),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: Text('FIGHT ON', style: AppText.label(color: AppColors.green)),
+            child:
+                Text('FIGHT ON', style: AppText.label(color: AppColors.green)),
           ),
           TextButton(
             onPressed: () {
@@ -662,43 +753,58 @@ class _BattleScreenState extends State<BattleScreen>
   }
 }
 
-/// Small black peg below the cannon (reference: dark ring + grey core).
-class _PegPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = Offset(size.width / 2, size.height / 2);
-    final r = size.width * 0.48;
-    // Ground shadow
-    canvas.drawOval(
-      Rect.fromCenter(
-          center: c + Offset(0, r * 0.5), width: r * 2.1, height: r * 0.8),
-      Paint()..color = Colors.black.withValues(alpha: 0.20),
-    );
-    // Black ring
-    canvas.drawCircle(c, r, Paint()..color = AppColors.outline);
-    // Dark grey inner
-    canvas.drawCircle(
-      c,
-      r * 0.78,
-      Paint()
-        ..shader = CannonPainter.uiGradient(
-            c, r * 0.78, const [Color(0xFF4A5661), Color(0xFF1E262E)]),
-    );
-    // Core dot
-    canvas.drawCircle(
-        c - Offset(0, r * 0.1), r * 0.30, Paint()..color = const Color(0xFF6B7884));
+/// Screen-space geometry of one half (used for cannonball trajectories).
+class _HalfGeom {
+  final double gridLeft;
+  final double gridTop;
+  final double cell;
+  final double halfTopY;
+  final double halfH;
+  final double halfW;
+  final Offset cannonCenter; // within the half (unrotated space)
+  final double cannonSize;
+  final bool rotated; // top half is drawn rotated 180°
+
+  const _HalfGeom({
+    required this.gridLeft,
+    required this.gridTop,
+    required this.cell,
+    required this.halfTopY,
+    required this.halfH,
+    required this.halfW,
+    required this.cannonCenter,
+    required this.cannonSize,
+    required this.rotated,
+  });
+
+  /// Absolute screen position of a grid cell center, accounting for the
+  /// 180° rotation of the top half.
+  Offset cellCenterScreen(int r, int c) {
+    final lx = gridLeft + c * cell + cell / 2;
+    final ly = gridTop + r * cell + cell / 2;
+    if (rotated) {
+      return Offset(halfW - lx, halfTopY + (halfH - ly));
+    }
+    return Offset(lx, halfTopY + ly);
   }
 
-  @override
-  bool shouldRepaint(_PegPainter oldDelegate) => false;
+  /// Absolute screen position of the cannon mouth.
+  Offset get cannonMouthScreen {
+    final lx = cannonCenter.dx;
+    final ly = cannonCenter.dy - cannonSize * 0.25;
+    if (rotated) {
+      return Offset(halfW - lx, halfTopY + (halfH - ly));
+    }
+    return Offset(lx, halfTopY + ly);
+  }
 }
 
-/// White pill badge pinned to the left edge of the status band with the
-/// blue dot (enemy ships left) and the red dot (own ships left).
+/// White pill badge pinned to the left edge of the status band showing
+/// how many ships each side has left.
 class _DotsBadge extends StatelessWidget {
-  final int enemyLeft;
-  final int ownLeft;
-  const _DotsBadge({required this.enemyLeft, required this.ownLeft});
+  final int topLeft;
+  final int bottomLeft;
+  const _DotsBadge({required this.topLeft, required this.bottomLeft});
 
   @override
   Widget build(BuildContext context) {
@@ -733,9 +839,9 @@ class _DotsBadge extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          dot(AppColors.blue, enemyLeft),
+          dot(AppColors.blue, topLeft),
           const SizedBox(height: 5),
-          dot(AppColors.hit, ownLeft),
+          dot(AppColors.hit, bottomLeft),
         ],
       ),
     );
@@ -776,68 +882,6 @@ class _ExitPill extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-/// Cover panel shown over the viewing player's fleet until they fire.
-/// Renders an empty water grid (so the layout matches) with a centered
-/// lock + instruction chip on top.
-class _HiddenFleet extends StatelessWidget {
-  final String label;
-  const _HiddenFleet({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        // Empty water grid underneath (same chunky cells, no ships).
-        BattleGrid(
-          shots: List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0)),
-          enabled: false,
-          glowColor: AppColors.coralDeep,
-        ),
-        // Frosted cover.
-        Container(
-          decoration: BoxDecoration(
-            color: AppColors.coral.withValues(alpha: 0.55),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: AppColors.cream,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: AppColors.outline, width: 3),
-                  ),
-                  child: const Icon(Icons.visibility_off,
-                      color: AppColors.outline, size: 34),
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: AppColors.navy,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.outline, width: 2.5),
-                  ),
-                  child: Text(
-                    label,
-                    textAlign: TextAlign.center,
-                    style: AppText.label(size: 11, color: AppColors.cream),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
     );
   }
 }

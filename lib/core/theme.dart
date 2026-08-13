@@ -34,6 +34,15 @@ class AppColors {
   static const Color miss = Color(0xFF8FB3C7);
   static const Color crosshair = Color(0xFFFFFFFF);
 
+  // Gameplay-video palette (1:1 reference)
+  static const Color steelBlue = Color(0xFF4A789A); // grid water (video)
+  static const Color steelBlueLight = Color(0xFF5C8CAB); // grid line tint
+  static const Color steelBlueDark = Color(0xFF3D6684); // miss cell shade
+  static const Color coralVideo = Color(0xFFE68A6E); // half background (video)
+  static const Color seafoam = Color(0xFF5BB381); // OK button (video)
+  static const Color cellGrey = Color(0xFF7A8A96); // miss ✕ mark
+  static const Color burst = Color(0xFFFFB739); // hit starburst yellow
+
   // UI accents
   static const Color green = Color(0xFF3CB54A); // SAVE button
   static const Color greenDark = Color(0xFF2E9E3C);

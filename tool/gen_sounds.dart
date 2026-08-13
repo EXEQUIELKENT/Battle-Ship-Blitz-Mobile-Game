@@ -76,48 +76,37 @@ Float64List noise(double seconds,
   return out;
 }
 
+/// Band-passed noise sweep (whooshes / whirs).
+Float64List sweep(double seconds, double Function(double) cutoffAt,
+    {double volume = 0.5, double decay = 3}) {
+  final n = (seconds * sr).toInt();
+  final out = Float64List(n);
+  double lp = 0, lp2 = 0;
+  for (var i = 0; i < n; i++) {
+    final t = i / sr;
+    final w = rng.nextDouble() * 2 - 1;
+    final c = cutoffAt(t).clamp(0.02, 0.9);
+    lp += c * (w - lp);
+    lp2 += 0.5 * (lp - lp2); // second stage = rough band-pass
+    out[i] = (lp - lp2) * exp(-decay * t) * volume * 4;
+  }
+  return out;
+}
+
 void main() {
   Directory('assets/sfx').createSync(recursive: true);
 
-  // ---- CANNON FIRE: punchy low thump + crack ----
-  final fire = buf(0.5);
-  add(fire, 0, noise(0.18, volume: 0.55, decay: 16, cutoff: 0.5));
-  add(fire, 0, tone(0.3, (t) => 140 - 260 * t, volume: 0.7, decay: 12));
-  add(fire, (0.02 * sr).toInt(),
-      noise(0.3, volume: 0.3, decay: 8, cutoff: 0.12));
-  writeWav('assets/sfx/fire.wav', fire);
+  // NOTE: fire.wav, hit.wav, sunk.wav, victory.wav, click.wav,
+  // count_beep.wav and count_go.wav are REAL clips extracted from the
+  // reference gameplay video (see docs). This tool (re)generates only
+  // the synthesized effects below so it never clobbers the real ones.
 
-  // ---- HIT: heavy explosion boom + debris sizzle ----
-  final hit = buf(0.7);
-  add(hit, 0, noise(0.5, volume: 0.8, decay: 7, cutoff: 0.16));
-  add(hit, 0, tone(0.4, (t) => 90 - 60 * t, volume: 0.6, decay: 8));
-  add(hit, (0.08 * sr).toInt(),
-      noise(0.4, volume: 0.25, decay: 5, cutoff: 0.6));
-  writeWav('assets/sfx/hit.wav', hit);
-
-  // ---- MISS: water splash (bloop + fizz) ----
-  final miss = buf(0.6);
-  add(miss, 0, tone(0.22, (t) => 500 - 700 * t, volume: 0.4, decay: 9));
-  add(miss, (0.06 * sr).toInt(),
-      noise(0.45, volume: 0.35, decay: 6, cutoff: 0.35));
+  // ---- MISS: water splash — higher "bloop" + airy "shh", no bass ----
+  final miss = buf(0.55);
+  add(miss, 0, tone(0.16, (t) => 620 - 380 * t, volume: 0.42, decay: 12));
+  add(miss, (0.05 * sr).toInt(),
+      sweep(0.42, (t) => 0.55 - 0.25 * t, volume: 0.30, decay: 7));
   writeWav('assets/sfx/miss.wav', miss);
-
-  // ---- SUNK: big explosion + sinking glissando ----
-  final sunk = buf(1.3);
-  add(sunk, 0, noise(0.6, volume: 0.8, decay: 6, cutoff: 0.14));
-  add(sunk, 0, tone(0.5, (t) => 100 - 70 * t, volume: 0.6, decay: 6));
-  add(sunk, (0.35 * sr).toInt(),
-      tone(0.8, (t) => 320 - 260 * t, volume: 0.35, decay: 4));
-  writeWav('assets/sfx/sunk.wav', sunk);
-
-  // ---- VICTORY: rising fanfare ----
-  final victory = buf(1.2);
-  const vNotes = [523.25, 659.25, 783.99, 1046.5];
-  for (var k = 0; k < vNotes.length; k++) {
-    add(victory, (k * 0.18 * sr).toInt(),
-        tone(0.3, (t) => vNotes[k], volume: 0.45, decay: 5));
-  }
-  writeWav('assets/sfx/victory.wav', victory);
 
   // ---- DEFEAT: falling dirge ----
   final defeat = buf(1.2);
@@ -128,15 +117,16 @@ void main() {
   }
   writeWav('assets/sfx/defeat.wav', defeat);
 
-  // ---- PLACE: wooden clunk ----
-  final place = buf(0.2);
-  add(place, 0, tone(0.12, (t) => 240 - 120 * t, volume: 0.5, decay: 22));
-  add(place, 0, noise(0.05, volume: 0.3, decay: 40, cutoff: 0.4));
+  // ---- PLACE: short high "pop" blip (matches video's placement taps) ----
+  final place = buf(0.12);
+  add(place, 0, tone(0.09, (t) => 950 - 350 * t, volume: 0.55, decay: 34));
+  add(place, 0, noise(0.03, volume: 0.28, decay: 60, cutoff: 0.55));
   writeWav('assets/sfx/place.wav', place);
 
-  // ---- CLICK: UI tick ----
-  writeWav('assets/sfx/click.wav',
-      tone(0.06, (t) => 800, volume: 0.3, decay: 30));
+  // ---- WHIR: screen/turn transition whoosh (rising band-pass sweep) ----
+  final whir = buf(0.5);
+  add(whir, 0, sweep(0.45, (t) => 0.08 + 0.5 * t, volume: 0.5, decay: 4));
+  writeWav('assets/sfx/whir.wav', whir);
 
   // ---- DENIED: dull buzz ----
   writeWav('assets/sfx/denied.wav',

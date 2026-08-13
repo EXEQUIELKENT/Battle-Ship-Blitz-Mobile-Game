@@ -38,6 +38,9 @@ class BattleGrid extends StatefulWidget {
   final bool enabled;
   final Color glowColor;
 
+  /// Cell fill color (defaults to the video's steel blue).
+  final Color cellColor;
+
   /// Aiming crosshair cell (targeting grid).
   final List<int>? crosshair;
 
@@ -58,6 +61,7 @@ class BattleGrid extends StatefulWidget {
     this.recentEvents = const [],
     this.enabled = true,
     this.glowColor = AppColors.water,
+    this.cellColor = AppColors.steelBlue,
     this.crosshair,
     this.previewShip,
     this.previewValid = true,
@@ -147,6 +151,7 @@ class _BattleGridState extends State<BattleGrid>
                           preview: widget.previewShip,
                           previewValid: widget.previewValid,
                           gridColor: widget.glowColor,
+                          cellColor: widget.cellColor,
                         ),
                       ),
                       if (widget.ships != null && widget.skin != null)
@@ -350,6 +355,7 @@ class _GridPainter extends CustomPainter {
   final PlacedShip? preview;
   final bool previewValid;
   final Color gridColor;
+  final Color cellColor;
 
   _GridPainter({
     required this.shots,
@@ -358,28 +364,23 @@ class _GridPainter extends CustomPainter {
     this.preview,
     this.previewValid = true,
     required this.gridColor,
+    this.cellColor = AppColors.steelBlue,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final cell = size.width / kBoardSize;
 
-    // ---- Chunky rounded water cells ----
-    final cellPaint = Paint()..color = gridColor;
-    final cellStroke = Paint()
-      ..color = AppColors.cellBorder
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.6;
-    for (var r = 0; r < kBoardSize; r++) {
-      for (var c = 0; c < kBoardSize; c++) {
-        final rect = RRect.fromRectAndRadius(
-          Rect.fromLTWH(
-              c * cell + 1.6, r * cell + 1.6, cell - 3.2, cell - 3.2),
-          Radius.circular(cell * 0.14),
-        );
-        canvas.drawRRect(rect, cellPaint);
-        canvas.drawRRect(rect, cellStroke);
-      }
+    // ---- Flat steel-blue cells with thin lighter grid lines (video style) ----
+    canvas.drawRect(Offset.zero & size, Paint()..color = cellColor);
+    final linePaint = Paint()
+      ..color = AppColors.steelBlueLight.withValues(alpha: 0.55)
+      ..strokeWidth = 1.1;
+    for (var i = 1; i < kBoardSize; i++) {
+      canvas.drawLine(
+          Offset(i * cell, 0), Offset(i * cell, size.height), linePaint);
+      canvas.drawLine(
+          Offset(0, i * cell), Offset(size.width, i * cell), linePaint);
     }
 
     // ---- Placement ghost ----
@@ -398,7 +399,7 @@ class _GridPainter extends CustomPainter {
       }
     }
 
-    // ---- Shot markers ----
+    // ---- Shot markers (video style) ----
     for (var r = 0; r < kBoardSize; r++) {
       for (var c = 0; c < kBoardSize; c++) {
         final v = shots[r][c];
@@ -435,90 +436,111 @@ class _GridPainter extends CustomPainter {
     }
   }
 
+  /// Miss marker (video): slightly darker cell + tiny grey ✕.
   void _drawMiss(Canvas canvas, Offset center, double cell) {
-    final s = cell * 0.26;
-    // White halo then bold navy X (reference style)
-    final halo = Paint()
-      ..color = Colors.white.withValues(alpha: 0.65)
-      ..strokeWidth = 9
-      ..strokeCap = StrokeCap.round;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: center, width: cell * 0.92, height: cell * 0.92),
+        Radius.circular(cell * 0.12),
+      ),
+      Paint()..color = AppColors.steelBlueDark,
+    );
+    final s = cell * 0.15;
     final mark = Paint()
-      ..color = AppColors.navy
-      ..strokeWidth = 6
+      ..color = AppColors.cellGrey
+      ..strokeWidth = cell * 0.085
       ..strokeCap = StrokeCap.round;
-    for (final p in [halo, mark]) {
-      canvas.drawLine(center - Offset(s, s), center + Offset(s, s), p);
-      canvas.drawLine(center + Offset(-s, s), center + Offset(s, -s), p);
-    }
+    canvas.drawLine(center - Offset(s, s), center + Offset(s, s), mark);
+    canvas.drawLine(center + Offset(-s, s), center + Offset(s, -s), mark);
   }
 
+  /// Hit marker (video): black square cell + small yellow diamond inside.
   void _drawHit(Canvas canvas, Offset center, double cell) {
-    final s = cell * 0.30;
-    // Red blast circle + dark core + white X
-    canvas.drawCircle(center, s * 1.15, Paint()..color = AppColors.hit);
-    canvas.drawCircle(center, s * 0.7, Paint()..color = AppColors.hitGlow);
-    canvas.drawCircle(center, s * 0.42, Paint()..color = AppColors.outline);
-    final cross = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 3
-      ..strokeCap = StrokeCap.round;
-    final d = s * 0.24;
-    canvas.drawLine(center - Offset(d, d), center + Offset(d, d), cross);
-    canvas.drawLine(center + Offset(-d, d), center + Offset(d, -d), cross);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: center, width: cell * 0.92, height: cell * 0.92),
+        Radius.circular(cell * 0.10),
+      ),
+      Paint()..color = AppColors.outline,
+    );
+    final d = cell * 0.20;
+    final diamond = Path()
+      ..moveTo(center.dx, center.dy - d)
+      ..lineTo(center.dx + d, center.dy)
+      ..lineTo(center.dx, center.dy + d)
+      ..lineTo(center.dx - d, center.dy)
+      ..close();
+    canvas.drawPath(diamond, Paint()..color = AppColors.burst);
   }
 
+  /// Impact flash (video): yellow starburst core + white sparkle stars
+  /// flying outward; sinks into the persistent black-square marker.
   void _drawExplosion(Canvas canvas, Offset center, double cell, double t,
       {bool big = false}) {
     final rng = Random(center.dx.toInt() * 31 + center.dy.toInt());
-    final maxR = cell * (big ? 1.5 : 1.0) * (0.35 + t * 0.8);
-    // Expanding ring
-    canvas.drawCircle(
-      center,
-      maxR,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 5 * (1 - t)
-        ..color = AppColors.hit.withValues(alpha: (1 - t) * 0.9),
-    );
-    // Flash core
-    canvas.drawCircle(
-      center,
-      maxR * 0.55,
-      Paint()
-        ..color = Color.lerp(Colors.white, AppColors.gold, t)!
-            .withValues(alpha: 1 - t * 0.85),
-    );
-    // Sparks
-    final spark = Paint()
-      ..strokeWidth = 3
-      ..strokeCap = StrokeCap.round
-      ..color = AppColors.gold.withValues(alpha: 1 - t);
-    for (var i = 0; i < (big ? 10 : 6); i++) {
+    final scale = big ? 1.5 : 1.0;
+    // Yellow starburst (8 rounded rays) — flashes in, then fades.
+    final burstAlpha = (1 - t * 1.35).clamp(0.0, 1.0);
+    if (burstAlpha > 0) {
+      final grow = 0.45 + t * 0.75;
+      final ray = Paint()
+        ..color = AppColors.burst.withValues(alpha: burstAlpha)
+        ..strokeWidth = cell * 0.16 * scale * (1 - t * 0.5)
+        ..strokeCap = StrokeCap.round;
+      final len = cell * 0.62 * scale * grow;
+      for (var i = 0; i < 8; i++) {
+        final ang = i * pi / 4;
+        canvas.drawLine(center,
+            center + Offset(cos(ang) * len, sin(ang) * len), ray);
+      }
+      canvas.drawCircle(
+        center,
+        cell * 0.34 * scale * grow,
+        Paint()..color = AppColors.burst.withValues(alpha: burstAlpha),
+      );
+      canvas.drawCircle(
+        center,
+        cell * 0.20 * scale * grow,
+        Paint()..color = Colors.white.withValues(alpha: burstAlpha),
+      );
+    }
+    // White sparkle stars drifting outward.
+    final sparkAlpha = (1 - t).clamp(0.0, 1.0);
+    for (var i = 0; i < (big ? 8 : 5); i++) {
       final ang = rng.nextDouble() * 2 * pi;
-      final len = maxR * (0.5 + rng.nextDouble() * 0.7) * t;
-      canvas.drawLine(
-          center, center + Offset(cos(ang) * len, sin(ang) * len), spark);
+      final dist = cell * scale * (0.25 + 0.75 * t) * (0.6 + rng.nextDouble() * 0.5);
+      final p = center + Offset(cos(ang) * dist, sin(ang) * dist);
+      final sr = cell * 0.11 * (1 - t * 0.6);
+      final sp = Paint()
+        ..color = Colors.white.withValues(alpha: sparkAlpha * 0.95);
+      canvas.drawPath(
+        Path()
+          ..moveTo(p.dx, p.dy - sr)
+          ..lineTo(p.dx + sr * 0.35, p.dy - sr * 0.35)
+          ..lineTo(p.dx + sr, p.dy)
+          ..lineTo(p.dx + sr * 0.35, p.dy + sr * 0.35)
+          ..lineTo(p.dx, p.dy + sr)
+          ..lineTo(p.dx - sr * 0.35, p.dy + sr * 0.35)
+          ..lineTo(p.dx - sr, p.dy)
+          ..lineTo(p.dx - sr * 0.35, p.dy - sr * 0.35)
+          ..close(),
+        sp,
+      );
     }
   }
 
+  /// Miss splash (video): quick white droplet burst, no big rings.
   void _drawSplash(Canvas canvas, Offset center, double cell, double t) {
-    final r = cell * 0.6 * (0.3 + t);
-    canvas.drawCircle(
-      center,
-      r,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4 * (1 - t)
-        ..color = Colors.white.withValues(alpha: (1 - t) * 0.95),
-    );
-    canvas.drawCircle(
-      center,
-      r * 0.55,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.4 * (1 - t)
-        ..color = AppColors.waterLight.withValues(alpha: (1 - t) * 0.9),
-    );
+    final rng = Random(center.dx.toInt() * 17 + center.dy.toInt());
+    final alpha = (1 - t).clamp(0.0, 1.0);
+    final dot = Paint()
+      ..color = Colors.white.withValues(alpha: alpha * 0.9);
+    for (var i = 0; i < 6; i++) {
+      final ang = rng.nextDouble() * 2 * pi;
+      final dist = cell * 0.5 * t * (0.5 + rng.nextDouble() * 0.6);
+      final p = center + Offset(cos(ang) * dist, sin(ang) * dist);
+      canvas.drawCircle(p, cell * 0.07 * (1 - t * 0.5), dot);
+    }
   }
 
   void _drawCrosshair(Canvas canvas, Offset center, double cell) {

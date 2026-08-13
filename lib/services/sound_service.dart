@@ -22,6 +22,9 @@ class SoundService {
     'place': 'sfx/place.wav',
     'click': 'sfx/click.wav',
     'denied': 'sfx/denied.wav',
+    'whir': 'sfx/whir.wav',
+    'count_beep': 'sfx/count_beep.wav',
+    'count_go': 'sfx/count_go.wav',
   };
 
   final Map<String, List<AudioPlayer>> _pool = {};
@@ -95,4 +98,13 @@ class SoundService {
   void click() => _play('click');
 
   void denied() => _play('denied');
+
+  /// Screen/turn transition whoosh.
+  void whir() => _play('whir');
+
+  /// Countdown warning beep (plays each tick: 3..2..1).
+  void countBeep() => _play('count_beep');
+
+  /// Higher "GO!" chime after the final countdown tick.
+  void countGo() => _play('count_go');
 }
