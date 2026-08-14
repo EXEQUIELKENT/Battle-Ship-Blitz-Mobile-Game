@@ -158,6 +158,12 @@ class GameController extends ChangeNotifier {
   /// Local human fires at the enemy grid.
   ShotResult fireAt(int r, int c) {
     if (!battling) return ShotResult.invalid;
+    if (mode == GameMode.vsAI && aiTurnToFire) {
+      // It's the AI's turn — a hit keeps the AI firing, so the human's
+      // cannon must wait its turn even if their own cooldown has expired.
+      SoundService.instance.denied();
+      return ShotResult.cooldown;
+    }
     if (cooldown1 > 0) {
       SoundService.instance.denied();
       return ShotResult.cooldown;

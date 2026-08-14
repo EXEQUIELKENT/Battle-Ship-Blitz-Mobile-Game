@@ -29,10 +29,14 @@ import 'result_screen.dart';
 ///    players can tell whose turn it is.
 ///  • Battle grids are EMPTY (ships hidden) — you guess where the enemy
 ///    fleet is. A HIT lets you fire again; only a MISS passes the turn.
-///  • During a player's turn their cannon slides to the middle of THEIR
-///    grid (their firing position); when the turn passes it slides back
-///    home near the middle band, and the newly-active cannon slides out
-///    to its grid while flashing "ready".
+///  • Firing is a SINGLE TAP: tap any untried cell on the opponent's grid
+///    to fire at it immediately. During a player's turn their cannon
+///    slides to the middle of THEIR grid as a "ready to fire" indicator
+///    and reacts (recoil + muzzle flash) on every shot, but the cannon
+///    itself isn't a separate tap target — the grid tap is what fires.
+///    When the turn passes, the outgoing cannon slides back home near the
+///    middle band and the newly-active cannon slides out while flashing
+///    "ready".
 class BattleScreen extends StatefulWidget {
   const BattleScreen({super.key});
 
@@ -268,27 +272,15 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ------------------------------------------------------------- FIRING
 
-  /// The active player tapped a cell on the OPPONENT's grid: move the
-  /// crosshair (aim) there. They then tap their OWN cannon to fire.
-  void _aimAt(GameController controller, {required int r, required int c}) {
-    if (_countingDown || _showProjectile) return;
-    final activeIsP1 = !_p2Active;
-    final tracking = activeIsP1 ? controller.myShots : controller.p2Shots;
-    if (tracking[r][c] != 0) {
-      SoundService.instance.denied();
-      return; // already fired there — don't aim at a used cell
-    }
-    setState(() => _aim = [r, c]);
-    SoundService.instance.click();
-  }
-
-  /// The active player tapped their OWN cannon → fire the ball at the
-  /// currently-aimed cell on the opponent's grid.
-  void _fireActive(GameController controller) {
+  /// The active player taps a cell on the OPPONENT's grid → fire
+  /// immediately at that cell. Tapping is the ONLY action needed to fire;
+  /// there is no separate "now tap your own cannon" step (that extra tap
+  /// was the bug: taps on the grid used to only move a crosshair, so
+  /// nothing ever actually fired unless you also found and tapped the
+  /// tiny cannon icon).
+  void _fireAtCell(GameController controller, {required int r, required int c}) {
     if (_countingDown || _showProjectile) return;
     final byP1 = !_p2Active;
-    final r = _aim[0];
-    final c = _aim[1];
     final tracking = byP1 ? controller.myShots : controller.p2Shots;
     if (tracking[r][c] != 0) {
       _toast('Pick a fresh target on the enemy grid!');
@@ -297,7 +289,11 @@ class _BattleScreenState extends State<BattleScreen>
     }
     final res = byP1 ? controller.fireAt(r, c) : controller.p2FireAt(r, c);
     if (res == ShotResult.cooldown) {
-      _toast('Cannon reloading…');
+      _toast(
+        controller.mode == GameMode.vsAI && controller.aiTurnToFire
+            ? "It's the enemy's turn — hold fire!"
+            : 'Cannon reloading…',
+      );
       SoundService.instance.denied();
       return;
     }
@@ -305,6 +301,7 @@ class _BattleScreenState extends State<BattleScreen>
       SoundService.instance.denied();
       return;
     }
+    setState(() => _aim = [r, c]);
     _launchBall(controller, byP1: byP1, r: r, c: c, res: res);
   }
 
@@ -465,11 +462,13 @@ class _BattleScreenState extends State<BattleScreen>
                             final arc =
                                 math.sin(t * math.pi) * _projCell * 3.0;
                             final pos = p - Offset(0, arc);
-                            // Cannonball starts BIG at the muzzle and SHRINKS
-                            // as it sails toward the tapped cell (the arc +
-                            // shrink together give the up-and-down lob feel).
-                            final scale = 1.0 - 0.6 * t; // 1.0 → 0.4
-                            final d = _projCell * 1.1 * scale;
+                            // Cannonball launches noticeably LARGER than
+                            // the target cell and slowly SHRINKS the whole
+                            // way there, settling to exactly the grid
+                            // cell's size right as it lands — a clear
+                            // "incoming shot" effect that telegraphs
+                            // where the ball is about to hit.
+                            final d = _projCell * (2.6 - 1.6 * t); // 2.6× → 1.0×
                             return Stack(
                               children: [
                                 Positioned(
@@ -519,21 +518,26 @@ class _BattleScreenState extends State<BattleScreen>
     final accent = halfIsP1 ? AppColors.hit : AppColors.blue;
 
     // VIDEO interaction model: the ACTIVE player's cannon sits at the
-    // middle of their OWN grid (a "ready to fire" indicator). The OPPONENT's
-    // grid shows the aiming CROSSHAIR. The player taps the opponent's grid
-    // to MOVE the crosshair, then taps their OWN cannon to FIRE.
+    // middle of their OWN grid (a "ready to fire" indicator). Tapping a
+    // cell on the OPPONENT's grid fires at it immediately — a single tap
+    // is the whole interaction.
     //
     // This half is the ACTIVE player's own half when halfIsP1 == !_p2Active.
-    final isLocalMode = controller.mode == GameMode.local;
-    final thisIsActive = isLocalMode ? (halfIsP1 == !_p2Active) : halfIsP1;
+    // `_p2Active` tracks whose turn it is and is kept in sync by
+    // `_passTurn` for BOTH local pass-and-play and vs-AI (a miss hands the
+    // flag over in either mode). Previously only local mode consulted this
+    // flag here, so vs-AI always left the human's grid tappable even
+    // during the AI's turn — fixed by treating vs-AI the same as local.
+    // Hotspot/online each represent a single human player on this device,
+    // so they stay unrestricted here; the peer enforces turn order.
+    final turnTracked = controller.mode == GameMode.local ||
+        controller.mode == GameMode.vsAI;
     final thisIsOpponentOfActive =
-        isLocalMode ? (halfIsP1 == _p2Active) : !halfIsP1;
+        turnTracked ? (halfIsP1 == _p2Active) : !halfIsP1;
     final inBattle = !_countingDown && controller.battling && !_showProjectile;
 
-    // The OPPONENT's grid is tappable (to move the crosshair) on your turn.
-    final gridAimable = thisIsOpponentOfActive && inBattle;
-    // The ACTIVE player's OWN cannon is tappable (to fire).
-    final cannonTappable = thisIsActive && inBattle;
+    // The OPPONENT's grid is tappable to fire, on your turn.
+    final gridFireable = thisIsOpponentOfActive && inBattle;
 
     // Only show markers whose cannonball has already landed.
     final events = controller.events
@@ -604,18 +608,17 @@ class _BattleScreenState extends State<BattleScreen>
                     // (Guessing where the enemy fleet hides IS the game.)
                     ships: null,
                     skin: null,
-                    enabled: gridAimable,
+                    enabled: gridFireable,
                     glowColor: AppColors.steelBlueDark,
                     cellColor: AppColors.steelBlue,
                     recentEvents: events,
-                    // Crosshair shows on the grid the active player is
-                    // aiming at (the opponent's grid).
+                    // Crosshair flashes on the cell you just fired at.
                     crosshair: thisIsOpponentOfActive && controller.battling
                         ? _aim
                         : null,
-                    // Tapping the opponent's grid moves the crosshair.
-                    onTapCell: gridAimable
-                        ? (r, c) => _aimAt(controller, r: r, c: c)
+                    // Tapping the opponent's grid fires at it immediately.
+                    onTapCell: gridFireable
+                        ? (r, c) => _fireAtCell(controller, r: r, c: c)
                         : null,
                   ),
                 ),
@@ -643,9 +646,11 @@ class _BattleScreenState extends State<BattleScreen>
                       fireTrigger: cannonStream.stream,
                       readyTrigger: readyStream.stream,
                       accentOverride: accent,
-                      onFire: cannonTappable
-                          ? () => _fireActive(controller)
-                          : null,
+                      // Firing now happens with a single tap on the enemy
+                      // grid cell (see gridFireable / onTapCell above); the
+                      // cannon itself just reacts (recoil + muzzle flash)
+                      // as a "shot fired" indicator.
+                      onFire: null,
                     ),
                   );
                 },
