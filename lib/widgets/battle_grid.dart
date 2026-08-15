@@ -27,8 +27,10 @@ class CombatEventLike {
 }
 
 /// Flat-cartoon 10×10 grid in the reference style: chunky rounded blue
-/// cells, white crosshair targeting cursor, big bold ✕ for misses and
-/// red blast for hits. Ships (when provided) render on top.
+/// cells, big bold ✕ for misses and red blast for hits. A quick tap
+/// pulses a ripple at the tapped cell (no persistent aiming cursor is
+/// needed — you just tap the grid to shoot). Ships (when provided) render
+/// on top.
 class BattleGrid extends StatefulWidget {
   final List<List<int>> shots; // 0 unknown, 1 miss, 2 hit
   final List<PlacedShip>? ships;
@@ -40,9 +42,6 @@ class BattleGrid extends StatefulWidget {
 
   /// Cell fill color (defaults to the video's steel blue).
   final Color cellColor;
-
-  /// Aiming crosshair cell (targeting grid).
-  final List<int>? crosshair;
 
   /// Placement-mode ghost preview.
   final PlacedShip? previewShip;
@@ -62,7 +61,6 @@ class BattleGrid extends StatefulWidget {
     this.enabled = true,
     this.glowColor = AppColors.water,
     this.cellColor = AppColors.steelBlue,
-    this.crosshair,
     this.previewShip,
     this.previewValid = true,
     this.onShipDragEnd,
@@ -78,10 +76,19 @@ class _BattleGridState extends State<BattleGrid>
   late final AnimationController _fxCtrl;
   final Map<String, CellFx> _fx = {};
 
+  /// Instant tap-feedback ripples (cell → time tapped). Short-lived and
+  /// self-clearing; this is what replaced the old persistent crosshair.
+  final Map<String, DateTime> _tapFx = {};
+
   // Drag state (placement)
   ShipKind? _dragKind;
   Offset _dragPos = Offset.zero;
   bool _dragging = false;
+
+  /// PERF: ships != null means this is the placement-mode grid, which uses
+  /// the same ticker to gently bob the ships on the water the whole time
+  /// it's on screen — that one legitimately needs to keep running.
+  bool get _needsContinuousTicker => widget.ships != null;
 
   @override
   void initState() {
@@ -89,19 +96,47 @@ class _BattleGridState extends State<BattleGrid>
     _fxCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
-    )..repeat();
+    );
+    if (_needsContinuousTicker) {
+      _fxCtrl.repeat();
+    }
+    // PERF: a battle grid has no continuous animation by default — the
+    // ticker only turns on for the ~1s a hit/miss/tap effect is actually
+    // playing, and turns itself back off the moment nothing is animating.
+    // Previously this ticker ran forever at 60fps and repainted the WHOLE
+    // board (every past hit/miss mark) every single frame, which is why
+    // the game visibly slowed down the more shots piled up on a grid.
+    _fxCtrl.addListener(() {
+      if (_needsContinuousTicker) return;
+      if (_fx.isEmpty && _tapFx.isEmpty) return;
+      _fx.removeWhere((_, fx) => fx.done);
+      _tapFx.removeWhere((_, started) =>
+          DateTime.now().difference(started).inMilliseconds >= 260);
+      if (_fx.isEmpty && _tapFx.isEmpty && _fxCtrl.isAnimating) {
+        _fxCtrl.stop();
+      }
+    });
+  }
+
+  void _ensureTickerRunning() {
+    if (!_needsContinuousTicker && !_fxCtrl.isAnimating) {
+      _fxCtrl.repeat();
+    }
   }
 
   @override
   void didUpdateWidget(BattleGrid oldWidget) {
     super.didUpdateWidget(oldWidget);
+    var addedNew = false;
     for (final e in widget.recentEvents) {
       final key = '${e.row},${e.col}';
       if (!_fx.containsKey(key)) {
         _fx[key] = CellFx(e.result);
+        addedNew = true;
       }
     }
     _fx.removeWhere((_, fx) => fx.done);
+    if (addedNew) _ensureTickerRunning();
   }
 
   @override
@@ -147,7 +182,7 @@ class _BattleGridState extends State<BattleGrid>
                         painter: _GridPainter(
                           shots: widget.shots,
                           fx: _fx,
-                          crosshair: widget.crosshair,
+                          tapFx: _tapFx,
                           preview: widget.previewShip,
                           previewValid: widget.previewValid,
                           gridColor: widget.glowColor,
@@ -183,8 +218,17 @@ class _BattleGridState extends State<BattleGrid>
           }
         }
       }
+      if (widget.onTapCell != null) _pulseTap(r, c);
       widget.onTapCell?.call(r, c);
     };
+  }
+
+  /// Instant ripple at the tapped cell — the tap IS the shot, so this is
+  /// the only "targeting" feedback the grid needs (no persistent cursor).
+  void _pulseTap(int r, int c) {
+    final key = '$r,$c';
+    _tapFx[key] = DateTime.now();
+    _ensureTickerRunning();
   }
 
   void Function(DragStartDetails)? _onPanStart(double cell) {
@@ -351,7 +395,7 @@ class _RotateArrow extends StatelessWidget {
 class _GridPainter extends CustomPainter {
   final List<List<int>> shots;
   final Map<String, CellFx> fx;
-  final List<int>? crosshair;
+  final Map<String, DateTime> tapFx;
   final PlacedShip? preview;
   final bool previewValid;
   final Color gridColor;
@@ -360,7 +404,7 @@ class _GridPainter extends CustomPainter {
   _GridPainter({
     required this.shots,
     required this.fx,
-    this.crosshair,
+    this.tapFx = const {},
     this.preview,
     this.previewValid = true,
     required this.gridColor,
@@ -428,12 +472,19 @@ class _GridPainter extends CustomPainter {
       }
     });
 
-    // ---- Crosshair cursor ----
-    if (crosshair != null) {
-      final center = Offset(
-          crosshair![1] * cell + cell / 2, crosshair![0] * cell + cell / 2);
-      _drawCrosshair(canvas, center, cell);
-    }
+    // ---- Instant tap ripples (replaces the old aiming crosshair — a
+    // single tap fires, so the only feedback needed is "yes, that tap
+    // landed") ----
+    final now = DateTime.now();
+    tapFx.forEach((key, started) {
+      final t = now.difference(started).inMilliseconds / 260;
+      if (t >= 1.0) return;
+      final parts = key.split(',');
+      final r = int.parse(parts[0]);
+      final c = int.parse(parts[1]);
+      final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
+      _drawTapRipple(canvas, center, cell, t.clamp(0.0, 1.0));
+    });
   }
 
   /// Miss marker (video): slightly darker cell + tiny grey ✕.
@@ -543,32 +594,39 @@ class _GridPainter extends CustomPainter {
     }
   }
 
-  void _drawCrosshair(Canvas canvas, Offset center, double cell) {
-    final paint = Paint()
-      ..color = AppColors.crosshair
-      ..strokeWidth = 3.4
-      ..strokeCap = StrokeCap.round;
-    final ringR = cell * 0.30;
-    paint.style = PaintingStyle.stroke;
-    canvas.drawCircle(center, ringR, paint);
-    final tick = cell * 0.16;
-    final gap = cell * 0.08;
-    final line = Paint()
-      ..color = AppColors.crosshair
-      ..strokeWidth = 3.4
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(center - Offset(ringR + gap + tick, 0),
-        center - Offset(ringR + gap, 0), line);
-    canvas.drawLine(center + Offset(ringR + gap + tick, 0),
-        center + Offset(ringR + gap, 0), line);
-    canvas.drawLine(center - Offset(0, ringR + gap + tick),
-        center - Offset(0, ringR + gap), line);
-    canvas.drawLine(center + Offset(0, ringR + gap + tick),
-        center + Offset(0, ringR + gap), line);
+  /// Quick expanding-ring "tap registered" pulse — replaces the old
+  /// persistent aiming crosshair. Fades out over ~260ms.
+  void _drawTapRipple(Canvas canvas, Offset center, double cell, double t) {
+    final alpha = (1 - t) * 0.85;
+    final ringR = cell * (0.16 + 0.42 * Curves.easeOut.transform(t));
     canvas.drawCircle(
-        center, 2.6, Paint()..color = AppColors.crosshair);
+      center,
+      ringR,
+      Paint()
+        ..color = Colors.white.withValues(alpha: alpha)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = cell * 0.09 * (1 - t * 0.5),
+    );
+    canvas.drawCircle(
+      center,
+      cell * 0.05,
+      Paint()..color = Colors.white.withValues(alpha: alpha),
+    );
   }
 
   @override
-  bool shouldRepaint(_GridPainter oldDelegate) => true;
+  bool shouldRepaint(_GridPainter oldDelegate) {
+    // While anything transient is animating, its visual progress is driven
+    // by wall-clock time (see CellFx.progress), not by field identity, so
+    // we must keep repainting every tick.
+    if (fx.isNotEmpty || tapFx.isNotEmpty) return true;
+    // Otherwise only repaint when something that actually affects pixels
+    // changed — this is what stops the board from being fully redrawn on
+    // every 100ms game-cooldown tick once nothing is animating.
+    return !identical(oldDelegate.shots, shots) ||
+        oldDelegate.preview != preview ||
+        oldDelegate.previewValid != previewValid ||
+        oldDelegate.cellColor != cellColor ||
+        oldDelegate.gridColor != gridColor;
+  }
 }
