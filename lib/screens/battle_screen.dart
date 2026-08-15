@@ -84,9 +84,12 @@ class _BattleScreenState extends State<BattleScreen>
   // ----- Cannon slide (active player's cannon moves to its grid center) ---
   late final AnimationController _slideCtrl;
 
-  /// The currently-aimed target cell on the OPPONENT's grid (crosshair).
-  /// Tapping the active player's own cannon fires the ball here.
-  List<int> _aim = [4, 4];
+  // ----- PERF: cached derived grid data (see _refreshDerivedCache) -----
+  int _cachedRevision = -1;
+  List<int>? _cachedPendingImpactKey;
+  bool _cachedPendingByP1 = true;
+  final Map<bool, List<List<int>>> _shotsCache = {};
+  final Map<bool, List<CombatEventLike>> _eventsCache = {};
 
   @override
   void initState() {
@@ -256,6 +259,7 @@ class _BattleScreenState extends State<BattleScreen>
   /// NEVER swap sides (P1 stays bottom, P2 stays top).
   void _passTurn(bool toP2) {
     SoundService.instance.whir();
+    SoundService.instance.turnPass();
     setState(() => _p2Active = toP2);
     // Animate the slide: value 1 = P1 out (P2 home), 0 = P2 out (P1 home).
     if (toP2) {
@@ -263,9 +267,11 @@ class _BattleScreenState extends State<BattleScreen>
     } else {
       _slideCtrl.forward();
     }
-    // Flash the newly-active cannon once the slide has begun.
+    // Flash the newly-active cannon once the slide has begun, with a
+    // mechanical "locked in" clunk synced to the same moment.
     Future.delayed(const Duration(milliseconds: 120), () {
       if (!mounted) return;
+      SoundService.instance.cannonReady();
       (_p2Active ? _cannon2Ready : _cannon1Ready).add(null);
     });
   }
@@ -301,7 +307,6 @@ class _BattleScreenState extends State<BattleScreen>
       SoundService.instance.denied();
       return;
     }
-    setState(() => _aim = [r, c]);
     _launchBall(controller, byP1: byP1, r: r, c: c, res: res);
   }
 
@@ -347,9 +352,14 @@ class _BattleScreenState extends State<BattleScreen>
 
   /// A half's cannon CENTER (in that half's local, unrotated space),
   /// interpolated between its home position near the middle band (t=0)
-  /// and the middle of its own grid (t=1, its firing position).
-  Offset _cannonCenterLocal(_HalfGeom g, double t) =>
-      Offset.lerp(g.cannonCenter, g.gridCenterLocal, t)!;
+  /// and the middle of its own grid (t=1, its firing position). Eased to
+  /// match the little overshoot "pop" the cannon visually slides with —
+  /// harmless at t=0/1 (both curves agree exactly at the endpoints,
+  /// which is always where firing actually happens) and keeps the ball's
+  /// spawn point consistent with the cannon's on-screen position at any
+  /// other moment too.
+  Offset _cannonCenterLocal(_HalfGeom g, double t) => Offset.lerp(
+      g.cannonCenter, g.gridCenterLocal, Curves.easeOutBack.transform(t.clamp(0.0, 1.0)))!;
 
   /// Absolute screen position of a half's cannon MOUTH, accounting for the
   /// 180° rotation of the top half, given the cannon's slide amount [t].
@@ -396,6 +406,7 @@ class _BattleScreenState extends State<BattleScreen>
   Widget build(BuildContext context) {
     final controller = context.watch<GameController>();
     final profile = context.watch<ProfileStore>();
+    _refreshDerivedCache(controller);
     // LOCAL FIX: the halves NEVER swap sides — P1 is always on the bottom
     // (upright) and P2 always on top (rotated 180°), because the players
     // sit across from each other. Only the "whose turn" flag changes.
@@ -499,6 +510,50 @@ class _BattleScreenState extends State<BattleScreen>
 
   // -------------------------------------------------------------- HALVES
 
+  /// PERF: the game's cooldown ticker fires `notifyListeners()` every
+  /// 100ms for the whole battle so the cannons' reload rings stay smooth.
+  /// This screen used to recompute BOTH grids' full 10×10 shot arrays and
+  /// re-filter the entire combat-event log from scratch on every single
+  /// one of those ticks — work that grows with how many shots have been
+  /// fired, ten times a second, for the whole match. That's the "lags
+  /// more the more hits/misses pile up" bug. It only actually needs to be
+  /// recomputed when a shot is fired/resolved, so it's now cached and
+  /// only rebuilt when [GameController.revision] (or the locally-tracked
+  /// in-flight ball) actually changes.
+  void _refreshDerivedCache(GameController controller) {
+    final pendingKey = _pendingImpact;
+    final samePending = pendingKey == null
+        ? _cachedPendingImpactKey == null
+        : (_cachedPendingImpactKey != null &&
+            _cachedPendingImpactKey![0] == pendingKey[0] &&
+            _cachedPendingImpactKey![1] == pendingKey[1]);
+    if (controller.revision == _cachedRevision &&
+        samePending &&
+        _cachedPendingByP1 == _pendingByP1 &&
+        _shotsCache.isNotEmpty) {
+      return; // nothing relevant changed since the last build — reuse it.
+    }
+    _cachedRevision = controller.revision;
+    _cachedPendingImpactKey = pendingKey == null ? null : [pendingKey[0], pendingKey[1]];
+    _cachedPendingByP1 = _pendingByP1;
+    for (final halfIsP1 in const [true, false]) {
+      final shotsOnThisGrid = halfIsP1 ? controller.p2Shots : controller.myShots;
+      _shotsCache[halfIsP1] = [
+        for (var r = 0; r < kBoardSize; r++)
+          [
+            for (var c = 0; c < kBoardSize; c++)
+              _shotVisible(shotsOnThisGrid, halfIsP1, r, c)
+                  ? shotsOnThisGrid[r][c]
+                  : 0
+          ]
+      ];
+      _eventsCache[halfIsP1] = controller.events
+          .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)
+          .map((e) => CombatEventLike(e.row, e.col, e.result))
+          .toList();
+    }
+  }
+
   /// One player's half of the table: their own grid + their own cannon.
   Widget _buildHalf(
     GameController controller,
@@ -509,8 +564,6 @@ class _BattleScreenState extends State<BattleScreen>
     required double halfTopY,
     required bool bottomIsP1,
   }) {
-    // This half shows the OWNER's grid: the enemy's shots land here.
-    final shotsOnThisGrid = halfIsP1 ? controller.p2Shots : controller.myShots;
     final cooldown =
         halfIsP1 ? controller.cooldownFraction1 : controller.cooldownFraction2;
     final cannonStream = halfIsP1 ? _cannon1Fire : _cannon2Fire;
@@ -539,37 +592,35 @@ class _BattleScreenState extends State<BattleScreen>
     // The OPPONENT's grid is tappable to fire, on your turn.
     final gridFireable = thisIsOpponentOfActive && inBattle;
 
-    // Only show markers whose cannonball has already landed.
-    final events = controller.events
-        .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)
-        .map((e) => CombatEventLike(e.row, e.col, e.result))
-        .toList();
-    final shownShots = [
-      for (var r = 0; r < kBoardSize; r++)
-        [
-          for (var c = 0; c < kBoardSize; c++)
-            _shotVisible(shotsOnThisGrid, halfIsP1, r, c)
-                ? shotsOnThisGrid[r][c]
-                : 0
-        ]
-    ];
+    // Only show markers whose cannonball has already landed. (PERF: these
+    // come from the per-frame cache refreshed once in build() — see
+    // _refreshDerivedCache — instead of being recomputed here on every
+    // 100ms cooldown tick.)
+    final events = _eventsCache[halfIsP1] ?? const [];
+    final shownShots = _shotsCache[halfIsP1] ??
+        List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0));
 
     return LayoutBuilder(
       builder: (context, box) {
         final w = box.maxWidth;
-        final gridSide = math.min(w, halfH * 0.78);
+        // Bigger board: use almost all of each half's real estate (was
+        // capped at 78% of the half's height) — same 10×10 grid, just
+        // rendered larger now that the game has started.
+        final gridSide = math.min(w * 0.97, halfH * 0.92);
         final cell = gridSide / kBoardSize;
         final gridLeft = (w - gridSide) / 2;
-        final gridTop = 6.0; // grid near the outer edge of the half
-        final cannonSize = gridSide * 0.30;
-        // Cannon HOME: in the gap between the grid and the middle band.
+        final gridTop = 4.0; // grid near the outer edge of the half
+        final cannonSize = gridSide * 0.24;
+        // Cannon HOME: tucked just past the grid's edge, toward the
+        // middle band, while it's not this player's turn.
         final cannonCenter =
-            Offset(w / 2, gridTop + gridSide + (halfH - gridSide) * 0.60);
-        // Cannon "ready" (active) position: parked just past the grid's
-        // edge toward the middle band — prominent, close, and NOT covering
-        // any grid cells so the whole grid stays tappable.
-        final gridCenterLocal = Offset(
-            w / 2, gridTop + gridSide + cannonSize * 0.62);
+            Offset(w / 2, math.min(gridTop + gridSide + cannonSize * 0.55, halfH - cannonSize * 0.35));
+        // Cannon "ready" (active) position: the actual MIDDLE of this
+        // player's own grid — a clear, unmissable "your turn" indicator.
+        // Safe to overlap the grid here: a player's OWN grid is never
+        // tappable during their OWN turn (only the opponent's grid is),
+        // so sitting on top of it doesn't block anything.
+        final gridCenterLocal = Offset(w / 2, gridTop + gridSide / 2);
 
         // Record screen-space geometry (accounting for the 180° rotation
         // of the top half) so the cannonball can fly between halves.
@@ -612,10 +663,6 @@ class _BattleScreenState extends State<BattleScreen>
                     glowColor: AppColors.steelBlueDark,
                     cellColor: AppColors.steelBlue,
                     recentEvents: events,
-                    // Crosshair flashes on the cell you just fired at.
-                    crosshair: thisIsOpponentOfActive && controller.battling
-                        ? _aim
-                        : null,
                     // Tapping the opponent's grid fires at it immediately.
                     onTapCell: gridFireable
                         ? (r, c) => _fireAtCell(controller, r: r, c: c)
@@ -624,15 +671,17 @@ class _BattleScreenState extends State<BattleScreen>
                 ),
               ),
 
-              // Own cannon. During its owner's turn it slides to the middle
-              // of its own grid (its "ready to fire" position) and becomes
-              // TAPPABLE to fire at the crosshair; otherwise it sits at home
-              // near the middle band. P1 = _slideCtrl.value, P2 = 1-value.
+              // Own cannon. During its owner's turn it slides to the
+              // MIDDLE of its own grid — a big, unmissable "your turn"
+              // indicator — with a little overshoot bounce on the way in.
+              // Otherwise it sits parked at home near the middle band.
+              // P1 = _slideCtrl.value, P2 = 1-value.
               AnimatedBuilder(
                 animation: _slideCtrl,
                 builder: (context, _) {
-                  final slide =
+                  final raw =
                       halfIsP1 ? _slideCtrl.value : 1 - _slideCtrl.value;
+                  final slide = Curves.easeOutBack.transform(raw.clamp(0.0, 1.0));
                   final pos =
                       Offset.lerp(cannonCenter, gridCenterLocal, slide)!;
                   return Positioned(

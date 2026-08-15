@@ -32,7 +32,6 @@ class AppColors {
   static const Color hit = Color(0xFFE63946);
   static const Color hitGlow = Color(0xFFFF8FA3);
   static const Color miss = Color(0xFF8FB3C7);
-  static const Color crosshair = Color(0xFFFFFFFF);
 
   // Gameplay-video palette (1:1 reference)
   static const Color steelBlue = Color(0xFF4A789A); // grid water (video)

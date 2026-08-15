@@ -101,34 +101,80 @@ void main() {
   // reference gameplay video (see docs). This tool (re)generates only
   // the synthesized effects below so it never clobbers the real ones.
 
-  // ---- MISS: water splash — higher "bloop" + airy "shh", no bass ----
-  final miss = buf(0.55);
+  // ---- MISS: water splash — crack of impact + higher "bloop" + airy
+  // "shh" + a lower settling "plunk" a beat later, for more depth than a
+  // single thin tone. ----
+  final miss = buf(0.6);
+  add(miss, 0, tone(0.03, (t) => 1400, volume: 0.18, decay: 45)); // crack
   add(miss, 0, tone(0.16, (t) => 620 - 380 * t, volume: 0.42, decay: 12));
   add(miss, (0.05 * sr).toInt(),
       sweep(0.42, (t) => 0.55 - 0.25 * t, volume: 0.30, decay: 7));
+  add(miss, (0.14 * sr).toInt(),
+      tone(0.22, (t) => 260 - 90 * t, volume: 0.22, decay: 9)); // settle
   writeWav('assets/sfx/miss.wav', miss);
 
-  // ---- DEFEAT: falling dirge ----
-  final defeat = buf(1.2);
+  // ---- DEFEAT: falling dirge, doubled an octave down for weight, with a
+  // soft noise "sigh" swell underneath. ----
+  final defeat = buf(1.3);
   const dNotes = [392.0, 311.13, 233.08, 174.61];
   for (var k = 0; k < dNotes.length; k++) {
-    add(defeat, (k * 0.22 * sr).toInt(),
-        tone(0.34, (t) => dNotes[k], volume: 0.4, decay: 4));
+    final at = (k * 0.22 * sr).toInt();
+    add(defeat, at, tone(0.34, (t) => dNotes[k], volume: 0.4, decay: 4));
+    add(defeat, at,
+        tone(0.34, (t) => dNotes[k] / 2, volume: 0.16, decay: 4.5));
   }
+  add(defeat, 0, noise(1.1, volume: 0.08, decay: 1.4, cutoff: 0.08));
   writeWav('assets/sfx/defeat.wav', defeat);
 
-  // ---- PLACE: short high "pop" blip (matches video's placement taps) ----
-  final place = buf(0.12);
+  // ---- PLACE: short high "pop" blip + a lower "thunk" body for a more
+  // satisfying, physical placement tap. ----
+  final place = buf(0.16);
   add(place, 0, tone(0.09, (t) => 950 - 350 * t, volume: 0.55, decay: 34));
   add(place, 0, noise(0.03, volume: 0.28, decay: 60, cutoff: 0.55));
+  add(place, (0.01 * sr).toInt(),
+      tone(0.08, (t) => 180, volume: 0.22, decay: 40));
   writeWav('assets/sfx/place.wav', place);
 
-  // ---- WHIR: screen/turn transition whoosh (rising band-pass sweep) ----
+  // ---- WHIR: screen/turn transition whoosh — broad sweep plus a
+  // higher, brighter companion sweep slightly offset for more shimmer,
+  // and a short "arrival" snap at the end. ----
   final whir = buf(0.5);
   add(whir, 0, sweep(0.45, (t) => 0.08 + 0.5 * t, volume: 0.5, decay: 4));
+  add(whir, (0.02 * sr).toInt(),
+      sweep(0.4, (t) => 0.18 + 0.6 * t, volume: 0.22, decay: 5));
+  add(whir, (0.38 * sr).toInt(),
+      noise(0.08, volume: 0.2, decay: 20, cutoff: 0.6));
   writeWav('assets/sfx/whir.wav', whir);
 
-  // ---- DENIED: dull buzz ----
-  writeWav('assets/sfx/denied.wav',
-      tone(0.16, (t) => 130, volume: 0.4, decay: 12));
+  // ---- DENIED: two-note dissonant buzz (reads as a clear "no", not just
+  // a flat tone). ----
+  final denied = buf(0.28);
+  add(denied, 0, tone(0.11, (t) => 150, volume: 0.4, decay: 16));
+  add(denied, (0.1 * sr).toInt(),
+      tone(0.14, (t) => 120, volume: 0.4, decay: 14));
+  add(denied, 0, tone(0.11, (t) => 156, volume: 0.16, decay: 16)); // beat
+  writeWav('assets/sfx/denied.wav', denied);
+
+  // ---- TURN_PASS: bright ascending two-note bell "ding-ding" —
+  // distinct from whir's whoosh, a clean tonal cue that it's a new
+  // turn. Each note doubled an octave up (quiet) for a bell-like
+  // shimmer. ----
+  final turnPass = buf(0.55);
+  const tNotes = [523.25, 659.25]; // C5, E5
+  for (var k = 0; k < tNotes.length; k++) {
+    final at = (k * 0.14 * sr).toInt();
+    add(turnPass, at, tone(0.32, (t) => tNotes[k], volume: 0.32, decay: 7));
+    add(turnPass, at,
+        tone(0.24, (t) => tNotes[k] * 2, volume: 0.10, decay: 10));
+  }
+  writeWav('assets/sfx/turn_pass.wav', turnPass);
+
+  // ---- CANNON_READY: short mechanical "clunk" + steam hiss, timed to
+  // the cannon locking into its firing position at the grid's middle. ----
+  final cannonReady = buf(0.3);
+  add(cannonReady, 0, tone(0.06, (t) => 95, volume: 0.42, decay: 22));
+  add(cannonReady, 0, noise(0.05, volume: 0.22, decay: 45, cutoff: 0.7));
+  add(cannonReady, (0.04 * sr).toInt(),
+      sweep(0.16, (t) => 0.5 - 0.35 * t, volume: 0.16, decay: 14)); // hiss
+  writeWav('assets/sfx/cannon_ready.wav', cannonReady);
 }

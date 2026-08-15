@@ -81,6 +81,12 @@ class GameController extends ChangeNotifier {
   final List<CombatEvent> events = [];
   final List<String> combatLog = [];
 
+  /// Bumped every time [myShots]/[p2Shots]/[events] actually change (a shot
+  /// is fired). The 100ms cooldown [_ticker] does NOT bump this. The battle
+  /// screen uses it to cache its per-frame derived grid data instead of
+  /// recomputing it on every single cooldown tick — see PERF note there.
+  int revision = 0;
+
   Timer? _ticker;
   StreamSubscription? _netSub;
   final Random _rng = Random();
@@ -119,6 +125,7 @@ class GameController extends ChangeNotifier {
   void beginBattle({Board? enemyBoard}) {
     boards[1] = enemyBoard ?? Board.random(rng: _rng);
     phase = BattlePhase.battling;
+    revision++;
     cooldownMax1 = kCooldownSeconds * profile.cannonSkin.cooldownFactor;
     cooldownMax2 = mode == GameMode.local ? cooldownMax1 : kCooldownSeconds.toDouble();
     cooldown1 = 0;
@@ -233,6 +240,7 @@ class GameController extends ChangeNotifier {
       sunkShipName: sunk?.spec.name,
     );
     events.add(evt);
+    revision++;
 
     final shooter = shooterIsP1 ? profile.playerName : _opponentName();
     final coord = '${String.fromCharCode(65 + r)}${c + 1}';

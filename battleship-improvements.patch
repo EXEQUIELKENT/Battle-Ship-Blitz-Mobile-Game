@@ -1,0 +1,793 @@
+diff --git a/lib/core/theme.dart b/lib/core/theme.dart
+index c0b21e0..f20263b 100644
+--- a/lib/core/theme.dart
++++ b/lib/core/theme.dart
+@@ -32,7 +32,6 @@ class AppColors {
+   static const Color hit = Color(0xFFE63946);
+   static const Color hitGlow = Color(0xFFFF8FA3);
+   static const Color miss = Color(0xFF8FB3C7);
+-  static const Color crosshair = Color(0xFFFFFFFF);
+ 
+   // Gameplay-video palette (1:1 reference)
+   static const Color steelBlue = Color(0xFF4A789A); // grid water (video)
+diff --git a/lib/screens/battle_screen.dart b/lib/screens/battle_screen.dart
+index 58f1783..f279490 100644
+--- a/lib/screens/battle_screen.dart
++++ b/lib/screens/battle_screen.dart
+@@ -84,9 +84,12 @@ class _BattleScreenState extends State<BattleScreen>
+   // ----- Cannon slide (active player's cannon moves to its grid center) ---
+   late final AnimationController _slideCtrl;
+ 
+-  /// The currently-aimed target cell on the OPPONENT's grid (crosshair).
+-  /// Tapping the active player's own cannon fires the ball here.
+-  List<int> _aim = [4, 4];
++  // ----- PERF: cached derived grid data (see _refreshDerivedCache) -----
++  int _cachedRevision = -1;
++  List<int>? _cachedPendingImpactKey;
++  bool _cachedPendingByP1 = true;
++  final Map<bool, List<List<int>>> _shotsCache = {};
++  final Map<bool, List<CombatEventLike>> _eventsCache = {};
+ 
+   @override
+   void initState() {
+@@ -256,6 +259,7 @@ class _BattleScreenState extends State<BattleScreen>
+   /// NEVER swap sides (P1 stays bottom, P2 stays top).
+   void _passTurn(bool toP2) {
+     SoundService.instance.whir();
++    SoundService.instance.turnPass();
+     setState(() => _p2Active = toP2);
+     // Animate the slide: value 1 = P1 out (P2 home), 0 = P2 out (P1 home).
+     if (toP2) {
+@@ -263,9 +267,11 @@ class _BattleScreenState extends State<BattleScreen>
+     } else {
+       _slideCtrl.forward();
+     }
+-    // Flash the newly-active cannon once the slide has begun.
++    // Flash the newly-active cannon once the slide has begun, with a
++    // mechanical "locked in" clunk synced to the same moment.
+     Future.delayed(const Duration(milliseconds: 120), () {
+       if (!mounted) return;
++      SoundService.instance.cannonReady();
+       (_p2Active ? _cannon2Ready : _cannon1Ready).add(null);
+     });
+   }
+@@ -301,7 +307,6 @@ class _BattleScreenState extends State<BattleScreen>
+       SoundService.instance.denied();
+       return;
+     }
+-    setState(() => _aim = [r, c]);
+     _launchBall(controller, byP1: byP1, r: r, c: c, res: res);
+   }
+ 
+@@ -347,9 +352,14 @@ class _BattleScreenState extends State<BattleScreen>
+ 
+   /// A half's cannon CENTER (in that half's local, unrotated space),
+   /// interpolated between its home position near the middle band (t=0)
+-  /// and the middle of its own grid (t=1, its firing position).
+-  Offset _cannonCenterLocal(_HalfGeom g, double t) =>
+-      Offset.lerp(g.cannonCenter, g.gridCenterLocal, t)!;
++  /// and the middle of its own grid (t=1, its firing position). Eased to
++  /// match the little overshoot "pop" the cannon visually slides with —
++  /// harmless at t=0/1 (both curves agree exactly at the endpoints,
++  /// which is always where firing actually happens) and keeps the ball's
++  /// spawn point consistent with the cannon's on-screen position at any
++  /// other moment too.
++  Offset _cannonCenterLocal(_HalfGeom g, double t) => Offset.lerp(
++      g.cannonCenter, g.gridCenterLocal, Curves.easeOutBack.transform(t.clamp(0.0, 1.0)))!;
+ 
+   /// Absolute screen position of a half's cannon MOUTH, accounting for the
+   /// 180° rotation of the top half, given the cannon's slide amount [t].
+@@ -396,6 +406,7 @@ class _BattleScreenState extends State<BattleScreen>
+   Widget build(BuildContext context) {
+     final controller = context.watch<GameController>();
+     final profile = context.watch<ProfileStore>();
++    _refreshDerivedCache(controller);
+     // LOCAL FIX: the halves NEVER swap sides — P1 is always on the bottom
+     // (upright) and P2 always on top (rotated 180°), because the players
+     // sit across from each other. Only the "whose turn" flag changes.
+@@ -499,6 +510,50 @@ class _BattleScreenState extends State<BattleScreen>
+ 
+   // -------------------------------------------------------------- HALVES
+ 
++  /// PERF: the game's cooldown ticker fires `notifyListeners()` every
++  /// 100ms for the whole battle so the cannons' reload rings stay smooth.
++  /// This screen used to recompute BOTH grids' full 10×10 shot arrays and
++  /// re-filter the entire combat-event log from scratch on every single
++  /// one of those ticks — work that grows with how many shots have been
++  /// fired, ten times a second, for the whole match. That's the "lags
++  /// more the more hits/misses pile up" bug. It only actually needs to be
++  /// recomputed when a shot is fired/resolved, so it's now cached and
++  /// only rebuilt when [GameController.revision] (or the locally-tracked
++  /// in-flight ball) actually changes.
++  void _refreshDerivedCache(GameController controller) {
++    final pendingKey = _pendingImpact;
++    final samePending = pendingKey == null
++        ? _cachedPendingImpactKey == null
++        : (_cachedPendingImpactKey != null &&
++            _cachedPendingImpactKey![0] == pendingKey[0] &&
++            _cachedPendingImpactKey![1] == pendingKey[1]);
++    if (controller.revision == _cachedRevision &&
++        samePending &&
++        _cachedPendingByP1 == _pendingByP1 &&
++        _shotsCache.isNotEmpty) {
++      return; // nothing relevant changed since the last build — reuse it.
++    }
++    _cachedRevision = controller.revision;
++    _cachedPendingImpactKey = pendingKey == null ? null : [pendingKey[0], pendingKey[1]];
++    _cachedPendingByP1 = _pendingByP1;
++    for (final halfIsP1 in const [true, false]) {
++      final shotsOnThisGrid = halfIsP1 ? controller.p2Shots : controller.myShots;
++      _shotsCache[halfIsP1] = [
++        for (var r = 0; r < kBoardSize; r++)
++          [
++            for (var c = 0; c < kBoardSize; c++)
++              _shotVisible(shotsOnThisGrid, halfIsP1, r, c)
++                  ? shotsOnThisGrid[r][c]
++                  : 0
++          ]
++      ];
++      _eventsCache[halfIsP1] = controller.events
++          .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)
++          .map((e) => CombatEventLike(e.row, e.col, e.result))
++          .toList();
++    }
++  }
++
+   /// One player's half of the table: their own grid + their own cannon.
+   Widget _buildHalf(
+     GameController controller,
+@@ -509,8 +564,6 @@ class _BattleScreenState extends State<BattleScreen>
+     required double halfTopY,
+     required bool bottomIsP1,
+   }) {
+-    // This half shows the OWNER's grid: the enemy's shots land here.
+-    final shotsOnThisGrid = halfIsP1 ? controller.p2Shots : controller.myShots;
+     final cooldown =
+         halfIsP1 ? controller.cooldownFraction1 : controller.cooldownFraction2;
+     final cannonStream = halfIsP1 ? _cannon1Fire : _cannon2Fire;
+@@ -539,37 +592,35 @@ class _BattleScreenState extends State<BattleScreen>
+     // The OPPONENT's grid is tappable to fire, on your turn.
+     final gridFireable = thisIsOpponentOfActive && inBattle;
+ 
+-    // Only show markers whose cannonball has already landed.
+-    final events = controller.events
+-        .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)
+-        .map((e) => CombatEventLike(e.row, e.col, e.result))
+-        .toList();
+-    final shownShots = [
+-      for (var r = 0; r < kBoardSize; r++)
+-        [
+-          for (var c = 0; c < kBoardSize; c++)
+-            _shotVisible(shotsOnThisGrid, halfIsP1, r, c)
+-                ? shotsOnThisGrid[r][c]
+-                : 0
+-        ]
+-    ];
++    // Only show markers whose cannonball has already landed. (PERF: these
++    // come from the per-frame cache refreshed once in build() — see
++    // _refreshDerivedCache — instead of being recomputed here on every
++    // 100ms cooldown tick.)
++    final events = _eventsCache[halfIsP1] ?? const [];
++    final shownShots = _shotsCache[halfIsP1] ??
++        List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0));
+ 
+     return LayoutBuilder(
+       builder: (context, box) {
+         final w = box.maxWidth;
+-        final gridSide = math.min(w, halfH * 0.78);
++        // Bigger board: use almost all of each half's real estate (was
++        // capped at 78% of the half's height) — same 10×10 grid, just
++        // rendered larger now that the game has started.
++        final gridSide = math.min(w * 0.97, halfH * 0.92);
+         final cell = gridSide / kBoardSize;
+         final gridLeft = (w - gridSide) / 2;
+-        final gridTop = 6.0; // grid near the outer edge of the half
+-        final cannonSize = gridSide * 0.30;
+-        // Cannon HOME: in the gap between the grid and the middle band.
++        final gridTop = 4.0; // grid near the outer edge of the half
++        final cannonSize = gridSide * 0.24;
++        // Cannon HOME: tucked just past the grid's edge, toward the
++        // middle band, while it's not this player's turn.
+         final cannonCenter =
+-            Offset(w / 2, gridTop + gridSide + (halfH - gridSide) * 0.60);
+-        // Cannon "ready" (active) position: parked just past the grid's
+-        // edge toward the middle band — prominent, close, and NOT covering
+-        // any grid cells so the whole grid stays tappable.
+-        final gridCenterLocal = Offset(
+-            w / 2, gridTop + gridSide + cannonSize * 0.62);
++            Offset(w / 2, math.min(gridTop + gridSide + cannonSize * 0.55, halfH - cannonSize * 0.35));
++        // Cannon "ready" (active) position: the actual MIDDLE of this
++        // player's own grid — a clear, unmissable "your turn" indicator.
++        // Safe to overlap the grid here: a player's OWN grid is never
++        // tappable during their OWN turn (only the opponent's grid is),
++        // so sitting on top of it doesn't block anything.
++        final gridCenterLocal = Offset(w / 2, gridTop + gridSide / 2);
+ 
+         // Record screen-space geometry (accounting for the 180° rotation
+         // of the top half) so the cannonball can fly between halves.
+@@ -612,10 +663,6 @@ class _BattleScreenState extends State<BattleScreen>
+                     glowColor: AppColors.steelBlueDark,
+                     cellColor: AppColors.steelBlue,
+                     recentEvents: events,
+-                    // Crosshair flashes on the cell you just fired at.
+-                    crosshair: thisIsOpponentOfActive && controller.battling
+-                        ? _aim
+-                        : null,
+                     // Tapping the opponent's grid fires at it immediately.
+                     onTapCell: gridFireable
+                         ? (r, c) => _fireAtCell(controller, r: r, c: c)
+@@ -624,15 +671,17 @@ class _BattleScreenState extends State<BattleScreen>
+                 ),
+               ),
+ 
+-              // Own cannon. During its owner's turn it slides to the middle
+-              // of its own grid (its "ready to fire" position) and becomes
+-              // TAPPABLE to fire at the crosshair; otherwise it sits at home
+-              // near the middle band. P1 = _slideCtrl.value, P2 = 1-value.
++              // Own cannon. During its owner's turn it slides to the
++              // MIDDLE of its own grid — a big, unmissable "your turn"
++              // indicator — with a little overshoot bounce on the way in.
++              // Otherwise it sits parked at home near the middle band.
++              // P1 = _slideCtrl.value, P2 = 1-value.
+               AnimatedBuilder(
+                 animation: _slideCtrl,
+                 builder: (context, _) {
+-                  final slide =
++                  final raw =
+                       halfIsP1 ? _slideCtrl.value : 1 - _slideCtrl.value;
++                  final slide = Curves.easeOutBack.transform(raw.clamp(0.0, 1.0));
+                   final pos =
+                       Offset.lerp(cannonCenter, gridCenterLocal, slide)!;
+                   return Positioned(
+diff --git a/lib/services/game_controller.dart b/lib/services/game_controller.dart
+index 60124da..d342a0c 100644
+--- a/lib/services/game_controller.dart
++++ b/lib/services/game_controller.dart
+@@ -81,6 +81,12 @@ class GameController extends ChangeNotifier {
+   final List<CombatEvent> events = [];
+   final List<String> combatLog = [];
+ 
++  /// Bumped every time [myShots]/[p2Shots]/[events] actually change (a shot
++  /// is fired). The 100ms cooldown [_ticker] does NOT bump this. The battle
++  /// screen uses it to cache its per-frame derived grid data instead of
++  /// recomputing it on every single cooldown tick — see PERF note there.
++  int revision = 0;
++
+   Timer? _ticker;
+   StreamSubscription? _netSub;
+   final Random _rng = Random();
+@@ -119,6 +125,7 @@ class GameController extends ChangeNotifier {
+   void beginBattle({Board? enemyBoard}) {
+     boards[1] = enemyBoard ?? Board.random(rng: _rng);
+     phase = BattlePhase.battling;
++    revision++;
+     cooldownMax1 = kCooldownSeconds * profile.cannonSkin.cooldownFactor;
+     cooldownMax2 = mode == GameMode.local ? cooldownMax1 : kCooldownSeconds.toDouble();
+     cooldown1 = 0;
+@@ -233,6 +240,7 @@ class GameController extends ChangeNotifier {
+       sunkShipName: sunk?.spec.name,
+     );
+     events.add(evt);
++    revision++;
+ 
+     final shooter = shooterIsP1 ? profile.playerName : _opponentName();
+     final coord = '${String.fromCharCode(65 + r)}${c + 1}';
+diff --git a/lib/services/sound_service.dart b/lib/services/sound_service.dart
+index 6f58ba3..11442f1 100644
+--- a/lib/services/sound_service.dart
++++ b/lib/services/sound_service.dart
+@@ -1,16 +1,39 @@
++import 'dart:math' as math;
++
+ import 'package:audioplayers/audioplayers.dart';
++import 'package:flutter/foundation.dart';
+ import 'package:flutter/services.dart';
+ 
+ /// Real sound effects via the audioplayers plugin.
+ ///
+ /// Short synthesized WAV assets live in `assets/sfx/` (see
+-/// `tool/gen_sounds.dart`). A small pool of players lets overlapping
+-/// effects (fire + hit + splash) play simultaneously on Android & Web.
++/// `tool/gen_sounds.dart`). A small pool of players per effect lets
++/// overlapping effects (fire + hit + splash) play simultaneously on
++/// Android & Web.
++///
++/// BUGFIX (sound effects sometimes disappearing): the old code called
++/// `player.stop()` and then IMMEDIATELY `player.play(...)` without
++/// awaiting the stop. On Flutter Web this races the underlying HTML
++/// `<audio>` element — a `play()` issued while a `pause()`/reset from the
++/// previous `stop()` is still in flight throws (browsers report this as
++/// "play() request was interrupted"), and the old code's blanket
++/// `catch (_) {}` swallowed that silently, so the sound just never played.
++/// It also only kept a pool of 3 players per effect, so any 4th
++/// near-simultaneous trigger of the SAME sound (e.g. several quick misses)
++/// forced a busy player to be interrupted, which is exactly when that race
++/// was likeliest to bite. Fixed by (1) preferring an already-idle player
++/// instead of interrupting a busy one, (2) properly awaiting `stop()`
++/// before replaying a still-busy player, (3) falling back to a disposable
++/// one-off player if every pooled player is busy or a play attempt throws,
++/// and (4) logging failures in debug builds instead of eating them
++/// silently, so a regression here is visible again instead of just
++/// "sometimes the sound doesn't happen".
+ class SoundService {
+   SoundService._();
+   static final SoundService instance = SoundService._();
+ 
+   bool enabled = true;
++  final _rng = math.Random();
+ 
+   static const _files = {
+     'fire': 'sfx/fire.wav',
+@@ -23,10 +46,29 @@ class SoundService {
+     'click': 'sfx/click.wav',
+     'denied': 'sfx/denied.wav',
+     'whir': 'sfx/whir.wav',
++    'turn_pass': 'sfx/turn_pass.wav',
++    'cannon_ready': 'sfx/cannon_ready.wav',
+     'count_beep': 'sfx/count_beep.wav',
+     'count_go': 'sfx/count_go.wav',
+   };
+ 
++  /// How many pooled players to keep per effect. Effects that can fire in
++  /// rapid bursts (cannon fire, hits, misses, UI clicks) get a bigger pool
++  /// so a burst is far less likely to need to interrupt a still-playing
++  /// player at all.
++  static const _poolSizes = {
++    'fire': 5,
++    'hit': 5,
++    'miss': 5,
++    'click': 4,
++  };
++  static const _defaultPoolSize = 3;
++
++  /// Effects that get a tiny random pitch/rate wobble each play so rapid
++  /// repeats (several misses in a row, etc.) don't sound like a stuck
++  /// robot repeating the exact same clip.
++  static const _variedPitch = {'fire', 'hit', 'miss', 'click'};
++
+   final Map<String, List<AudioPlayer>> _pool = {};
+   final Map<String, int> _cursor = {};
+ 
+@@ -34,8 +76,9 @@ class SoundService {
+   /// fire-and-forget from main().
+   Future<void> init() async {
+     for (final entry in _files.entries) {
++      final size = _poolSizes[entry.key] ?? _defaultPoolSize;
+       final players = <AudioPlayer>[];
+-      for (var i = 0; i < 3; i++) {
++      for (var i = 0; i < size; i++) {
+         final p = AudioPlayer();
+         try {
+           await p.setSource(AssetSource(entry.value));
+@@ -49,18 +92,72 @@ class SoundService {
+     }
+   }
+ 
+-  void _play(String key) {
++  Future<void> _play(String key) async {
+     if (!enabled) return;
+     final players = _pool[key];
+-    if (players == null || players.isEmpty) return;
++    final asset = _files[key];
++    if (players == null || players.isEmpty || asset == null) return;
++
++    final rate = _variedPitch.contains(key)
++        ? 0.94 + _rng.nextDouble() * 0.12 // ~±6% pitch/speed wobble
++        : 1.0;
++
++    // Prefer a player that's already idle — avoids interrupting (and
++    // racing) a player that's mid-playback at all.
++    AudioPlayer? target;
++    for (final p in players) {
++      if (p.state != PlayerState.playing) {
++        target = p;
++        break;
++      }
++    }
++
++    if (target != null) {
++      await _fire(target, asset, rate);
++      return;
++    }
++
++    // Every pooled player is busy: round-robin-steal one, but AWAIT the
++    // stop before replaying it so we don't race the previous playback.
+     final i = _cursor[key]! % players.length;
+     _cursor[key] = i + 1;
+     final p = players[i];
+     try {
+-      p.stop();
+-      p.play(AssetSource(_files[key]!));
++      await p.stop();
+     } catch (_) {
+-      // Audio is cosmetic — ignore failures (e.g. web autoplay policy).
++      // Ignore — we'll still attempt to play below.
++    }
++    final ok = await _fire(p, asset, rate);
++    if (!ok) {
++      // Last resort: a disposable one-shot player, so a single stuck
++      // pooled player can never fully silence an effect.
++      await _fireOneShot(asset, rate);
++    }
++  }
++
++  Future<bool> _fire(AudioPlayer p, String asset, double rate) async {
++    try {
++      await p.setPlaybackRate(rate);
++      await p.play(AssetSource(asset));
++      return true;
++    } catch (e) {
++      if (kDebugMode) {
++        debugPrint('SoundService: play failed for $asset ($e)');
++      }
++      return false;
++    }
++  }
++
++  Future<void> _fireOneShot(String asset, double rate) async {
++    try {
++      final p = AudioPlayer();
++      await p.setReleaseMode(ReleaseMode.release);
++      await p.setPlaybackRate(rate);
++      await p.play(AssetSource(asset));
++    } catch (e) {
++      if (kDebugMode) {
++        debugPrint('SoundService: one-shot fallback failed for $asset ($e)');
++      }
+     }
+   }
+ 
+@@ -102,6 +199,15 @@ class SoundService {
+   /// Screen/turn transition whoosh.
+   void whir() => _play('whir');
+ 
++  /// Distinct "turn passed to the other player" cue — plays alongside
++  /// [whir] at handoff so a turn change is unmistakable even with sound
++  /// as the only cue (e.g. eyes on the board, not the turn badge).
++  void turnPass() => _play('turn_pass');
++
++  /// Mechanical "locked in" clunk — synced to the cannon's ready-flash,
++  /// right as it settles into the middle of its grid.
++  void cannonReady() => _play('cannon_ready');
++
+   /// Countdown warning beep (plays each tick: 3..2..1).
+   void countBeep() => _play('count_beep');
+ 
+diff --git a/lib/widgets/battle_grid.dart b/lib/widgets/battle_grid.dart
+index b59473c..7468973 100644
+--- a/lib/widgets/battle_grid.dart
++++ b/lib/widgets/battle_grid.dart
+@@ -27,8 +27,10 @@ class CombatEventLike {
+ }
+ 
+ /// Flat-cartoon 10×10 grid in the reference style: chunky rounded blue
+-/// cells, white crosshair targeting cursor, big bold ✕ for misses and
+-/// red blast for hits. Ships (when provided) render on top.
++/// cells, big bold ✕ for misses and red blast for hits. A quick tap
++/// pulses a ripple at the tapped cell (no persistent aiming cursor is
++/// needed — you just tap the grid to shoot). Ships (when provided) render
++/// on top.
+ class BattleGrid extends StatefulWidget {
+   final List<List<int>> shots; // 0 unknown, 1 miss, 2 hit
+   final List<PlacedShip>? ships;
+@@ -41,9 +43,6 @@ class BattleGrid extends StatefulWidget {
+   /// Cell fill color (defaults to the video's steel blue).
+   final Color cellColor;
+ 
+-  /// Aiming crosshair cell (targeting grid).
+-  final List<int>? crosshair;
+-
+   /// Placement-mode ghost preview.
+   final PlacedShip? previewShip;
+   final bool previewValid;
+@@ -62,7 +61,6 @@ class BattleGrid extends StatefulWidget {
+     this.enabled = true,
+     this.glowColor = AppColors.water,
+     this.cellColor = AppColors.steelBlue,
+-    this.crosshair,
+     this.previewShip,
+     this.previewValid = true,
+     this.onShipDragEnd,
+@@ -78,30 +76,67 @@ class _BattleGridState extends State<BattleGrid>
+   late final AnimationController _fxCtrl;
+   final Map<String, CellFx> _fx = {};
+ 
++  /// Instant tap-feedback ripples (cell → time tapped). Short-lived and
++  /// self-clearing; this is what replaced the old persistent crosshair.
++  final Map<String, DateTime> _tapFx = {};
++
+   // Drag state (placement)
+   ShipKind? _dragKind;
+   Offset _dragPos = Offset.zero;
+   bool _dragging = false;
+ 
++  /// PERF: ships != null means this is the placement-mode grid, which uses
++  /// the same ticker to gently bob the ships on the water the whole time
++  /// it's on screen — that one legitimately needs to keep running.
++  bool get _needsContinuousTicker => widget.ships != null;
++
+   @override
+   void initState() {
+     super.initState();
+     _fxCtrl = AnimationController(
+       vsync: this,
+       duration: const Duration(milliseconds: 800),
+-    )..repeat();
++    );
++    if (_needsContinuousTicker) {
++      _fxCtrl.repeat();
++    }
++    // PERF: a battle grid has no continuous animation by default — the
++    // ticker only turns on for the ~1s a hit/miss/tap effect is actually
++    // playing, and turns itself back off the moment nothing is animating.
++    // Previously this ticker ran forever at 60fps and repainted the WHOLE
++    // board (every past hit/miss mark) every single frame, which is why
++    // the game visibly slowed down the more shots piled up on a grid.
++    _fxCtrl.addListener(() {
++      if (_needsContinuousTicker) return;
++      if (_fx.isEmpty && _tapFx.isEmpty) return;
++      _fx.removeWhere((_, fx) => fx.done);
++      _tapFx.removeWhere((_, started) =>
++          DateTime.now().difference(started).inMilliseconds >= 260);
++      if (_fx.isEmpty && _tapFx.isEmpty && _fxCtrl.isAnimating) {
++        _fxCtrl.stop();
++      }
++    });
++  }
++
++  void _ensureTickerRunning() {
++    if (!_needsContinuousTicker && !_fxCtrl.isAnimating) {
++      _fxCtrl.repeat();
++    }
+   }
+ 
+   @override
+   void didUpdateWidget(BattleGrid oldWidget) {
+     super.didUpdateWidget(oldWidget);
++    var addedNew = false;
+     for (final e in widget.recentEvents) {
+       final key = '${e.row},${e.col}';
+       if (!_fx.containsKey(key)) {
+         _fx[key] = CellFx(e.result);
++        addedNew = true;
+       }
+     }
+     _fx.removeWhere((_, fx) => fx.done);
++    if (addedNew) _ensureTickerRunning();
+   }
+ 
+   @override
+@@ -147,7 +182,7 @@ class _BattleGridState extends State<BattleGrid>
+                         painter: _GridPainter(
+                           shots: widget.shots,
+                           fx: _fx,
+-                          crosshair: widget.crosshair,
++                          tapFx: _tapFx,
+                           preview: widget.previewShip,
+                           previewValid: widget.previewValid,
+                           gridColor: widget.glowColor,
+@@ -183,10 +218,19 @@ class _BattleGridState extends State<BattleGrid>
+           }
+         }
+       }
++      if (widget.onTapCell != null) _pulseTap(r, c);
+       widget.onTapCell?.call(r, c);
+     };
+   }
+ 
++  /// Instant ripple at the tapped cell — the tap IS the shot, so this is
++  /// the only "targeting" feedback the grid needs (no persistent cursor).
++  void _pulseTap(int r, int c) {
++    final key = '$r,$c';
++    _tapFx[key] = DateTime.now();
++    _ensureTickerRunning();
++  }
++
+   void Function(DragStartDetails)? _onPanStart(double cell) {
+     if (!widget.enabled || widget.onShipDragEnd == null || widget.ships == null) {
+       return null;
+@@ -351,7 +395,7 @@ class _RotateArrow extends StatelessWidget {
+ class _GridPainter extends CustomPainter {
+   final List<List<int>> shots;
+   final Map<String, CellFx> fx;
+-  final List<int>? crosshair;
++  final Map<String, DateTime> tapFx;
+   final PlacedShip? preview;
+   final bool previewValid;
+   final Color gridColor;
+@@ -360,7 +404,7 @@ class _GridPainter extends CustomPainter {
+   _GridPainter({
+     required this.shots,
+     required this.fx,
+-    this.crosshair,
++    this.tapFx = const {},
+     this.preview,
+     this.previewValid = true,
+     required this.gridColor,
+@@ -428,12 +472,19 @@ class _GridPainter extends CustomPainter {
+       }
+     });
+ 
+-    // ---- Crosshair cursor ----
+-    if (crosshair != null) {
+-      final center = Offset(
+-          crosshair![1] * cell + cell / 2, crosshair![0] * cell + cell / 2);
+-      _drawCrosshair(canvas, center, cell);
+-    }
++    // ---- Instant tap ripples (replaces the old aiming crosshair — a
++    // single tap fires, so the only feedback needed is "yes, that tap
++    // landed") ----
++    final now = DateTime.now();
++    tapFx.forEach((key, started) {
++      final t = now.difference(started).inMilliseconds / 260;
++      if (t >= 1.0) return;
++      final parts = key.split(',');
++      final r = int.parse(parts[0]);
++      final c = int.parse(parts[1]);
++      final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
++      _drawTapRipple(canvas, center, cell, t.clamp(0.0, 1.0));
++    });
+   }
+ 
+   /// Miss marker (video): slightly darker cell + tiny grey ✕.
+@@ -543,32 +594,39 @@ class _GridPainter extends CustomPainter {
+     }
+   }
+ 
+-  void _drawCrosshair(Canvas canvas, Offset center, double cell) {
+-    final paint = Paint()
+-      ..color = AppColors.crosshair
+-      ..strokeWidth = 3.4
+-      ..strokeCap = StrokeCap.round;
+-    final ringR = cell * 0.30;
+-    paint.style = PaintingStyle.stroke;
+-    canvas.drawCircle(center, ringR, paint);
+-    final tick = cell * 0.16;
+-    final gap = cell * 0.08;
+-    final line = Paint()
+-      ..color = AppColors.crosshair
+-      ..strokeWidth = 3.4
+-      ..strokeCap = StrokeCap.round;
+-    canvas.drawLine(center - Offset(ringR + gap + tick, 0),
+-        center - Offset(ringR + gap, 0), line);
+-    canvas.drawLine(center + Offset(ringR + gap + tick, 0),
+-        center + Offset(ringR + gap, 0), line);
+-    canvas.drawLine(center - Offset(0, ringR + gap + tick),
+-        center - Offset(0, ringR + gap), line);
+-    canvas.drawLine(center + Offset(0, ringR + gap + tick),
+-        center + Offset(0, ringR + gap), line);
++  /// Quick expanding-ring "tap registered" pulse — replaces the old
++  /// persistent aiming crosshair. Fades out over ~260ms.
++  void _drawTapRipple(Canvas canvas, Offset center, double cell, double t) {
++    final alpha = (1 - t) * 0.85;
++    final ringR = cell * (0.16 + 0.42 * Curves.easeOut.transform(t));
++    canvas.drawCircle(
++      center,
++      ringR,
++      Paint()
++        ..color = Colors.white.withValues(alpha: alpha)
++        ..style = PaintingStyle.stroke
++        ..strokeWidth = cell * 0.09 * (1 - t * 0.5),
++    );
+     canvas.drawCircle(
+-        center, 2.6, Paint()..color = AppColors.crosshair);
++      center,
++      cell * 0.05,
++      Paint()..color = Colors.white.withValues(alpha: alpha),
++    );
+   }
+ 
+   @override
+-  bool shouldRepaint(_GridPainter oldDelegate) => true;
++  bool shouldRepaint(_GridPainter oldDelegate) {
++    // While anything transient is animating, its visual progress is driven
++    // by wall-clock time (see CellFx.progress), not by field identity, so
++    // we must keep repainting every tick.
++    if (fx.isNotEmpty || tapFx.isNotEmpty) return true;
++    // Otherwise only repaint when something that actually affects pixels
++    // changed — this is what stops the board from being fully redrawn on
++    // every 100ms game-cooldown tick once nothing is animating.
++    return !identical(oldDelegate.shots, shots) ||
++        oldDelegate.preview != preview ||
++        oldDelegate.previewValid != previewValid ||
++        oldDelegate.cellColor != cellColor ||
++        oldDelegate.gridColor != gridColor;
++  }
+ }
+diff --git a/tool/gen_sounds.dart b/tool/gen_sounds.dart
+index d24662e..929608c 100644
+--- a/tool/gen_sounds.dart
++++ b/tool/gen_sounds.dart
+@@ -101,34 +101,80 @@ void main() {
+   // reference gameplay video (see docs). This tool (re)generates only
+   // the synthesized effects below so it never clobbers the real ones.
+ 
+-  // ---- MISS: water splash — higher "bloop" + airy "shh", no bass ----
+-  final miss = buf(0.55);
++  // ---- MISS: water splash — crack of impact + higher "bloop" + airy
++  // "shh" + a lower settling "plunk" a beat later, for more depth than a
++  // single thin tone. ----
++  final miss = buf(0.6);
++  add(miss, 0, tone(0.03, (t) => 1400, volume: 0.18, decay: 45)); // crack
+   add(miss, 0, tone(0.16, (t) => 620 - 380 * t, volume: 0.42, decay: 12));
+   add(miss, (0.05 * sr).toInt(),
+       sweep(0.42, (t) => 0.55 - 0.25 * t, volume: 0.30, decay: 7));
++  add(miss, (0.14 * sr).toInt(),
++      tone(0.22, (t) => 260 - 90 * t, volume: 0.22, decay: 9)); // settle
+   writeWav('assets/sfx/miss.wav', miss);
+ 
+-  // ---- DEFEAT: falling dirge ----
+-  final defeat = buf(1.2);
++  // ---- DEFEAT: falling dirge, doubled an octave down for weight, with a
++  // soft noise "sigh" swell underneath. ----
++  final defeat = buf(1.3);
+   const dNotes = [392.0, 311.13, 233.08, 174.61];
+   for (var k = 0; k < dNotes.length; k++) {
+-    add(defeat, (k * 0.22 * sr).toInt(),
+-        tone(0.34, (t) => dNotes[k], volume: 0.4, decay: 4));
++    final at = (k * 0.22 * sr).toInt();
++    add(defeat, at, tone(0.34, (t) => dNotes[k], volume: 0.4, decay: 4));
++    add(defeat, at,
++        tone(0.34, (t) => dNotes[k] / 2, volume: 0.16, decay: 4.5));
+   }
++  add(defeat, 0, noise(1.1, volume: 0.08, decay: 1.4, cutoff: 0.08));
+   writeWav('assets/sfx/defeat.wav', defeat);
+ 
+-  // ---- PLACE: short high "pop" blip (matches video's placement taps) ----
+-  final place = buf(0.12);
++  // ---- PLACE: short high "pop" blip + a lower "thunk" body for a more
++  // satisfying, physical placement tap. ----
++  final place = buf(0.16);
+   add(place, 0, tone(0.09, (t) => 950 - 350 * t, volume: 0.55, decay: 34));
+   add(place, 0, noise(0.03, volume: 0.28, decay: 60, cutoff: 0.55));
++  add(place, (0.01 * sr).toInt(),
++      tone(0.08, (t) => 180, volume: 0.22, decay: 40));
+   writeWav('assets/sfx/place.wav', place);
+ 
+-  // ---- WHIR: screen/turn transition whoosh (rising band-pass sweep) ----
++  // ---- WHIR: screen/turn transition whoosh — broad sweep plus a
++  // higher, brighter companion sweep slightly offset for more shimmer,
++  // and a short "arrival" snap at the end. ----
+   final whir = buf(0.5);
+   add(whir, 0, sweep(0.45, (t) => 0.08 + 0.5 * t, volume: 0.5, decay: 4));
++  add(whir, (0.02 * sr).toInt(),
++      sweep(0.4, (t) => 0.18 + 0.6 * t, volume: 0.22, decay: 5));
++  add(whir, (0.38 * sr).toInt(),
++      noise(0.08, volume: 0.2, decay: 20, cutoff: 0.6));
+   writeWav('assets/sfx/whir.wav', whir);
+ 
+-  // ---- DENIED: dull buzz ----
+-  writeWav('assets/sfx/denied.wav',
+-      tone(0.16, (t) => 130, volume: 0.4, decay: 12));
++  // ---- DENIED: two-note dissonant buzz (reads as a clear "no", not just
++  // a flat tone). ----
++  final denied = buf(0.28);
++  add(denied, 0, tone(0.11, (t) => 150, volume: 0.4, decay: 16));
++  add(denied, (0.1 * sr).toInt(),
++      tone(0.14, (t) => 120, volume: 0.4, decay: 14));
++  add(denied, 0, tone(0.11, (t) => 156, volume: 0.16, decay: 16)); // beat
++  writeWav('assets/sfx/denied.wav', denied);
++
++  // ---- TURN_PASS: bright ascending two-note bell "ding-ding" —
++  // distinct from whir's whoosh, a clean tonal cue that it's a new
++  // turn. Each note doubled an octave up (quiet) for a bell-like
++  // shimmer. ----
++  final turnPass = buf(0.55);
++  const tNotes = [523.25, 659.25]; // C5, E5
++  for (var k = 0; k < tNotes.length; k++) {
++    final at = (k * 0.14 * sr).toInt();
++    add(turnPass, at, tone(0.32, (t) => tNotes[k], volume: 0.32, decay: 7));
++    add(turnPass, at,
++        tone(0.24, (t) => tNotes[k] * 2, volume: 0.10, decay: 10));
++  }
++  writeWav('assets/sfx/turn_pass.wav', turnPass);
++
++  // ---- CANNON_READY: short mechanical "clunk" + steam hiss, timed to
++  // the cannon locking into its firing position at the grid's middle. ----
++  final cannonReady = buf(0.3);
++  add(cannonReady, 0, tone(0.06, (t) => 95, volume: 0.42, decay: 22));
++  add(cannonReady, 0, noise(0.05, volume: 0.22, decay: 45, cutoff: 0.7));
++  add(cannonReady, (0.04 * sr).toInt(),
++      sweep(0.16, (t) => 0.5 - 0.35 * t, volume: 0.16, decay: 14)); // hiss
++  writeWav('assets/sfx/cannon_ready.wav', cannonReady);
+ }
