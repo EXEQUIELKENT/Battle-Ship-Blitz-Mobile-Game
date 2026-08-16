@@ -52,6 +52,12 @@ class BattleGrid extends StatefulWidget {
   final PlacedShip? previewShip;
   final bool previewValid;
 
+  /// Cell a cannonball is currently locked onto — drawn as a targeting
+  /// reticle from the moment it's set until the shot actually lands (the
+  /// caller clears it as soon as the ball impacts), so firing always
+  /// shows exactly where the shot is headed until it hits the grid.
+  final List<int>? aimCell;
+
   /// Placement-mode interactions.
   final void Function(ShipKind kind, int newRow, int newCol)? onShipDragEnd;
   final void Function(ShipKind kind)? onShipTap;
@@ -76,6 +82,7 @@ class BattleGrid extends StatefulWidget {
     this.cellColor = AppColors.steelBlue,
     this.previewShip,
     this.previewValid = true,
+    this.aimCell,
     this.onShipDragEnd,
     this.onShipTap,
     this.onShipDragUpdate,
@@ -190,6 +197,7 @@ class _BattleGridState extends State<BattleGrid>
                           tapFx: _tapFx,
                           preview: widget.previewShip,
                           previewValid: widget.previewValid,
+                          aimCell: widget.aimCell,
                           gridColor: widget.glowColor,
                           cellColor: widget.cellColor,
                         ),
@@ -452,6 +460,7 @@ class _GridPainter extends CustomPainter {
   final Map<String, DateTime> tapFx;
   final PlacedShip? preview;
   final bool previewValid;
+  final List<int>? aimCell;
   final Color gridColor;
   final Color cellColor;
 
@@ -461,6 +470,7 @@ class _GridPainter extends CustomPainter {
     this.tapFx = const {},
     this.preview,
     this.previewValid = true,
+    this.aimCell,
     required this.gridColor,
     this.cellColor = AppColors.steelBlue,
   });
@@ -531,9 +541,8 @@ class _GridPainter extends CustomPainter {
       }
     });
 
-    // ---- Instant tap ripples (replaces the old aiming crosshair — a
-    // single tap fires, so the only feedback needed is "yes, that tap
-    // landed") ----
+    // ---- Instant tap ripple: a quick "yes, that tap registered" pulse
+    // right where the finger landed. ----
     final now = DateTime.now();
     tapFx.forEach((key, started) {
       final t = now.difference(started).inMilliseconds / 260;
@@ -544,6 +553,17 @@ class _GridPainter extends CustomPainter {
       final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
       _drawTapRipple(canvas, center, cell, t.clamp(0.0, 1.0));
     });
+
+    // ---- Firing crosshair: locks onto the targeted cell the instant a
+    // shot is fired and stays put — the caller clears [aimCell] the
+    // moment the cannonball actually impacts, so the reticle disappears
+    // exactly when the shot hits the grid instead of on a fixed timer. ----
+    if (aimCell != null) {
+      final r = aimCell![0];
+      final c = aimCell![1];
+      final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
+      _drawCrosshair(canvas, center, cell);
+    }
   }
 
   /// Miss marker (video): slightly darker cell + tiny grey ✕.
@@ -673,6 +693,30 @@ class _GridPainter extends CustomPainter {
     );
   }
 
+  /// Targeting reticle: a ring with four outward tick marks and a center
+  /// dot, locked onto the cell a cannonball is currently flying toward.
+  void _drawCrosshair(Canvas canvas, Offset center, double cell) {
+    final ringPaint = Paint()
+      ..color = AppColors.hit
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = cell * 0.06;
+    final tickPaint = Paint()
+      ..color = Colors.white
+      ..strokeWidth = cell * 0.06
+      ..strokeCap = StrokeCap.round;
+    final ringR = cell * 0.30;
+    canvas.drawCircle(center, ringR, ringPaint);
+    const dirs = [Offset(0, -1), Offset(1, 0), Offset(0, 1), Offset(-1, 0)];
+    final tickGap = cell * 0.08;
+    final tickLen = cell * 0.16;
+    for (final d in dirs) {
+      final start = center + d * (ringR + tickGap);
+      final end = center + d * (ringR + tickGap + tickLen);
+      canvas.drawLine(start, end, tickPaint);
+    }
+    canvas.drawCircle(center, cell * 0.035, Paint()..color = AppColors.hit);
+  }
+
   @override
   bool shouldRepaint(_GridPainter oldDelegate) {
     // While anything transient is animating, its visual progress is driven
@@ -686,6 +730,8 @@ class _GridPainter extends CustomPainter {
         oldDelegate.preview != preview ||
         oldDelegate.previewValid != previewValid ||
         oldDelegate.cellColor != cellColor ||
-        oldDelegate.gridColor != gridColor;
+        oldDelegate.gridColor != gridColor ||
+        oldDelegate.aimCell?[0] != aimCell?[0] ||
+        oldDelegate.aimCell?[1] != aimCell?[1];
   }
 }

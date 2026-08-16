@@ -264,12 +264,24 @@ class AnimatedShip extends StatelessWidget {
   final double size;
   final bool vertical;
 
+  /// Explicit pixel dimensions. When provided (together with [height]),
+  /// these are used instead of deriving both sides from [size] — lets a
+  /// row of different ships share one constant "beam" (height) while
+  /// [width] scales with [ShipSpec.size], so e.g. a 5-cell carrier icon
+  /// reads clearly longer than a 2-cell destroyer icon, matching their
+  /// relative footprint on the actual battle grid instead of every ship
+  /// rendering inside the same fixed square.
+  final double? width;
+  final double? height;
+
   const AnimatedShip({
     super.key,
     required this.spec,
     required this.skin,
     this.size = 150,
     this.vertical = false,
+    this.width,
+    this.height,
   });
 
   @override
@@ -278,7 +290,7 @@ class AnimatedShip extends StatelessWidget {
     final painter = ShipPainter(spec: spec, skin: skin, wavePhase: 0.5);
     final child = CustomPaint(
       painter: painter,
-      size: Size(size, size * 0.55),
+      size: Size(width ?? size, height ?? size * 0.55),
     );
     if (!vertical) return child;
     return RotatedBox(quarterTurns: 1, child: child);
