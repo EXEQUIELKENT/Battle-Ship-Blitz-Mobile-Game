@@ -86,6 +86,37 @@ class _BattleScreenState extends State<BattleScreen>
   // ----- Cannon slide (active player's cannon moves to its grid center) ---
   late final AnimationController _slideCtrl;
 
+  // ----- Screen shake (impact feedback) -----
+  // A short, decaying wobble applied to the ENTIRE battle Stack whenever a
+  // cannonball actually lands on a ship (hit or sunk — never on a miss).
+  // Triggered from `_resolveImpact()`, i.e. the same moment the ball's
+  // flight animation completes and the hit/miss marker appears, so the
+  // shake is synced to what the player sees land, not to when the shot
+  // was fired. `_shakeMagnitude` is set per-trigger so a sunk ship (kills
+  // the whole ship) shakes noticeably harder than a plain hit.
+  late final AnimationController _shakeCtrl;
+  double _shakeMagnitude = 6;
+  static const _shakeHitMagnitude = 6.0;
+  static const _shakeSunkMagnitude = 12.0;
+  static const _shakeCycles = 3.5;
+
+  /// Decaying sine wobble: full magnitude at t=0, settles back to exactly
+  /// zero at t=1 so the board never ends up visibly offset once the shake
+  /// finishes.
+  Offset _shakeOffset(double t) {
+    if (t <= 0 || t >= 1) return Offset.zero;
+    final decay = 1 - t;
+    final angle = t * _shakeCycles * 2 * math.pi;
+    final dx = math.sin(angle) * _shakeMagnitude * decay;
+    final dy = math.cos(angle * 1.3) * _shakeMagnitude * 0.5 * decay;
+    return Offset(dx, dy);
+  }
+
+  void _shake(double magnitude) {
+    _shakeMagnitude = magnitude;
+    _shakeCtrl.forward(from: 0);
+  }
+
   // ----- PERF: cached derived grid data (see _refreshDerivedCache) -----
   int _cachedRevision = -1;
   List<int>? _cachedPendingImpactKey;
@@ -103,6 +134,11 @@ class _BattleScreenState extends State<BattleScreen>
       vsync: this,
       duration: const Duration(milliseconds: 340),
       value: 1.0, // P1 starts active: P1 out at its grid, P2 parked at home
+    );
+
+    _shakeCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
     );
 
     _badgeCtrl = AnimationController(
@@ -241,6 +277,14 @@ class _BattleScreenState extends State<BattleScreen>
       }
     }
     controller.touch();
+    // Screen shake, right as the ball actually lands — never on a miss
+    // (there's nothing to "hit"). Sinking a ship shakes harder than a
+    // plain hit so a killing blow reads as more impactful.
+    if (result == ShotResult.sunk) {
+      _shake(_shakeSunkMagnitude);
+    } else if (result == ShotResult.hit) {
+      _shake(_shakeHitMagnitude);
+    }
     // 1:1 video rule: a HIT lets the same player keep firing; only a MISS
     // passes the turn to the other player (local AND vs AI — same rule).
     // The handoff is seamless (no popup): the active flag flips, the
@@ -388,6 +432,7 @@ class _BattleScreenState extends State<BattleScreen>
     _badgeCtrl.dispose();
     _projCtrl.dispose();
     _slideCtrl.dispose();
+    _shakeCtrl.dispose();
     super.dispose();
   }
 
@@ -411,8 +456,20 @@ class _BattleScreenState extends State<BattleScreen>
             builder: (context, full) {
               const bandH = 58.0;
               final halfH = (full.maxHeight - bandH) / 2;
-              return Stack(
-                children: [
+              // Shake wrapper: a plain Transform.translate driven by
+              // `_shakeCtrl`/`_shakeOffset` around the whole battle Stack,
+              // so a hit/sunk impact nudges the entire board rather than
+              // just one half — `child:` keeps the (large, mostly static)
+              // Stack itself out of the AnimatedBuilder's rebuild scope,
+              // so only the translate offset recomputes every shake tick.
+              return AnimatedBuilder(
+                animation: _shakeCtrl,
+                builder: (context, child) => Transform.translate(
+                  offset: _shakeOffset(_shakeCtrl.value),
+                  child: child,
+                ),
+                child: Stack(
+                  children: [
                   Column(
                     children: [
                       // ===== TOP HALF — P2, rotated 180° (fixed side) =====
@@ -539,11 +596,12 @@ class _BattleScreenState extends State<BattleScreen>
                       child: _gameOverBar(),
                     ),
                 ],
-              );
-            },
-          ),
+              ),
+            );
+          },
         ),
       ),
+    ),
     );
   }
 
@@ -750,15 +808,17 @@ class _BattleScreenState extends State<BattleScreen>
               ),
 
               // Turn-highlight blur: a soft frosted-glass halo over the
-              // WAITING player's own grid, so it's unmistakable whose turn
-              // it is even before you notice the cannon or the badge.
-              // (Previously this sat on `isActiveHalf` — the ACTIVE
-              // player's own grid — which meant your grid, hit/miss marks
-              // and all, got hazed over during your own turn while your
-              // idle opponent's stayed perfectly crisp: backwards, since
-              // the player currently acting is the one who most needs a
-              // clear view. Flipped to `!isActiveHalf` so the halo now
-              // marks the side that's waiting instead.)
+              // ACTIVE player's OWN grid (this half's owner is the one
+              // currently firing). That grid isn't tappable right now —
+              // you fire at the OPPONENT's grid, on the other half; see
+              // `gridFirable` above — so blurring it acts as a spotlight:
+              // it de-emphasizes the inert board you don't need and keeps
+              // attention on the live, interactive target grid instead.
+              // (BUGFIX: this used to run on `!isActiveHalf`, which put
+              // the haze on the grid you're actively trying to aim at and
+              // left your own, non-interactive board crisp — exactly
+              // backwards. Restored to `isActiveHalf` so your own board
+              // blurs during your turn, not your target.)
               // Uses a small FIXED glow margin (clamped to this half's own
               // bounds) instead of a percentage of gridSide — the old
               // percentage-based halo could balloon well past the grid
@@ -767,10 +827,10 @@ class _BattleScreenState extends State<BattleScreen>
               // Placed AFTER the grid in the Stack so the BackdropFilter
               // blurs the grid contents (destroyed ships, hit cells, miss
               // cells) in addition to the background — kept deliberately
-              // light (sigma 3, down from 7) so that blurred grid still
-              // reads: gridlines and hit/miss/destroyed markers stay
-              // visible through the haze instead of dissolving into a
-              // solid smear.
+              // light (sigma 3) so the blurred grid still reads:
+              // gridlines and hit/miss/destroyed markers stay visible
+              // through the haze instead of dissolving into a solid
+              // smear.
               Builder(builder: (context) {
                 const haloMargin = 10.0;
                 final haloLeft = math.max(0.0, gridLeft - haloMargin);
@@ -787,7 +847,7 @@ class _BattleScreenState extends State<BattleScreen>
                   child: IgnorePointer(
                     child: AnimatedOpacity(
                       duration: const Duration(milliseconds: 320),
-                      opacity: !isActiveHalf && inBattle ? 1 : 0,
+                      opacity: isActiveHalf && inBattle ? 1 : 0,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(16),
                         child: BackdropFilter(

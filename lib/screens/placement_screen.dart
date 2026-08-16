@@ -565,6 +565,22 @@ class _DockShip extends StatelessWidget {
 
     return Draggable<({ShipKind kind, bool horizontal})>(
       data: (kind: spec.kind, horizontal: true),
+      // BUGFIX (placement controls): the grid's `onMove`/`onAcceptWithDetails`
+      // (below) read `details.offset` — which Flutter documents as the
+      // pointer's raw global position, not the feedback widget's
+      // position — and treat that cell directly as the ship's TOP-LEFT
+      // cell. With the default `childDragAnchorStrategy`, the feedback
+      // ghost is anchored whatever point on the small dock icon you
+      // happened to grab, so the ghost visually trails your finger from
+      // an offset — but the drop math ignores that offset entirely and
+      // places the ship's top-left wherever your finger ends up. Net
+      // effect: grab a ship anywhere but its own top-left corner and it
+      // lands shifted from where the ghost showed it, which reads as the
+      // controls just being unreliable. `pointerDragAnchorStrategy` pins
+      // the feedback's OWN top-left to the pointer instead, so the ghost
+      // you see is always exactly the cell the ship will land on —
+      // consistent no matter where on the dock icon you grabbed it.
+      dragAnchorStrategy: pointerDragAnchorStrategy,
       // Sized to the REAL grid cell (cell * spec.size wide, one cell
       // tall) instead of a fixed 110×60.5 box every ship used to share
       // regardless of length or the device's actual cell size — that
