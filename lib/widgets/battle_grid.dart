@@ -200,6 +200,7 @@ class _BattleGridState extends State<BattleGrid>
                           aimCell: widget.aimCell,
                           gridColor: widget.glowColor,
                           cellColor: widget.cellColor,
+                          destroyedShips: widget.destroyedShips,
                         ),
                       ),
                       if (widget.destroyedShips.isNotEmpty)
@@ -463,6 +464,7 @@ class _GridPainter extends CustomPainter {
   final List<int>? aimCell;
   final Color gridColor;
   final Color cellColor;
+  final List<PlacedShip> destroyedShips;
 
   _GridPainter({
     required this.shots,
@@ -473,6 +475,7 @@ class _GridPainter extends CustomPainter {
     this.aimCell,
     required this.gridColor,
     this.cellColor = AppColors.steelBlue,
+    this.destroyedShips = const [],
   });
 
   @override
@@ -517,6 +520,9 @@ class _GridPainter extends CustomPainter {
       for (var c = 0; c < kBoardSize; c++) {
         final v = shots[r][c];
         if (v == 0) continue;
+        // Hide hit markers for cells covered by a destroyed ship — the
+        // destroyed ship graphic replaces all individual hit cells.
+        if (v == 2 && _isCellInDestroyedShip(r, c)) continue;
         final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
         if (v == 2) {
           _drawHit(canvas, center, cell);
@@ -603,46 +609,56 @@ class _GridPainter extends CustomPainter {
     canvas.drawPath(diamond, Paint()..color = AppColors.burst);
   }
 
-  /// Impact flash (video): yellow starburst core + white sparkle stars
-  /// flying outward; sinks into the persistent black-square marker.
+  /// Returns true if the given cell is part of any destroyed ship.
+  bool _isCellInDestroyedShip(int r, int c) {
+    for (final ship in destroyedShips) {
+      for (final cp in ship.cells) {
+        if (cp[0] == r && cp[1] == c) return true;
+      }
+    }
+    return false;
+  }
+
+  /// Impact flash: toned-down yellow starburst core + fewer white sparkle
+  /// stars flying outward; sinks into the persistent black-square marker.
   void _drawExplosion(Canvas canvas, Offset center, double cell, double t,
       {bool big = false}) {
     final rng = Random(center.dx.toInt() * 31 + center.dy.toInt());
-    final scale = big ? 1.5 : 1.0;
-    // Yellow starburst (8 rounded rays) — flashes in, then fades.
+    final scale = big ? 1.2 : 0.7;
+    // Yellow starburst (4 rounded rays) — flashes in, then fades.
     final burstAlpha = (1 - t * 1.35).clamp(0.0, 1.0);
     if (burstAlpha > 0) {
-      final grow = 0.45 + t * 0.75;
+      final grow = 0.45 + t * 0.55;
       final ray = Paint()
-        ..color = AppColors.burst.withValues(alpha: burstAlpha)
-        ..strokeWidth = cell * 0.16 * scale * (1 - t * 0.5)
+        ..color = AppColors.burst.withValues(alpha: burstAlpha * 0.7)
+        ..strokeWidth = cell * 0.12 * scale * (1 - t * 0.5)
         ..strokeCap = StrokeCap.round;
-      final len = cell * 0.62 * scale * grow;
-      for (var i = 0; i < 8; i++) {
-        final ang = i * pi / 4;
+      final len = cell * 0.45 * scale * grow;
+      for (var i = 0; i < 4; i++) {
+        final ang = i * pi / 2;
         canvas.drawLine(center,
             center + Offset(cos(ang) * len, sin(ang) * len), ray);
       }
       canvas.drawCircle(
         center,
-        cell * 0.34 * scale * grow,
-        Paint()..color = AppColors.burst.withValues(alpha: burstAlpha),
+        cell * 0.28 * scale * grow,
+        Paint()..color = AppColors.burst.withValues(alpha: burstAlpha * 0.7),
       );
       canvas.drawCircle(
         center,
-        cell * 0.20 * scale * grow,
-        Paint()..color = Colors.white.withValues(alpha: burstAlpha),
+        cell * 0.15 * scale * grow,
+        Paint()..color = Colors.white.withValues(alpha: burstAlpha * 0.7),
       );
     }
-    // White sparkle stars drifting outward.
+    // White sparkle stars drifting outward — fewer and dimmer.
     final sparkAlpha = (1 - t).clamp(0.0, 1.0);
-    for (var i = 0; i < (big ? 8 : 5); i++) {
+    for (var i = 0; i < (big ? 4 : 2); i++) {
       final ang = rng.nextDouble() * 2 * pi;
       final dist = cell * scale * (0.25 + 0.75 * t) * (0.6 + rng.nextDouble() * 0.5);
       final p = center + Offset(cos(ang) * dist, sin(ang) * dist);
-      final sr = cell * 0.11 * (1 - t * 0.6);
+      final sr = cell * 0.08 * (1 - t * 0.6);
       final sp = Paint()
-        ..color = Colors.white.withValues(alpha: sparkAlpha * 0.95);
+        ..color = Colors.white.withValues(alpha: sparkAlpha * 0.6);
       canvas.drawPath(
         Path()
           ..moveTo(p.dx, p.dy - sr)
@@ -659,18 +675,10 @@ class _GridPainter extends CustomPainter {
     }
   }
 
-  /// Miss splash (video): quick white droplet burst, no big rings.
+  /// Miss splash: no animation particles — left empty so only the
+  /// persistent miss marker (grey X) remains on the grid.
   void _drawSplash(Canvas canvas, Offset center, double cell, double t) {
-    final rng = Random(center.dx.toInt() * 17 + center.dy.toInt());
-    final alpha = (1 - t).clamp(0.0, 1.0);
-    final dot = Paint()
-      ..color = Colors.white.withValues(alpha: alpha * 0.9);
-    for (var i = 0; i < 6; i++) {
-      final ang = rng.nextDouble() * 2 * pi;
-      final dist = cell * 0.5 * t * (0.5 + rng.nextDouble() * 0.6);
-      final p = center + Offset(cos(ang) * dist, sin(ang) * dist);
-      canvas.drawCircle(p, cell * 0.07 * (1 - t * 0.5), dot);
-    }
+    // Intentionally empty: no particle burst on miss cells.
   }
 
   /// Quick expanding-ring "tap registered" pulse — replaces the old
@@ -732,6 +740,7 @@ class _GridPainter extends CustomPainter {
         oldDelegate.cellColor != cellColor ||
         oldDelegate.gridColor != gridColor ||
         oldDelegate.aimCell?[0] != aimCell?[0] ||
-        oldDelegate.aimCell?[1] != aimCell?[1];
+        oldDelegate.aimCell?[1] != aimCell?[1] ||
+        !identical(oldDelegate.destroyedShips, destroyedShips);
   }
 }

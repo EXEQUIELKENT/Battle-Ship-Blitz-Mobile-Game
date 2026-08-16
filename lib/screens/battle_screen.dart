@@ -12,6 +12,7 @@ import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
+import '../widgets/neon_widgets.dart';
 import '../widgets/ship_painter.dart';
 import 'result_screen.dart';
 
@@ -180,15 +181,19 @@ class _BattleScreenState extends State<BattleScreen>
         }
       }
     }
-    if (controller.phase == BattlePhase.finished && !_navigatedToResult) {
-      _navigatedToResult = true;
-      Future.delayed(const Duration(milliseconds: 1500), () {
-        if (!mounted) return;
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const ResultScreen()),
-        );
-      });
-    }
+  }
+
+  /// Advances to the result screen — now the ONLY way there once the
+  /// match ends (see the game-over bar in build()). Previously this
+  /// fired on its own 1.5s after `BattlePhase.finished`, which yanked
+  /// players away right as both grids revealed their full fleets,
+  /// before there was any real chance to look at where everything was.
+  void _goToResult() {
+    if (_navigatedToResult) return;
+    _navigatedToResult = true;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const ResultScreen()),
+    );
   }
 
   /// AI / remote opponent fired at the BOTTOM player's grid.
@@ -518,6 +523,21 @@ class _BattleScreenState extends State<BattleScreen>
 
                   // ===== "Your turn" badge (single-sided, active player) =====
                   if (_showTurnBadge) _turnBadgeOverlay(bottomIsP1, bandH),
+
+                  // ===== Game-over bar: both grids reveal every ship the
+                  // instant the match ends (see `gameOver` in _buildHalf),
+                  // and this bar is what lets players actually take that
+                  // in — it replaces the old fixed 1.5s auto-navigate
+                  // timer, so the reveal stays on screen for as long as
+                  // the player wants until they tap CONTINUE. =====
+                  if (controller.phase == BattlePhase.finished)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      top: halfH,
+                      height: bandH,
+                      child: _gameOverBar(),
+                    ),
                 ],
               );
             },
@@ -609,7 +629,7 @@ class _BattleScreenState extends State<BattleScreen>
     final inBattle = !_countingDown && controller.battling && !_showProjectile;
 
     // The OPPONENT's grid is tappable to fire, on your turn.
-    final gridFireable = thisIsOpponentOfActive && inBattle;
+    final gridFirable = thisIsOpponentOfActive && inBattle;
 
     // This half belongs to whoever is currently active (the flip side of
     // thisIsOpponentOfActive) — used to highlight "whose turn it is" with
@@ -696,48 +716,6 @@ class _BattleScreenState extends State<BattleScreen>
           child: Stack(
             clipBehavior: Clip.none,
             children: [
-              // Turn-highlight blur: a soft frosted-glass halo behind the
-              // ACTIVE player's own grid, so it's unmistakable whose turn
-              // it is even before you notice the cannon or the badge.
-              // Uses a small FIXED glow margin (clamped to this half's own
-              // bounds) instead of a percentage of gridSide — the old
-              // percentage-based halo could balloon well past the grid
-              // (and even past the screen edge) on larger boards, which
-              // read as the blur effect "leaking" outside the grid.
-              Builder(builder: (context) {
-                const haloMargin = 10.0;
-                final haloLeft = math.max(0.0, gridLeft - haloMargin);
-                final haloTop = math.max(0.0, gridTop - haloMargin);
-                final haloRight =
-                    math.min(w, gridLeft + gridSide + haloMargin);
-                final haloBottom =
-                    math.min(halfH, gridTop + gridSide + haloMargin);
-                return Positioned(
-                  left: haloLeft,
-                  top: haloTop,
-                  width: haloRight - haloLeft,
-                  height: haloBottom - haloTop,
-                  child: IgnorePointer(
-                    child: AnimatedOpacity(
-                      duration: const Duration(milliseconds: 320),
-                      opacity: isActiveHalf && inBattle ? 1 : 0,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: BackdropFilter(
-                          filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(16),
-                              color: accent.withValues(alpha: 0.16),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              }),
-
               // Own grid
               Positioned(
                 left: gridLeft,
@@ -758,18 +736,63 @@ class _BattleScreenState extends State<BattleScreen>
                     ships: gameOver ? board.ships : null,
                     skin: gameOver ? revealSkin : null,
                     destroyedShips: gameOver ? const [] : sunkShips,
-                    enabled: gridFireable,
+                    enabled: gridFirable,
                     glowColor: AppColors.steelBlueDark,
                     cellColor: AppColors.steelBlue,
                     recentEvents: events,
                     aimCell: aimCell,
                     // Tapping the opponent's grid fires at it immediately.
-                    onTapCell: gridFireable
+                    onTapCell: gridFirable
                         ? (r, c) => _fireAtCell(controller, r: r, c: c)
                         : null,
                   ),
                 ),
               ),
+
+              // Turn-highlight blur: a soft frosted-glass halo OVER the
+              // ACTIVE player's own grid, so it's unmistakable whose turn
+              // it is even before you notice the cannon or the badge.
+              // Uses a small FIXED glow margin (clamped to this half's own
+              // bounds) instead of a percentage of gridSide — the old
+              // percentage-based halo could balloon well past the grid
+              // (and even past the screen edge) on larger boards, which
+              // read as the blur effect "leaking" outside the grid.
+              // Placed AFTER the grid in the Stack so the BackdropFilter
+              // blurs the grid contents (destroyed ships, hit cells, miss
+              // cells) in addition to the background.
+              Builder(builder: (context) {
+                const haloMargin = 10.0;
+                final haloLeft = math.max(0.0, gridLeft - haloMargin);
+                final haloTop = math.max(0.0, gridTop - haloMargin);
+                final haloRight =
+                    math.min(w, gridLeft + gridSide + haloMargin);
+                final haloBottom =
+                    math.min(halfH, gridTop + gridSide + haloMargin);
+                return Positioned(
+                  left: haloLeft,
+                  top: haloTop,
+                  width: haloRight - haloLeft,
+                  height: haloBottom - haloTop,
+                  child: IgnorePointer(
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 320),
+                      opacity: isActiveHalf && inBattle ? 1 : 0,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              color: accent.withValues(alpha: 0.16),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }),
 
               // Own cannon. During its owner's turn it slides to the
               // MIDDLE of its own grid — a big, unmissable "your turn"
@@ -803,7 +826,7 @@ class _BattleScreenState extends State<BattleScreen>
                         readyTrigger: readyStream.stream,
                         accentOverride: accent,
                         // Firing now happens with a single tap on the enemy
-                        // grid cell (see gridFireable / onTapCell above); the
+                        // grid cell (see gridFirable / onTapCell above); the
                         // cannon itself just reacts (recoil + muzzle flash)
                         // as a "shot fired" indicator.
                         onFire: null,
@@ -1046,6 +1069,24 @@ class _BattleScreenState extends State<BattleScreen>
             );
           },
         ),
+      ),
+    );
+  }
+
+  /// Solid bar over the middle band once the match is finished — tapping
+  /// CONTINUE is the only way to leave this screen at that point (see
+  /// _goToResult), so both fleets stay fully revealed until the player
+  /// is actually done looking.
+  Widget _gameOverBar() {
+    return Container(
+      color: AppColors.navy,
+      alignment: Alignment.center,
+      child: NeonButton(
+        label: 'CONTINUE',
+        icon: Icons.arrow_forward,
+        color: AppColors.seafoam,
+        compact: true,
+        onPressed: _goToResult,
       ),
     );
   }
