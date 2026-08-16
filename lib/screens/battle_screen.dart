@@ -290,7 +290,9 @@ class _BattleScreenState extends State<BattleScreen>
     final byP1 = !_p2Active;
     final tracking = byP1 ? controller.myShots : controller.p2Shots;
     if (tracking[r][c] != 0) {
-      _toast('Pick a fresh target on the enemy grid!');
+      // No pop-up reminder for this — an already-tried cell simply
+      // already shows its hit/miss marker, and the denied-shot sound/
+      // haptic below is enough feedback without interrupting the view.
       SoundService.instance.denied();
       return;
     }
@@ -370,21 +372,6 @@ class _BattleScreenState extends State<BattleScreen>
       return Offset(g.halfW - lx, g.halfTopY + (g.halfH - ly));
     }
     return Offset(lx, g.halfTopY + ly);
-  }
-
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text(msg, style: const TextStyle(fontWeight: FontWeight.w700)),
-        backgroundColor: AppColors.navy,
-        duration: const Duration(milliseconds: 900),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: AppColors.outline, width: 2),
-        ),
-      ));
   }
 
   @override
@@ -636,6 +623,21 @@ class _BattleScreenState extends State<BattleScreen>
     final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
     final sunkShips = [for (final s in board.ships) if (s.isSunk) s];
 
+    // Cannonball currently in flight toward THIS half's grid — drives the
+    // targeting reticle below for exactly as long as the shot is
+    // airborne, disappearing the instant it lands (see _resolveImpact,
+    // which clears _pendingImpact right as the hit/miss marker appears).
+    final aimCell = (_pendingImpact != null && _pendingByP1 != halfIsP1)
+        ? _pendingImpact
+        : null;
+
+    // Once the match is over, both fleets are common knowledge — reveal
+    // every ship on every grid (not just the sunk ones) as a final
+    // "here's where everything was" recap before heading to the result
+    // screen, instead of the empty-grid secrecy rule that applies mid-game.
+    final gameOver = controller.phase == BattlePhase.finished;
+    final revealSkin = halfIsP1 ? _p1StatusSkin : _p2StatusSkin;
+
     // Only show markers whose cannonball has already landed. (PERF: these
     // come from the per-frame cache refreshed once in build() — see
     // _refreshDerivedCache — instead of being recomputed here on every
@@ -749,14 +751,18 @@ class _BattleScreenState extends State<BattleScreen>
                     // 1:1 video: battle grids are EMPTY — you never see
                     // either player's ships, only your hit/miss markers.
                     // (Guessing where the enemy fleet hides IS the game.)
-                    // Sunk ships are the one exception — see destroyedShips.
-                    ships: null,
-                    skin: null,
-                    destroyedShips: sunkShips,
+                    // Sunk ships are one exception — see destroyedShips.
+                    // The other: once the game is over (gameOver above),
+                    // every ship on both fleets is revealed as a final
+                    // recap of the match.
+                    ships: gameOver ? board.ships : null,
+                    skin: gameOver ? revealSkin : null,
+                    destroyedShips: gameOver ? const [] : sunkShips,
                     enabled: gridFireable,
                     glowColor: AppColors.steelBlueDark,
                     cellColor: AppColors.steelBlue,
                     recentEvents: events,
+                    aimCell: aimCell,
                     // Tapping the opponent's grid fires at it immediately.
                     onTapCell: gridFireable
                         ? (r, c) => _fireAtCell(controller, r: r, c: c)
@@ -833,6 +839,15 @@ class _BattleScreenState extends State<BattleScreen>
     final topBoard = bottomIsP1 ? controller.boards[1] : controller.boards[0];
     final bottomBoard =
         bottomIsP1 ? controller.boards[0] : controller.boards[1];
+    // Whichever side is NOT currently active gets its fleet row faded —
+    // previously the bottom (P1/red) row was hardcoded to always fade and
+    // the top (P2/blue) row to never fade, regardless of whose turn it
+    // actually was. Tying `faded` to the live turn flag means each side
+    // only dims while it's genuinely waiting, and lights back up the
+    // moment it's their turn.
+    final activeIsP1 = !_p2Active;
+    final topIsP1Fleet = !bottomIsP1;
+    final bottomIsP1Fleet = bottomIsP1;
     return SizedBox(
       height: bandH,
       child: Stack(
@@ -845,7 +860,8 @@ class _BattleScreenState extends State<BattleScreen>
                   color: AppColors.steelBlueDark,
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(topBoard,
-                      faded: false, isP1Fleet: !bottomIsP1),
+                      faded: topIsP1Fleet != activeIsP1,
+                      isP1Fleet: topIsP1Fleet),
                 ),
               ),
               Expanded(
@@ -853,7 +869,8 @@ class _BattleScreenState extends State<BattleScreen>
                   color: AppColors.coralVideo,
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(bottomBoard,
-                      faded: true, isP1Fleet: bottomIsP1),
+                      faded: bottomIsP1Fleet != activeIsP1,
+                      isP1Fleet: bottomIsP1Fleet),
                 ),
               ),
             ],
@@ -886,6 +903,14 @@ class _BattleScreenState extends State<BattleScreen>
   Widget _statusRow(Board board,
       {required bool faded, required bool isP1Fleet}) {
     final skin = isP1Fleet ? _p1StatusSkin : _p2StatusSkin;
+    // Per-cell pixel unit for the fleet row: each icon is drawn at
+    // `unit * spec.size` wide with a constant beam (height), so a
+    // 5-cell carrier reads clearly longer than a 2-cell destroyer — the
+    // same relative proportions those ships have on the actual battle
+    // grid — instead of every icon sharing one fixed bounding box
+    // regardless of the ship's real length.
+    const unit = 11.5;
+    const beam = 26.0;
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
@@ -895,7 +920,12 @@ class _BattleScreenState extends State<BattleScreen>
             child: Stack(
               alignment: Alignment.center,
               children: [
-                AnimatedShip(spec: spec, skin: skin, size: 46),
+                AnimatedShip(
+                  spec: spec,
+                  skin: skin,
+                  width: unit * spec.size,
+                  height: beam,
+                ),
                 if (board.shipOfKind(spec.kind)?.isSunk ?? false)
                   const Icon(Icons.close, color: AppColors.hit, size: 22),
               ],
