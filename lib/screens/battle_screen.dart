@@ -647,18 +647,24 @@ class _BattleScreenState extends State<BattleScreen>
     return LayoutBuilder(
       builder: (context, box) {
         final w = box.maxWidth;
-        // Bigger board: use almost all of each half's real estate (was
-        // capped at 78% of the half's height) — same 10×10 grid, just
-        // rendered larger now that the game has started.
-        final gridSide = math.min(w * 0.97, halfH * 0.92);
+        // Bigger board: the grid fills the half's full width/height with
+        // no reserved side or top margin — same 10×10 grid, just as large
+        // as the available space allows (still a perfect square).
+        final gridSide = math.min(w, halfH);
         final cell = gridSide / kBoardSize;
         final gridLeft = (w - gridSide) / 2;
-        final gridTop = 4.0; // grid near the outer edge of the half
+        final gridTop = 0.0; // no top margin — grid sits flush at the edge
         final cannonSize = gridSide * 0.24;
         // Cannon HOME: tucked just past the grid's edge, toward the
-        // middle band, while it's not this player's turn.
+        // middle band, while it's not this player's turn. Deliberately
+        // NOT clamped to halfH — on short/tight halves that clamp used to
+        // pull the cannon back UP so its circle overlapped the grid's
+        // bottom two rows, making those cells untappable. The half's
+        // Stack uses Clip.none, so letting the cannon spill past the
+        // half's own bottom edge (into the middle band) is fine and by
+        // design; overlapping the tappable grid is not.
         final cannonCenter =
-            Offset(w / 2, math.min(gridTop + gridSide + cannonSize * 0.55, halfH - cannonSize * 0.35));
+            Offset(w / 2, gridTop + gridSide + cannonSize * 0.55);
         // Cannon "ready" (active) position: the actual MIDDLE of this
         // player's own grid — a clear, unmissable "your turn" indicator.
         // Safe to overlap the grid here: a player's OWN grid is never
@@ -691,30 +697,44 @@ class _BattleScreenState extends State<BattleScreen>
               // Turn-highlight blur: a soft frosted-glass halo behind the
               // ACTIVE player's own grid, so it's unmistakable whose turn
               // it is even before you notice the cannon or the badge.
-              Positioned(
-                left: gridLeft - gridSide * 0.16,
-                top: gridTop - gridSide * 0.16,
-                width: gridSide * 1.32,
-                height: gridSide * 1.32,
-                child: IgnorePointer(
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 320),
-                    opacity: isActiveHalf && inBattle ? 1 : 0,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(28),
-                      child: BackdropFilter(
-                        filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(28),
-                            color: accent.withValues(alpha: 0.16),
+              // Uses a small FIXED glow margin (clamped to this half's own
+              // bounds) instead of a percentage of gridSide — the old
+              // percentage-based halo could balloon well past the grid
+              // (and even past the screen edge) on larger boards, which
+              // read as the blur effect "leaking" outside the grid.
+              Builder(builder: (context) {
+                const haloMargin = 10.0;
+                final haloLeft = math.max(0.0, gridLeft - haloMargin);
+                final haloTop = math.max(0.0, gridTop - haloMargin);
+                final haloRight =
+                    math.min(w, gridLeft + gridSide + haloMargin);
+                final haloBottom =
+                    math.min(halfH, gridTop + gridSide + haloMargin);
+                return Positioned(
+                  left: haloLeft,
+                  top: haloTop,
+                  width: haloRight - haloLeft,
+                  height: haloBottom - haloTop,
+                  child: IgnorePointer(
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 320),
+                      opacity: isActiveHalf && inBattle ? 1 : 0,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              color: accent.withValues(alpha: 0.16),
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              ),
+                );
+              }),
 
               // Own grid
               Positioned(
@@ -761,19 +781,27 @@ class _BattleScreenState extends State<BattleScreen>
                   return Positioned(
                     left: pos.dx - cannonSize / 2,
                     top: pos.dy - cannonSize / 2,
-                    child: CannonWidget(
-                      skin: profile.cannonSkin,
-                      cooldownFraction: cooldown,
-                      enabled: controller.battling && !_countingDown,
-                      size: cannonSize,
-                      fireTrigger: cannonStream.stream,
-                      readyTrigger: readyStream.stream,
-                      accentOverride: accent,
-                      // Firing now happens with a single tap on the enemy
-                      // grid cell (see gridFireable / onTapCell above); the
-                      // cannon itself just reacts (recoil + muzzle flash)
-                      // as a "shot fired" indicator.
-                      onFire: null,
+                    // The cannon is purely a visual indicator here (onFire
+                    // is always null below — firing happens by tapping the
+                    // enemy grid). IgnorePointer guarantees it can never
+                    // swallow a tap meant for a grid cell underneath it,
+                    // even if it still visually grazes the grid's edge on
+                    // an unusual screen size.
+                    child: IgnorePointer(
+                      child: CannonWidget(
+                        skin: profile.cannonSkin,
+                        cooldownFraction: cooldown,
+                        enabled: controller.battling && !_countingDown,
+                        size: cannonSize,
+                        fireTrigger: cannonStream.stream,
+                        readyTrigger: readyStream.stream,
+                        accentOverride: accent,
+                        // Firing now happens with a single tap on the enemy
+                        // grid cell (see gridFireable / onTapCell above); the
+                        // cannon itself just reacts (recoil + muzzle flash)
+                        // as a "shot fired" indicator.
+                        onFire: null,
+                      ),
                     ),
                   );
                 },
