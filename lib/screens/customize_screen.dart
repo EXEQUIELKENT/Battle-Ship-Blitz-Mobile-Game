@@ -25,7 +25,7 @@ class _CustomizeScreenState extends State<CustomizeScreen>
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 2, vsync: this);
+    _tab = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -96,9 +96,11 @@ class _CustomizeScreenState extends State<CustomizeScreen>
                     fontSize: 12,
                     letterSpacing: 1.2,
                   ),
+                  isScrollable: true,
                   tabs: const [
                     Tab(text: 'SHIP HULLS'),
                     Tab(text: 'CANNONS'),
+                    Tab(text: 'GAMEPLAY'),
                   ],
                 ),
               ),
@@ -108,6 +110,7 @@ class _CustomizeScreenState extends State<CustomizeScreen>
                   children: [
                     _ShipsTab(profile: profile),
                     _CannonsTab(profile: profile),
+                    _ThemesTab(profile: profile),
                   ],
                 ),
               ),
@@ -360,4 +363,118 @@ class _CannonsTab extends StatelessWidget {
       },
     );
   }
+}
+
+
+class _ThemesTab extends StatelessWidget {
+  final ProfileStore profile;
+  const _ThemesTab({required this.profile});
+  @override
+  Widget build(BuildContext context) {
+    return GridView.builder(
+      padding: const EdgeInsets.all(16),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 1, mainAxisSpacing: 12, childAspectRatio: 1.9),
+      itemCount: Catalog.gameplayThemes.length,
+      itemBuilder: (context, i) {
+        final theme = Catalog.gameplayThemes[i];
+        final owned = profile.owns(theme.id);
+        final equipped = profile.gameplayThemeId == theme.id;
+        final affordable = profile.rp >= theme.cost;
+        return GestureDetector(
+          onTap: () {
+            final ok = profile.equipGameplayTheme(theme);
+            if (ok) {
+              SoundService.instance.victory();
+            } else {
+              SoundService.instance.denied();
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Not enough RP! Need ${theme.cost} RP.', style: const TextStyle(fontWeight: FontWeight.w800)), backgroundColor: AppColors.hit, behavior: SnackBarBehavior.floating));
+            }
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: theme.deck, borderRadius: BorderRadius.circular(18), border: Border.all(color: equipped ? AppColors.green : AppColors.outline, width: equipped ? 4 : 3), boxShadow: const [BoxShadow(color: Color(0x44000000), offset: Offset(0, 4))]),
+            child: Row(
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: theme.grid,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: theme.gridLine, width: 3),
+                    ),
+                    child: CustomPaint(
+                      painter: _ThemePreviewPainter(theme),
+                      child: Center(
+                        child: Text(
+                          theme.name.toUpperCase(),
+                          textAlign: TextAlign.center,
+                          style: AppText.label(size: 12),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 4,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(theme.name, style: AppText.heading(size: 15)),
+                      const SizedBox(height: 4),
+                      Text(theme.description, style: AppText.body(size: 11)),
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: equipped
+                              ? AppColors.green
+                              : owned
+                                  ? AppColors.blue
+                                  : (affordable ? AppColors.gold : AppColors.inkSoft),
+                          border: Border.all(color: AppColors.outline, width: 2),
+                        ),
+                        child: Text(
+                          equipped
+                              ? 'EQUIPPED'
+                              : owned
+                                  ? 'TAP TO EQUIP'
+                                  : '${theme.cost} RP',
+                          style: AppText.label(
+                            size: 9,
+                            color: (!owned && affordable)
+                                ? AppColors.outline
+                                : AppColors.cream,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ThemePreviewPainter extends CustomPainter {
+  final GameplayTheme theme;
+  _ThemePreviewPainter(this.theme);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final line = Paint()..color = theme.gridLine.withValues(alpha: 0.55)..strokeWidth = 1.4;
+    final cw = size.width / 5, ch = size.height / 4;
+    for (var c = 1; c < 5; c++) canvas.drawLine(Offset(c * cw, 0), Offset(c * cw, size.height), line);
+    for (var r = 1; r < 4; r++) canvas.drawLine(Offset(0, r * ch), Offset(size.width, r * ch), line);
+    canvas.drawCircle(Offset(size.width * 0.64, size.height * 0.48), size.shortestSide * 0.13, Paint()..color = theme.accent);
+  }
+  @override
+  bool shouldRepaint(covariant _ThemePreviewPainter oldDelegate) => oldDelegate.theme.id != theme.id;
 }

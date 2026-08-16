@@ -48,6 +48,7 @@ class BattleGrid extends StatefulWidget {
 
   /// Cell fill color (defaults to the video's steel blue).
   final Color cellColor;
+  final Color gridLineColor;
 
   /// Placement-mode ghost preview.
   final PlacedShip? previewShip;
@@ -81,6 +82,7 @@ class BattleGrid extends StatefulWidget {
     this.destroyedShips = const [],
     this.glowColor = AppColors.water,
     this.cellColor = AppColors.steelBlue,
+    this.gridLineColor = AppColors.steelBlueLight,
     this.previewShip,
     this.previewValid = true,
     this.aimCell,
@@ -220,6 +222,7 @@ class _BattleGridState extends State<BattleGrid>
                           aimCell: widget.aimCell,
                           gridColor: widget.glowColor,
                           cellColor: widget.cellColor,
+                          gridLineColor: widget.gridLineColor,
                           destroyedShips: widget.destroyedShips,
                         ),
                       ),
@@ -573,6 +576,7 @@ class _GridPainter extends CustomPainter {
   final List<int>? aimCell;
   final Color gridColor;
   final Color cellColor;
+  final Color gridLineColor;
   final List<PlacedShip> destroyedShips;
 
   _GridPainter({
@@ -584,6 +588,7 @@ class _GridPainter extends CustomPainter {
     this.aimCell,
     required this.gridColor,
     this.cellColor = AppColors.steelBlue,
+    this.gridLineColor = AppColors.steelBlueLight,
     this.destroyedShips = const [],
   });
 
@@ -594,7 +599,7 @@ class _GridPainter extends CustomPainter {
     // ---- Flat steel-blue cells with thin lighter grid lines (video style) ----
     canvas.drawRect(Offset.zero & size, Paint()..color = cellColor);
     final linePaint = Paint()
-      ..color = AppColors.steelBlueLight.withValues(alpha: 0.55)
+      ..color = gridLineColor.withValues(alpha: 0.55)
       ..strokeWidth = 1.1;
     for (var i = 1; i < kBoardSize; i++) {
       canvas.drawLine(

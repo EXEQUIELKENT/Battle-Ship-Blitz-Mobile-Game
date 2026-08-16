@@ -38,13 +38,14 @@ class _NeonButtonState extends State<NeonButton> {
     final enabled = widget.onPressed != null;
     return GestureDetector(
       onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
-      onTapUp: enabled
-          ? (_) {
+      onTap: enabled
+          ? () {
               setState(() => _pressed = false);
               SoundService.instance.click();
               widget.onPressed!();
             }
           : null,
+      onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
       onTapCancel: () => setState(() => _pressed = false),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 90),
