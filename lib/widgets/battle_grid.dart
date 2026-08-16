@@ -101,9 +101,28 @@ class _BattleGridState extends State<BattleGrid>
   /// self-clearing; this is what replaced the old persistent crosshair.
   final Map<String, DateTime> _tapFx = {};
 
-  // Drag state (placement)
+  // Drag state (placement) — repositioning an already-placed ship.
+  //
+  // Previously this only tracked the raw finger position (`_dragPos`) and
+  // derived the ship's landing cell straight from it every frame
+  // (`_dragPos / cell`). That treats wherever you happened to grab the
+  // ship as its new top-left cell, so a ship grabbed anywhere but its own
+  // first cell would jump the moment the drag started, and grabbing it in
+  // a different spot next time produced a different, equally-wrong offset
+  // — i.e. the position "bugs out" a little more accurately each time you
+  // move it, exactly as reported.
+  //
+  // Fixed by anchoring on the DELTA between the finger's start position
+  // and its current position, added to the ship's actual row/col at drag
+  // start — so the ship tracks the finger 1:1 from wherever it was
+  // grabbed, snapped to the grid, instead of being re-anchored to the
+  // finger every frame.
   ShipKind? _dragKind;
-  Offset _dragPos = Offset.zero;
+  Offset _dragStartPos = Offset.zero;
+  int _dragAnchorRow = 0;
+  int _dragAnchorCol = 0;
+  int _dragPreviewRow = 0;
+  int _dragPreviewCol = 0;
   bool _dragging = false;
 
   @override
@@ -259,7 +278,11 @@ class _BattleGridState extends State<BattleGrid>
           setState(() {
             _dragKind = s.spec.kind;
             _dragging = true;
-            _dragPos = d.localPosition;
+            _dragStartPos = d.localPosition;
+            _dragAnchorRow = s.row;
+            _dragAnchorCol = s.col;
+            _dragPreviewRow = s.row;
+            _dragPreviewCol = s.col;
           });
           return;
         }
@@ -271,13 +294,21 @@ class _BattleGridState extends State<BattleGrid>
     if (widget.onShipDragEnd == null) return null;
     return (d) {
       if (!_dragging) return;
-      setState(() => _dragPos = d.localPosition);
       final kind = _dragKind;
-      if (kind != null && widget.onShipDragUpdate != null) {
-        final c = (_dragPos.dx / cell).floor().clamp(0, kBoardSize - 1);
-        final r = (_dragPos.dy / cell).floor().clamp(0, kBoardSize - 1);
-        widget.onShipDragUpdate!(kind, r, c);
-      }
+      if (kind == null) return;
+      // Whole-cell delta between where the finger started and where it is
+      // now — applied on top of the ship's own starting row/col, so the
+      // grab point stays fixed relative to the ship no matter where on
+      // its body it was picked up.
+      final dCol = ((d.localPosition.dx - _dragStartPos.dx) / cell).round();
+      final dRow = ((d.localPosition.dy - _dragStartPos.dy) / cell).round();
+      final r = (_dragAnchorRow + dRow).clamp(0, kBoardSize - 1).toInt();
+      final c = (_dragAnchorCol + dCol).clamp(0, kBoardSize - 1).toInt();
+      setState(() {
+        _dragPreviewRow = r;
+        _dragPreviewCol = c;
+      });
+      widget.onShipDragUpdate?.call(kind, r, c);
     };
   }
 
@@ -285,9 +316,7 @@ class _BattleGridState extends State<BattleGrid>
     if (widget.onShipDragEnd == null) return null;
     return (d) {
       if (_dragging && _dragKind != null) {
-        final c = (_dragPos.dx / cell).floor().clamp(0, kBoardSize - 1);
-        final r = (_dragPos.dy / cell).floor().clamp(0, kBoardSize - 1);
-        widget.onShipDragEnd!(_dragKind!, r, c);
+        widget.onShipDragEnd!(_dragKind!, _dragPreviewRow, _dragPreviewCol);
       }
       setState(() {
         _dragging = false;
@@ -362,11 +391,18 @@ class _BattleGridState extends State<BattleGrid>
     final spec = kFleet.firstWhere((s) => s.kind == _dragKind);
     final horizontal =
         widget.ships!.firstWhere((s) => s.spec.kind == _dragKind).horizontal;
-    final w = horizontal ? spec.size * cell : cell;
-    final h = horizontal ? cell : spec.size * cell;
+    // Same left/top/width/height formula as `_shipWidgets` (grid-anchored,
+    // `-2` inset) using `_dragPreviewRow`/`_dragPreviewCol` — the exact
+    // cell the ship will land on if released right now (see
+    // `_onPanUpdate`) — instead of centering the ghost on the raw,
+    // continuous finger position. That's what kept the ghost glued to the
+    // grid cells as you drag, rather than floating free of them and only
+    // "landing" correctly by chance.
+    final w = horizontal ? spec.size * cell - 2 : cell - 2;
+    final h = horizontal ? cell - 2 : spec.size * cell - 2;
     return Positioned(
-      left: _dragPos.dx - w / 2,
-      top: _dragPos.dy - h / 2,
+      left: _dragPreviewCol * cell + 1,
+      top: _dragPreviewRow * cell + 1,
       width: w,
       height: h,
       child: IgnorePointer(

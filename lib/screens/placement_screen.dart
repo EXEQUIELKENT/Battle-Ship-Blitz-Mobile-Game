@@ -46,6 +46,21 @@ class _PlacementScreenState extends State<PlacementScreen> {
     super.initState();
     final controller = context.read<GameController>();
     _board = widget.isPlayer2 ? controller.boards[1] : controller.boards[0];
+    // `_cellSize()` below falls back to a rough MediaQuery-based estimate
+    // until the grid has actually been laid out at least once (its
+    // RenderBox isn't available on the very first build). That first,
+    // slightly-off estimate is what gets baked into the dock ships' drag
+    // "feedback" size — and since the carrier (5 cells, first in the
+    // dock) is usually the very first ship a player drags, a small
+    // per-cell error is magnified 5x, producing an oversized/misaligned
+    // ghost exactly on that first placement (subsequent drags are fine,
+    // since by then a rebuild has already happened and picked up the
+    // real size). Scheduling one harmless extra rebuild right after the
+    // first frame guarantees the real, precise cell size is in place
+    // before the player can interact with anything.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   ShipSpec? get _selectedSpec =>
