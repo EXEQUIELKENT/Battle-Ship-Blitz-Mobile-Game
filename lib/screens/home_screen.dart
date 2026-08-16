@@ -31,6 +31,10 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    SoundService.instance.enabled = context.read<ProfileStore>().soundOn;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) SoundService.instance.startMenuMusic();
+    });
     _titleCtrl = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 2),
@@ -39,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    SoundService.instance.stopMenuMusic();
     _titleCtrl.dispose();
     super.dispose();
   }

@@ -50,6 +50,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
   @override
   void initState() {
     super.initState();
+    SoundService.instance.stopMenuMusic();
     final controller = context.read<GameController>();
     _board = widget.isPlayer2 ? controller.boards[1] : controller.boards[0];
     // `_cellSize()` below falls back to a rough MediaQuery-based estimate

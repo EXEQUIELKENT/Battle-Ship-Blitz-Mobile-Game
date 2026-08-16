@@ -36,7 +36,7 @@ class SoundService {
   final _rng = math.Random();
 
   static const _files = {
-    'fire': 'sfx/fire.wav',
+    'cannon_fire': 'sfx/cannon_fire.wav',
     'hit': 'sfx/hit.wav',
     'miss': 'sfx/miss.wav',
     'sunk': 'sfx/sunk.wav',
@@ -57,7 +57,7 @@ class SoundService {
   /// so a burst is far less likely to need to interrupt a still-playing
   /// player at all.
   static const _poolSizes = {
-    'fire': 5,
+    'cannon_fire': 5,
     'hit': 5,
     'miss': 5,
     'click': 4,
@@ -67,10 +67,14 @@ class SoundService {
   /// Effects that get a tiny random pitch/rate wobble each play so rapid
   /// repeats (several misses in a row, etc.) don't sound like a stuck
   /// robot repeating the exact same clip.
-  static const _variedPitch = {'fire', 'hit', 'miss', 'click'};
+  static const _variedPitch = {'cannon_fire', 'hit', 'miss', 'click'};
 
   final Map<String, List<AudioPlayer>> _pool = {};
   final Map<String, int> _cursor = {};
+
+  static const _menuMusicAsset = 'sfx/menu_music.wav';
+  AudioPlayer? _menuMusicPlayer;
+  final Set<AudioPlayer> _oneShots = <AudioPlayer>{};
 
   /// Pre-create a round-robin player pool per effect. Safe to call
   /// fire-and-forget from main().
@@ -161,24 +165,58 @@ class SoundService {
     }
   }
 
-  void fire() {
+  Future<void> startMenuMusic() async {
+    if (!enabled) return;
+    final existing = _menuMusicPlayer;
+    if (existing != null && existing.state == PlayerState.playing) return;
+
+    final player = existing ?? AudioPlayer();
+    _menuMusicPlayer = player;
+    try {
+      await player.setReleaseMode(ReleaseMode.loop);
+      await player.setVolume(0.82);
+      await player.play(AssetSource(_menuMusicAsset), volume: 0.82);
+    } catch (e) {
+      if (kDebugMode) debugPrint('SoundService: menu music play failed ($e)');
+    }
+  }
+
+  Future<void> stopMenuMusic() async {
+    final player = _menuMusicPlayer;
+    if (player == null) return;
+    try {
+      await player.stop();
+      await player.dispose();
+    } catch (_) {}
+    _menuMusicPlayer = null;
+  }
+
+  void refreshMenuMusic(bool onMenu) {
+    if (onMenu) {
+      startMenuMusic();
+    } else {
+      stopMenuMusic();
+    }
+  }
+
+  void cannonFire() {
     HapticFeedback.mediumImpact();
-    _play('fire');
+    _playOneShot('cannon_fire', volume: 1.0);
   }
 
   void hit() {
     HapticFeedback.heavyImpact();
-    _play('hit');
+    _playOneShot('hit', volume: 1.0);
   }
 
   void miss() {
     HapticFeedback.lightImpact();
-    _play('miss');
+    _playOneShot('miss', volume: 1.0);
   }
 
   void sunk() {
     HapticFeedback.heavyImpact();
-    _play('sunk');
+    _playOneShot('sunk', volume: 1.0);
   }
 
   void victory() {
@@ -192,7 +230,39 @@ class SoundService {
 
   void place() => _play('place');
 
-  void click() => _play('click');
+  /// UI click uses a dedicated one-shot player instead of the pooled
+  /// low-latency players. This makes menu clicks reliable on Flutter Web
+  /// even when the shared effect pool is still initializing.
+  void click() => _playOneShot('click', volume: 0.9);
+
+  Future<void> _playOneShot(String key, {double volume = 1.0}) async {
+    final asset = _files[key];
+    if (!enabled || asset == null) return;
+
+    final player = AudioPlayer();
+    _oneShots.add(player);
+    var released = false;
+    Future<void> cleanup() async {
+      if (released) return;
+      released = true;
+      _oneShots.remove(player);
+      try { await player.dispose(); } catch (_) {}
+    }
+
+    try {
+      await player.setReleaseMode(ReleaseMode.release);
+      player.onPlayerComplete.first.then((_) => cleanup());
+      await player.play(
+        AssetSource(asset),
+        volume: volume.clamp(0.0, 1.0),
+      );
+    } catch (e) {
+      await cleanup();
+      if (kDebugMode) {
+        debugPrint('SoundService: one-shot sound failed for $asset ($e)');
+      }
+    }
+  }
 
   void denied() => _play('denied');
 
@@ -209,8 +279,23 @@ class SoundService {
   void cannonReady() => _play('cannon_ready');
 
   /// Countdown warning beep (plays each tick: 3..2..1).
-  void countBeep() => _play('count_beep');
+  void countBeep() => _playOneShot('count_beep', volume: 1.0);
 
   /// Higher "GO!" chime after the final countdown tick.
-  void countGo() => _play('count_go');
+  void countGo() => _playOneShot('count_go', volume: 1.0);
+
+  Future<void> dispose() async {
+    await stopMenuMusic();
+    for (final players in _pool.values) {
+      for (final player in players) {
+        try { await player.dispose(); } catch (_) {}
+      }
+    }
+    _pool.clear();
+    _cursor.clear();
+    for (final p in List<AudioPlayer>.from(_oneShots)) {
+      try { await p.dispose(); } catch (_) {}
+    }
+    _oneShots.clear();
+  }
 }

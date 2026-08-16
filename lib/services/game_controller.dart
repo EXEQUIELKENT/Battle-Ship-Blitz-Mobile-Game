@@ -181,8 +181,6 @@ class GameController extends ChangeNotifier {
     }
 
     cooldown1 = cooldownMax1;
-    SoundService.instance.fire();
-
     if (mode == GameMode.hotspot || mode == GameMode.online) {
       // Ask the remote peer to resolve the shot.
       network.sendFire(r, c);
@@ -212,7 +210,6 @@ class GameController extends ChangeNotifier {
       return ShotResult.duplicate;
     }
     cooldown2 = cooldownMax2;
-    SoundService.instance.fire();
     final (result, sunk) = boards[0].receiveShot(r, c);
     _registerShot(shooterIsP1: false, r: r, c: c, result: result, sunk: sunk);
     return result;

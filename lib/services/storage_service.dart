@@ -28,6 +28,22 @@ class CannonSkin {
       this.description, this.cooldownFactor, this.cost);
 }
 
+/// A gameplay theme changes the battlefield palette without changing rules.
+class GameplayTheme {
+  final String id;
+  final String name;
+  final String description;
+  final Color deck;
+  final Color deckAccent;
+  final Color grid;
+  final Color gridLine;
+  final Color miss;
+  final Color accent;
+  final int cost;
+
+  const GameplayTheme(this.id, this.name, this.description, this.deck, this.deckAccent, this.grid, this.gridLine, this.miss, this.accent, this.cost);
+}
+
 /// Full customization catalog.
 class Catalog {
   Catalog._();
@@ -39,6 +55,9 @@ class Catalog {
     ShipSkin('gold', 'Golden Armada', Color(0xFF92400E), Color(0xFFFBBF24), 500),
     ShipSkin('abyss', 'Abyss Ghost', Color(0xFF1E1B4B), Color(0xFF818CF8), 500),
     ShipSkin('arctic', 'Arctic Storm', Color(0xFFE2E8F0), Color(0xFF7DD3FC), 750),
+    ShipSkin('coral', 'Coral Raiders', Color(0xFF9F3B46), Color(0xFFFF9A8B), 850),
+    ShipSkin('midnight', 'Midnight Ops', Color(0xFF0F172A), Color(0xFF38BDF8), 1100),
+    ShipSkin('toxic', 'Toxic Wreckers', Color(0xFF365314), Color(0xFFA3E635), 1250),
   ];
 
   static const List<CannonSkin> cannonSkins = [
@@ -54,6 +73,16 @@ class Catalog {
         'Gold-plated heavy guns.', 1.0, 600),
     CannonSkin('phantom', 'Phantom Railgun', Color(0xFF312E81), Color(0xFFC084FC),
         'Experimental railgun. 15% faster reload!', 0.85, 1000),
+    CannonSkin('kraken', 'Kraken Cannon', Color(0xFF0F766E), Color(0xFF5EEAD4), 'Deep-sea siege cannon with a crushing pulse.', 0.95, 1200),
+    CannonSkin('sunfire', 'Sunfire Battery', Color(0xFFB45309), Color(0xFFFDE047), 'High-energy golden shell launcher.', 0.90, 1400),
+    CannonSkin('void', 'Void Annihilator', Color(0xFF111827), Color(0xFFEC4899), 'Dark-matter launcher. 10% faster reload!', 0.90, 1800),
+  ];
+
+  static const List<GameplayTheme> gameplayThemes = [
+    GameplayTheme('classic','Classic Deck','Warm cartoon navy battle deck.',Color(0xFFE68A6E),Color(0xFFFDB9A4),Color(0xFF4A789A),Color(0xFF6D9DB8),Color(0xFF7A8A96),Color(0xFFFFB739),0),
+    GameplayTheme('arctic','Arctic Front','Cold ice-water battlefield with bright sonar.',Color(0xFF9ED8E8),Color(0xFFD6F5FF),Color(0xFF3F7FA0),Color(0xFF8CCFE8),Color(0xFF9AB9C7),Color(0xFF7DD3FC),900),
+    GameplayTheme('deep','Deep Sea','Dark ocean tones for a tactical match.',Color(0xFF173A4D),Color(0xFF2A607D),Color(0xFF214E63),Color(0xFF4A879C),Color(0xFF6B8792),Color(0xFF22D3EE),1200),
+    GameplayTheme('sunset','Sunset Siege','Warm orange water and gold targeting effects.',Color(0xFFB8664F),Color(0xFFF5B48F),Color(0xFF4B718A),Color(0xFFD99D68),Color(0xFF8E9EAA),Color(0xFFFFD166),1500),
   ];
 
   static ShipSkin shipById(String id) =>
@@ -61,6 +90,9 @@ class Catalog {
 
   static CannonSkin cannonById(String id) =>
       cannonSkins.firstWhere((c) => c.id == id, orElse: () => cannonSkins.first);
+
+  static GameplayTheme gameplayThemeById(String id) =>
+      gameplayThemes.firstWhere((t) => t.id == id, orElse: () => gameplayThemes.first);
 }
 
 /// Persistent profile: RP, streaks, stats and customization.
@@ -75,6 +107,7 @@ class ProfileStore extends ChangeNotifier {
   static const _kShipSkin = 'profile.shipSkin';
   static const _kCannonSkin = 'profile.cannonSkin';
   static const _kOwned = 'profile.owned';
+  static const _kGameplayTheme = 'profile.gameplayTheme';
 
   SharedPreferences? _prefs;
 
@@ -87,10 +120,12 @@ class ProfileStore extends ChangeNotifier {
   bool soundOn = true;
   String shipSkinId = 'steel';
   String cannonSkinId = 'mk1';
-  Set<String> owned = {'steel', 'mk1'};
+  String gameplayThemeId = 'classic';
+  Set<String> owned = {'steel', 'mk1', 'classic'};
 
   ShipSkin get shipSkin => Catalog.shipById(shipSkinId);
   CannonSkin get cannonSkin => Catalog.cannonById(cannonSkinId);
+  GameplayTheme get gameplayTheme => Catalog.gameplayThemeById(gameplayThemeId);
 
   String get rankTitle {
     if (rp >= 2200) return 'FLEET ADMIRAL';
@@ -116,7 +151,8 @@ class ProfileStore extends ChangeNotifier {
     soundOn = p.getBool(_kSound) ?? true;
     shipSkinId = p.getString(_kShipSkin) ?? 'steel';
     cannonSkinId = p.getString(_kCannonSkin) ?? 'mk1';
-    owned = (p.getStringList(_kOwned) ?? ['steel', 'mk1']).toSet();
+    gameplayThemeId = p.getString(_kGameplayTheme) ?? 'classic';
+    owned = (p.getStringList(_kOwned) ?? ['steel', 'mk1', 'classic']).toSet();
     notifyListeners();
   }
 
@@ -132,6 +168,7 @@ class ProfileStore extends ChangeNotifier {
     await p.setBool(_kSound, soundOn);
     await p.setString(_kShipSkin, shipSkinId);
     await p.setString(_kCannonSkin, cannonSkinId);
+    await p.setString(_kGameplayTheme, gameplayThemeId);
     await p.setStringList(_kOwned, owned.toList());
   }
 
@@ -188,6 +225,18 @@ class ProfileStore extends ChangeNotifier {
       owned.add(skin.id);
     }
     cannonSkinId = skin.id;
+    _save();
+    notifyListeners();
+    return true;
+  }
+
+  bool equipGameplayTheme(GameplayTheme theme) {
+    if (!owns(theme.id)) {
+      if (rp < theme.cost) return false;
+      rp -= theme.cost;
+      owned.add(theme.id);
+    }
+    gameplayThemeId = theme.id;
     _save();
     notifyListeners();
     return true;

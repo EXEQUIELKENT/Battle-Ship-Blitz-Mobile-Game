@@ -48,6 +48,8 @@ class BattleScreen extends StatefulWidget {
 
 class _BattleScreenState extends State<BattleScreen>
     with TickerProviderStateMixin {
+  GameplayTheme get gameplayTheme => context.read<ProfileStore>().gameplayTheme;
+
   final _cannon1Fire = StreamController<void>.broadcast();
   final _cannon2Fire = StreamController<void>.broadcast();
   final _cannon1Ready = StreamController<void>.broadcast();
@@ -149,6 +151,7 @@ class _BattleScreenState extends State<BattleScreen>
   @override
   void initState() {
     super.initState();
+    SoundService.instance.stopMenuMusic();
     final controller = context.read<GameController>();
     controller.addListener(_onUpdate);
 
@@ -238,8 +241,7 @@ class _BattleScreenState extends State<BattleScreen>
           // its sound right now too, since `_resolveImpact` (which will
           // fire later) is resolving a DIFFERENT, earlier pending shot.
           if (e.impactAt == null) {
-            e.impactAt = DateTime.now();
-            _playImpactSound(e.result);
+            e.impactAt = null;
           }
         } else {
           _launchOpponentBall(e);
@@ -266,13 +268,9 @@ class _BattleScreenState extends State<BattleScreen>
     final top = _geom[true];
     final bottom = _geom[false];
     if (top == null || bottom == null || _projCtrl.isAnimating) {
-      // No geometry yet (or ball already flying) — mark impact immediately,
-      // and since there's no flight animation to wait for, play its impact
-      // sound right now too rather than leaving it silent.
-      if (e.impactAt == null) {
-        e.impactAt = DateTime.now();
-        _playImpactSound(e.result);
-      }
+      // Never play an impact sound before the projectile reaches its cell.
+      // If geometry is unavailable, keep the event pending for the next
+      // frame instead of resolving it early.
       return;
     }
     // The AI's cannon may be slid out to its grid center (during its turn)
@@ -289,6 +287,7 @@ class _BattleScreenState extends State<BattleScreen>
       _projCell = bottom.cell;
       _showProjectile = true;
     });
+    SoundService.instance.cannonFire();
     _cannon2Fire.add(null);
     _projCtrl.forward(from: 0);
   }
@@ -428,6 +427,7 @@ class _BattleScreenState extends State<BattleScreen>
       _projCell = targetGeom.cell;
       _showProjectile = true;
     });
+    SoundService.instance.cannonFire();
     (byP1 ? _cannon1Fire : _cannon2Fire).add(null);
     _projCtrl.forward(from: 0);
   }
@@ -439,7 +439,7 @@ class _BattleScreenState extends State<BattleScreen>
   /// faces up (−y); for the 180°-rotated top half it faces down (+y).
   Offset _mouthDir(_HalfGeom g) => Offset(0, g.rotated ? 1.0 : -1.0);
 
-  /// A half's cannon CENTER (in that half's local, unrotated space),
+  /// A half cannon CENTER (in that half's local, unrotated space),
   /// interpolated between its home position near the middle band (t=0)
   /// and the middle of its own grid (t=1, its firing position). Eased to
   /// match the little overshoot "pop" the cannon visually slides with —
@@ -706,6 +706,7 @@ class _BattleScreenState extends State<BattleScreen>
     final cannonStream = halfIsP1 ? _cannon1Fire : _cannon2Fire;
     final readyStream = halfIsP1 ? _cannon1Ready : _cannon2Ready;
     final accent = halfIsP1 ? AppColors.hit : AppColors.blue;
+    final gameplayTheme = context.watch<ProfileStore>().gameplayTheme;
 
     // VIDEO interaction model: the ACTIVE player's cannon sits at the
     // middle of their OWN grid (a "ready to fire" indicator). Tapping a
@@ -828,7 +829,7 @@ class _BattleScreenState extends State<BattleScreen>
         return Container(
           width: double.infinity,
           height: halfH,
-          color: AppColors.coralVideo,
+          color: gameplayTheme.deck,
           child: Stack(
             clipBehavior: Clip.none,
             children: [
@@ -853,8 +854,9 @@ class _BattleScreenState extends State<BattleScreen>
                     skin: gameOver ? revealSkin : null,
                     destroyedShips: gameOver ? const [] : sunkShips,
                     enabled: gridFirable,
-                    glowColor: AppColors.steelBlueDark,
-                    cellColor: AppColors.steelBlue,
+                    glowColor: gameplayTheme.accent,
+                    cellColor: gameplayTheme.grid,
+                    gridLineColor: gameplayTheme.gridLine,
                     recentEvents: events,
                     aimCell: aimCell,
                     // Tapping the opponent's grid fires at it immediately.
@@ -1018,7 +1020,7 @@ class _BattleScreenState extends State<BattleScreen>
               ),
               Expanded(
                 child: Container(
-                  color: AppColors.coralVideo,
+                  color: gameplayTheme.deck,
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(bottomBoard,
                       faded: bottomIsP1Fleet == activeIsP1,
@@ -1157,14 +1159,14 @@ class _BattleScreenState extends State<BattleScreen>
                         ),
                       ],
                     ),
-                    child: const Center(
+                    child: Center(
                       child: Text(
-                        'Your\nturn',
+                        '${activeIsP1 ? 'RED' : 'BLUE'}\nYOUR TURN',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w900,
-                          fontSize: 32,
+                          fontSize: 27,
                           height: 1.05,
                           shadows: [
                             Shadow(color: Color(0x66000000), blurRadius: 4)
