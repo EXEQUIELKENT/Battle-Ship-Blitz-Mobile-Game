@@ -46,6 +46,21 @@ class _CannonWidgetState extends State<CannonWidget>
   late final AnimationController _recoil;
   late final AnimationController _pulse;
 
+  // ----- Muzzle smoke (separate, longer-lived than the recoil kick) -----
+  // `_recoil` snaps up and back down in ~260ms either way — plenty for a
+  // sharp kick, but too fast to read as actual smoke. `_smoke` runs once,
+  // longer (850ms), driving a handful of puffs that drift up and out from
+  // the barrel and fade — so the shot leaves a lingering cloud behind
+  // instead of the flash just winking out with the recoil.
+  late final AnimationController _smoke;
+
+  /// Fixed per-instance spread for the smoke puffs (dx offset, start delay
+  /// within the smoke animation, size, and rise distance) — randomized
+  /// once so the puffs don't all move in lockstep, but stable across
+  /// rebuilds/re-fires so the cannon doesn't visibly "reshuffle" its smoke
+  /// pattern mid-animation.
+  late final List<_SmokePuff> _puffs;
+
   @override
   void initState() {
     super.initState();
@@ -57,6 +72,19 @@ class _CannonWidgetState extends State<CannonWidget>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
+    _smoke = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 850),
+    );
+    final rng = math.Random();
+    _puffs = List.generate(5, (i) {
+      return _SmokePuff(
+        dx: (rng.nextDouble() - 0.5) * 0.9,
+        delay: i * 0.06 + rng.nextDouble() * 0.05,
+        sizeMul: 0.75 + rng.nextDouble() * 0.5,
+        rise: 0.55 + rng.nextDouble() * 0.4,
+      );
+    });
     widget.fireTrigger?.listen((_) => fire());
     widget.readyTrigger?.listen((_) => readyFlash());
   }
@@ -65,11 +93,13 @@ class _CannonWidgetState extends State<CannonWidget>
   void dispose() {
     _recoil.dispose();
     _pulse.dispose();
+    _smoke.dispose();
     super.dispose();
   }
 
   void fire() {
     _recoil.forward(from: 0).then((_) => _recoil.reverse());
+    _smoke.forward(from: 0);
   }
 
   /// Pronounced ready-flash: a quick double-pulse to signal "your cannon
@@ -86,25 +116,35 @@ class _CannonWidgetState extends State<CannonWidget>
   Widget build(BuildContext context) {
     final ready = widget.cooldownFraction >= 1 && widget.enabled;
     return AnimatedBuilder(
-      animation: Listenable.merge([_recoil, _pulse]),
+      animation: Listenable.merge([_recoil, _pulse, _smoke]),
       builder: (context, _) {
         final squash = 1 - _recoil.value * 0.14;
         final pulseScale = ready ? 1 + _pulse.value * 0.05 : 1.0;
+        // Small downward kick synced to the same recoil value that drives
+        // the squash and the barrel retraction in the painter, so firing
+        // reads as a real jolt (the whole cannon nudges back) rather than
+        // just a shrink-and-grow pulse.
+        final kick = _recoil.value * widget.size * 0.05;
         return GestureDetector(
           onTap: ready ? widget.onFire : null,
-          child: Transform.scale(
-            scale: squash * pulseScale,
-            child: SizedBox(
-              width: widget.size,
-              height: widget.size,
-              child: CustomPaint(
-                painter: CannonPainter(
-                  accent: ready
-                      ? (widget.accentOverride ?? widget.skin.projectile)
-                      : AppColors.inkSoft,
-                  cooldown: widget.cooldownFraction,
-                  recoil: _recoil.value,
-                  ready: ready,
+          child: Transform.translate(
+            offset: Offset(0, kick),
+            child: Transform.scale(
+              scale: squash * pulseScale,
+              child: SizedBox(
+                width: widget.size,
+                height: widget.size,
+                child: CustomPaint(
+                  painter: CannonPainter(
+                    accent: ready
+                        ? (widget.accentOverride ?? widget.skin.projectile)
+                        : AppColors.inkSoft,
+                    cooldown: widget.cooldownFraction,
+                    recoil: _recoil.value,
+                    ready: ready,
+                    smoke: _smoke.value,
+                    smokePuffs: _puffs,
+                  ),
                 ),
               ),
             ),
@@ -115,6 +155,30 @@ class _CannonWidgetState extends State<CannonWidget>
   }
 }
 
+/// One puff in a cannon's muzzle-smoke cloud — see `_CannonWidgetState._puffs`.
+class _SmokePuff {
+  /// Horizontal drift direction/distance, as a fraction of the cannon's
+  /// outer radius.
+  final double dx;
+
+  /// Fraction (0–1) into the smoke animation before this puff starts
+  /// growing, so puffs billow out staggered rather than all at once.
+  final double delay;
+
+  /// Per-puff size multiplier.
+  final double sizeMul;
+
+  /// How far this puff rises, as a fraction of the cannon's outer radius.
+  final double rise;
+
+  const _SmokePuff({
+    required this.dx,
+    required this.delay,
+    required this.sizeMul,
+    required this.rise,
+  });
+}
+
 /// Pure painter for the cartoon cannon so it can be reused without the
 /// gesture wrapper (e.g. the blurred transition overlay).
 class CannonPainter extends CustomPainter {
@@ -123,11 +187,22 @@ class CannonPainter extends CustomPainter {
   final double recoil;
   final bool ready;
 
+  /// 0 = no smoke, 1 = smoke animation finished. Drives the muzzle-smoke
+  /// puffs below — separate from [recoil] since the smoke should keep
+  /// drifting and fading well after the recoil kick has snapped back.
+  final double smoke;
+
+  /// Per-puff spread for the smoke cloud (empty = no smoke drawn, e.g. for
+  /// the static painter reused by the transition overlay).
+  final List<_SmokePuff> smokePuffs;
+
   CannonPainter({
     required this.accent,
     this.cooldown = 1,
     this.recoil = 0,
     this.ready = true,
+    this.smoke = 0,
+    this.smokePuffs = const [],
   });
 
   @override
@@ -200,9 +275,14 @@ class CannonPainter extends CustomPainter {
       arcPaint,
     );
 
-    // Barrel dome (dark cylinder)
+    // Barrel dome (dark cylinder). Nudged toward the ring's center as
+    // `recoil` rises — a subtle "the barrel just jerked backward into its
+    // housing" retraction, on top of the whole-cannon kickback translate
+    // and squash applied by the widget — then eases back out as recoil
+    // decays, so firing reads as a real mechanical kick rather than just
+    // a size pulse.
     final domeR = outerR * 0.58;
-    final domeCenter = center - Offset(0, domeR * 0.14);
+    final domeCenter = center - Offset(0, domeR * (0.14 - recoil * 0.05));
     final domePaint = Paint()
       ..shader = uiGradient(
         domeCenter,
@@ -231,7 +311,7 @@ class CannonPainter extends CustomPainter {
     // Barrel mouth (darker inset circle near the top), with a thin
     // metallic highlight crescent on its upper rim.
     final mouthR = domeR * 0.52;
-    final mouthCenter = center - Offset(0, domeR * 0.52);
+    final mouthCenter = center - Offset(0, domeR * (0.52 - recoil * 0.10));
     canvas.drawCircle(mouthCenter, mouthR, Paint()..color = AppColors.outline);
     canvas.drawArc(
       Rect.fromCircle(center: mouthCenter, radius: mouthR * 0.92),
@@ -300,6 +380,33 @@ class CannonPainter extends CustomPainter {
             flashCenter + Offset(math.cos(a) * l, math.sin(a) * l), star);
       }
     }
+
+    // Muzzle smoke: soft grey puffs that billow out from the barrel and
+    // drift upward, growing and fading as `smoke` runs 0→1 — independent
+    // of (and outlasting) the sharp `recoil` flash above, so a shot
+    // leaves a brief hanging cloud instead of the boom just vanishing.
+    if (smoke > 0.01 && smokePuffs.isNotEmpty) {
+      for (final puff in smokePuffs) {
+        // Each puff waits out its own `delay` fraction before it starts
+        // growing, so the cloud billows out staggered rather than as one
+        // uniform blob.
+        final span = (1 - puff.delay).clamp(0.0001, 1.0);
+        final local = ((smoke - puff.delay) / span).clamp(0.0, 1.0);
+        if (local <= 0) continue;
+        final puffCenter = mouthCenter +
+            Offset(
+              puff.dx * outerR * local,
+              -puff.rise * outerR * local,
+            );
+        final puffR = outerR * (0.22 + local * 0.30) * puff.sizeMul;
+        final fade = (1 - local) * 0.32;
+        canvas.drawCircle(
+          puffCenter,
+          puffR,
+          Paint()..color = const Color(0xFFB9C2CC).withValues(alpha: fade),
+        );
+      }
+    }
   }
 
   static Shader uiGradient(Offset center, double r, List<Color> colors) {
@@ -315,5 +422,6 @@ class CannonPainter extends CustomPainter {
       oldDelegate.accent != accent ||
       oldDelegate.cooldown != cooldown ||
       oldDelegate.recoil != recoil ||
-      oldDelegate.ready != ready;
+      oldDelegate.ready != ready ||
+      oldDelegate.smoke != smoke;
 }

@@ -117,6 +117,28 @@ class _BattleScreenState extends State<BattleScreen>
     _shakeCtrl.forward(from: 0);
   }
 
+  /// Plays the sound (and matching haptic) for a shot's outcome, right as
+  /// that shot's cannonball actually lands — see the call sites in
+  /// `_resolveImpact`, `_launchOpponentBall`, and `_onUpdate`. Kept as one
+  /// shared helper so every "impact just happened" call site (including
+  /// the couple of edge cases with no travel animation to wait for) picks
+  /// the sound the exact same way.
+  void _playImpactSound(ShotResult result) {
+    switch (result) {
+      case ShotResult.sunk:
+        SoundService.instance.sunk();
+        break;
+      case ShotResult.hit:
+        SoundService.instance.hit();
+        break;
+      case ShotResult.miss:
+        SoundService.instance.miss();
+        break;
+      default:
+        break;
+    }
+  }
+
   // ----- PERF: cached derived grid data (see _refreshDerivedCache) -----
   int _cachedRevision = -1;
   List<int>? _cachedPendingImpactKey;
@@ -211,7 +233,14 @@ class _BattleScreenState extends State<BattleScreen>
       // only matters for the async AI/remote modes).
       if (!e.byPlayer && age < 200 && mounted) {
         if (_projCtrl.isAnimating) {
-          e.impactAt ??= DateTime.now();
+          // Another ball is already mid-flight, so this event's impact is
+          // shown immediately with no travel animation of its own — play
+          // its sound right now too, since `_resolveImpact` (which will
+          // fire later) is resolving a DIFFERENT, earlier pending shot.
+          if (e.impactAt == null) {
+            e.impactAt = DateTime.now();
+            _playImpactSound(e.result);
+          }
         } else {
           _launchOpponentBall(e);
         }
@@ -237,8 +266,13 @@ class _BattleScreenState extends State<BattleScreen>
     final top = _geom[true];
     final bottom = _geom[false];
     if (top == null || bottom == null || _projCtrl.isAnimating) {
-      // No geometry yet (or ball already flying) — mark impact immediately.
-      e.impactAt ??= DateTime.now();
+      // No geometry yet (or ball already flying) — mark impact immediately,
+      // and since there's no flight animation to wait for, play its impact
+      // sound right now too rather than leaving it silent.
+      if (e.impactAt == null) {
+        e.impactAt = DateTime.now();
+        _playImpactSound(e.result);
+      }
       return;
     }
     // The AI's cannon may be slid out to its grid center (during its turn)
@@ -277,6 +311,11 @@ class _BattleScreenState extends State<BattleScreen>
       }
     }
     controller.touch();
+    // Hit/sunk/miss sound, right as the ball actually lands — synced to
+    // the same moment as the shake below and the hit/miss/wreckage reveal
+    // (see `sunkShips` in `_buildHalf`), instead of firing back at tap
+    // time before the ball has visually gone anywhere.
+    if (result != null) _playImpactSound(result);
     // Screen shake, right as the ball actually lands — never on a miss
     // (there's nothing to "hit"). Sinking a ship shakes harder than a
     // plain hit so a killing blow reads as more impactful.
@@ -646,7 +685,8 @@ class _BattleScreenState extends State<BattleScreen>
       ];
       _eventsCache[halfIsP1] = controller.events
           .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)
-          .map((e) => CombatEventLike(e.row, e.col, e.result))
+          .map((e) => CombatEventLike(e.row, e.col, e.result,
+              sunkShipName: e.sunkShipName))
           .toList();
     }
   }
@@ -694,12 +734,7 @@ class _BattleScreenState extends State<BattleScreen>
     // a soft blur glow behind their own grid.
     final isActiveHalf = !thisIsOpponentOfActive;
 
-    // Ships that have been fully sunk on THIS half's own board get
-    // revealed on the grid in their destroyed form — common knowledge to
-    // both players once a ship goes down, regardless of the "empty grid"
-    // rule that otherwise hides ship positions.
     final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
-    final sunkShips = [for (final s in board.ships) if (s.isSunk) s];
 
     // Cannonball currently in flight toward THIS half's grid — drives the
     // targeting reticle below for exactly as long as the shot is
@@ -723,6 +758,29 @@ class _BattleScreenState extends State<BattleScreen>
     final events = _eventsCache[halfIsP1] ?? const [];
     final shownShots = _shotsCache[halfIsP1] ??
         List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0));
+
+    // Ships that have been fully sunk on THIS half's own board get
+    // revealed on the grid in their destroyed form — common knowledge to
+    // both players once a ship goes down, regardless of the "empty grid"
+    // rule that otherwise hides ship positions.
+    //
+    // Gated on the SAME `events` (impact-landed) list as the hit/miss
+    // markers above rather than reading `board.ships`' sunk flag directly.
+    // The model marks a ship sunk the instant the shot is registered (tap
+    // time), which is well before the cannonball has actually flown across
+    // the screen — reading that flag straight would make the wreckage pop
+    // onto the grid immediately on tap, ahead of its own flight animation,
+    // sound and screen-shake, all of which wait for the ball to land. This
+    // keeps the reveal in lockstep with those instead.
+    final revealedSunkNames = {
+      for (final e in events)
+        if (e.result == ShotResult.sunk && e.sunkShipName != null)
+          e.sunkShipName,
+    };
+    final sunkShips = [
+      for (final s in board.ships)
+        if (s.isSunk && revealedSunkNames.contains(s.spec.name)) s
+    ];
 
     return LayoutBuilder(
       builder: (context, box) {
@@ -814,11 +872,6 @@ class _BattleScreenState extends State<BattleScreen>
               // `gridFirable` above — so blurring it acts as a spotlight:
               // it de-emphasizes the inert board you don't need and keeps
               // attention on the live, interactive target grid instead.
-              // (BUGFIX: this used to run on `!isActiveHalf`, which put
-              // the haze on the grid you're actively trying to aim at and
-              // left your own, non-interactive board crisp — exactly
-              // backwards. Restored to `isActiveHalf` so your own board
-              // blurs during your turn, not your target.)
               // Uses a small FIXED glow margin (clamped to this half's own
               // bounds) instead of a percentage of gridSide — the old
               // percentage-based halo could balloon well past the grid
@@ -933,12 +986,17 @@ class _BattleScreenState extends State<BattleScreen>
     final topBoard = bottomIsP1 ? controller.boards[1] : controller.boards[0];
     final bottomBoard =
         bottomIsP1 ? controller.boards[0] : controller.boards[1];
-    // Whichever side is NOT currently active gets its fleet row faded —
-    // previously the bottom (P1/red) row was hardcoded to always fade and
-    // the top (P2/blue) row to never fade, regardless of whose turn it
-    // actually was. Tying `faded` to the live turn flag means each side
-    // only dims while it's genuinely waiting, and lights back up the
-    // moment it's their turn.
+    // BUGFIX (dim direction was backwards): whichever side is CURRENTLY
+    // FIRING should have its own fleet row dimmed (a spotlight effect —
+    // de-emphasize your own status strip while it's your turn to aim,
+    // since it's not what you're looking at), and the WAITING opponent's
+    // row should stay fully visible. The old formula (`faded: … !=
+    // activeIsP1`) did the opposite: it dimmed the WAITING side and kept
+    // the ACTIVE player's own row at full brightness — e.g. while player
+    // 1 was firing, player 1's OWN row stayed bright and player 2's
+    // dimmed, and vice versa on player 2's turn. Flipped to `==
+    // activeIsP1` so the row that dims is always the row belonging to
+    // whoever is currently firing.
     final activeIsP1 = !_p2Active;
     final topIsP1Fleet = !bottomIsP1;
     final bottomIsP1Fleet = bottomIsP1;
@@ -954,7 +1012,7 @@ class _BattleScreenState extends State<BattleScreen>
                   color: AppColors.steelBlueDark,
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(topBoard,
-                      faded: topIsP1Fleet != activeIsP1,
+                      faded: topIsP1Fleet == activeIsP1,
                       isP1Fleet: topIsP1Fleet),
                 ),
               ),
@@ -963,7 +1021,7 @@ class _BattleScreenState extends State<BattleScreen>
                   color: AppColors.coralVideo,
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(bottomBoard,
-                      faded: bottomIsP1Fleet != activeIsP1,
+                      faded: bottomIsP1Fleet == activeIsP1,
                       isP1Fleet: bottomIsP1Fleet),
                 ),
               ),

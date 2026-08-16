@@ -23,7 +23,8 @@ class CombatEventLike {
   final int row;
   final int col;
   final ShotResult result;
-  const CombatEventLike(this.row, this.col, this.result);
+  final String? sunkShipName;
+  const CombatEventLike(this.row, this.col, this.result, {this.sunkShipName});
 }
 
 /// Flat-cartoon 10×10 grid in the reference style: chunky rounded blue
@@ -330,8 +331,19 @@ class _BattleGridState extends State<BattleGrid>
     return [
       for (final ship in ships)
         if (ship.spec.kind != _dragKind)
-          Positioned(
+          // AnimatedPositioned (rather than a plain Positioned) so that
+          // whenever a ship's row/col changes in the underlying board
+          // state — e.g. the placement screen's RANDOM button rewriting
+          // every ship's position in one setState — it's matched by its
+          // stable `ValueKey(ship.spec.kind)` to the SAME element and
+          // eases from its old spot to the new one instead of teleporting
+          // there instantly. A brand-new ship (no prior element for that
+          // key) still just appears at its target with no animation, so
+          // normal drag-and-drop placement is unaffected.
+          AnimatedPositioned(
             key: ValueKey(ship.spec.kind),
+            duration: const Duration(milliseconds: 420),
+            curve: Curves.easeInOutCubic,
             left: ship.col * cell + 1,
             top: ship.row * cell + 1,
             width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
@@ -352,6 +364,10 @@ class _BattleGridState extends State<BattleGrid>
   /// independently of [_shipWidgets] so it also appears on the "empty"
   /// battle grids (where [ships] is null and only hit/miss markers would
   /// otherwise show).
+  ///
+  /// The wreck is wrapped in [_ShipRevealTransition] so it eases into view
+  /// (fade + settle-scale) the instant it's added to [widget.destroyedShips]
+  /// instead of just popping onto the grid fully-formed.
   List<Widget> _destroyedShipWidgets(double cell) {
     return [
       for (final ship in widget.destroyedShips)
@@ -362,26 +378,28 @@ class _BattleGridState extends State<BattleGrid>
           width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
           height: ship.horizontal ? cell - 2 : ship.spec.size * cell - 2,
           child: IgnorePointer(
-            child: ship.horizontal
-                ? CustomPaint(
-                    painter: ShipPainter(
-                      spec: ship.spec,
-                      skin: wreckSkin,
-                      sunk: true,
-                      hitCount: ship.spec.size,
-                    ),
-                  )
-                : RotatedBox(
-                    quarterTurns: 1,
-                    child: CustomPaint(
+            child: _ShipRevealTransition(
+              child: ship.horizontal
+                  ? CustomPaint(
                       painter: ShipPainter(
                         spec: ship.spec,
                         skin: wreckSkin,
                         sunk: true,
                         hitCount: ship.spec.size,
                       ),
+                    )
+                  : RotatedBox(
+                      quarterTurns: 1,
+                      child: CustomPaint(
+                        painter: ShipPainter(
+                          spec: ship.spec,
+                          skin: wreckSkin,
+                          sunk: true,
+                          hitCount: ship.spec.size,
+                        ),
+                      ),
                     ),
-                  ),
+            ),
           ),
         ),
     ];
@@ -420,6 +438,61 @@ class _BattleGridState extends State<BattleGrid>
                 ),
         ),
       ),
+    );
+  }
+}
+
+/// One-shot "reveal" transition for a sunk ship's wreck graphic: fades in
+/// and scales up from slightly-small with a gentle overshoot-then-settle
+/// (like the wreck is bobbing up to the surface), instead of the graphic
+/// just instantly appearing on the grid. Plays exactly once, starting the
+/// moment this widget is first mounted — which, since the parent keys each
+/// wreck by `ship.spec.kind`/row/col (see `_destroyedShipWidgets`), is
+/// precisely when that ship enters `destroyedShips` for the first time.
+/// Later rebuilds reuse the same element/State, so the animation is never
+/// re-triggered on an already-revealed wreck.
+class _ShipRevealTransition extends StatefulWidget {
+  final Widget child;
+  const _ShipRevealTransition({required this.child});
+
+  @override
+  State<_ShipRevealTransition> createState() => _ShipRevealTransitionState();
+}
+
+class _ShipRevealTransitionState extends State<_ShipRevealTransition>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
+  late final Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 480),
+    );
+    _scale = CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack);
+    // Opacity finishes ahead of the scale settle so the tail end of the
+    // overshoot doesn't read as a flicker.
+    _fade = CurvedAnimation(
+      parent: _ctrl,
+      curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
+    );
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _fade,
+      child: ScaleTransition(scale: _scale, child: widget.child),
     );
   }
 }

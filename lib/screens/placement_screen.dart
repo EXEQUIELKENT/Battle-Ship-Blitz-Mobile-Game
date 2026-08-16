@@ -35,6 +35,12 @@ class _PlacementScreenState extends State<PlacementScreen> {
   bool _showHandoff = false;
   static const double _dockH = 64;
 
+  /// True while a RANDOM-triggered reshuffle is staggering ships into
+  /// their new spots (see [_randomize]) — disables the RANDOM/SAVE
+  /// buttons and drag/tap interaction so the player can't yank a ship or
+  /// fire off a second shuffle mid-animation.
+  bool _randomizing = false;
+
   /// Live "where will this land" highlight — driven by whichever drag is
   /// currently active: a fresh ship being dragged in from the dock tray,
   /// or an already-placed ship being repositioned on the grid.
@@ -178,14 +184,39 @@ class _PlacementScreenState extends State<PlacementScreen> {
     }
   }
 
+  /// Deals out a fresh random layout. Rather than swapping the whole
+  /// fleet in one instant `setState` (the old behavior — every ship just
+  /// cut to its new spot), this staggers the ships in one at a time so
+  /// each one visibly SLIDES to its new cell (the actual motion comes for
+  /// free from `BattleGrid`'s `AnimatedPositioned`, keyed per ship —
+  /// see `_shipWidgets`) with a placement "thunk" timed to its landing,
+  /// giving the RANDOM button a satisfying "shuffle and deal" feel
+  /// instead of an abrupt pop.
   void _randomize() {
-    SoundService.instance.click();
+    if (_randomizing) return;
+    unawaited(_runRandomize());
+  }
+
+  Future<void> _runRandomize() async {
+    final target = Board.random();
+    // Shuffle whoosh right as the button is pressed — the cue that a new
+    // layout is being dealt out, ahead of any ship actually moving.
+    SoundService.instance.whir();
     setState(() {
+      _randomizing = true;
       _selected = null;
       _previewShip = null;
-      _board.ships.clear();
-      _board.ships.addAll(Board.random().ships);
     });
+    for (final ship in target.ships) {
+      if (!mounted) return;
+      setState(() {
+        _board.ships.removeWhere((s) => s.spec.kind == ship.spec.kind);
+        _board.ships.add(ship);
+      });
+      SoundService.instance.place();
+      await Future.delayed(const Duration(milliseconds: 90));
+    }
+    if (mounted) setState(() => _randomizing = false);
   }
 
   Future<void> _save() async {
@@ -350,7 +381,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
                           icon: Icons.shuffle,
                           color: AppColors.blue,
                           compact: true,
-                          onPressed: _randomize,
+                          onPressed: _randomizing ? null : _randomize,
                         ),
                         const SizedBox(width: 12),
                         NeonButton(
@@ -359,7 +390,8 @@ class _PlacementScreenState extends State<PlacementScreen> {
                               : 'SAVE  ${_board.ships.length}/5',
                           icon: Icons.bolt,
                           color: _allPlaced ? AppColors.seafoam : AppColors.inkSoft,
-                          onPressed: _allPlaced ? _save : null,
+                          onPressed:
+                              (_allPlaced && !_randomizing) ? _save : null,
                         ),
                       ],
                     ),
@@ -476,9 +508,12 @@ class _PlacementScreenState extends State<PlacementScreen> {
                           glowColor: AppColors.steelBlueDark,
                           previewShip: _previewShip,
                           previewValid: _previewValid,
-                          onTapCell: _onGridTap,
-                          onShipTap: _rotateShip,
-                          onShipDragEnd: _moveShip,
+                          // Locked while a random shuffle is dealing ships
+                          // out (`_randomizing`) so a tap/drag can't land
+                          // mid-animation and fight the in-flight reshuffle.
+                          onTapCell: _randomizing ? null : _onGridTap,
+                          onShipTap: _randomizing ? null : _rotateShip,
+                          onShipDragEnd: _randomizing ? null : _moveShip,
                           onShipDragUpdate: _onShipDragPreview,
                         ),
                       );
