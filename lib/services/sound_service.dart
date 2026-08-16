@@ -52,15 +52,33 @@ class SoundService {
     'count_go': 'sfx/count_go.wav',
   };
 
-  /// How many pooled players to keep per effect. Effects that can fire in
-  /// rapid bursts (cannon fire, hits, misses, UI clicks) get a bigger pool
-  /// so a burst is far less likely to need to interrupt a still-playing
-  /// player at all.
-  static const _poolSizes = {
-    'cannon_fire': 5,
-    'hit': 5,
-    'miss': 5,
-    'click': 4,
+  /// Effects actually played through the pooled `_play()` path (see the
+  /// methods below — victory/defeat/place/denied/whir/turnPass/
+  /// cannonReady). Everything else (cannon_fire, hit, miss, sunk, click,
+  /// count_beep, count_go) is fired via `_playOneShot`, which spins up
+  /// its own disposable player and never touches the pool.
+  ///
+  /// BUGFIX (slow startup / music needing a tap to start): `init()` used
+  /// to build a pool for EVERY entry in `_files`, including the
+  /// one-shot-only effects above, with some of them (cannon_fire, hit,
+  /// miss, click) given an inflated pool of 4-5 players each. That meant
+  /// ~49 `AudioPlayer`s were created and awaited one-by-one before
+  /// `runApp()` even ran, needlessly stretching cold start — and the
+  /// longer that takes, the more likely it is that the menu music's
+  /// autoplay attempt (fired on the home screen's very first frame)
+  /// lands well outside any residual browser "user activation" window,
+  /// making it look like music "only starts after you tap something".
+  /// Only building pools for the effects that actually use them cuts
+  /// that down to ~21 players and removes the dead pool entirely for the
+  /// rest.
+  static const _pooledEffects = {
+    'victory',
+    'defeat',
+    'place',
+    'denied',
+    'whir',
+    'turn_pass',
+    'cannon_ready',
   };
   static const _defaultPoolSize = 3;
 
@@ -76,11 +94,19 @@ class SoundService {
   AudioPlayer? _menuMusicPlayer;
   final Set<AudioPlayer> _oneShots = <AudioPlayer>{};
 
-  /// Pre-create a round-robin player pool per effect. Safe to call
-  /// fire-and-forget from main().
+  /// Whether menu music is *supposed* to be playing right now (set by
+  /// [startMenuMusic], cleared by [stopMenuMusic]) — independent of
+  /// whether the play attempt actually succeeded. Used by
+  /// [notifyUserGesture] to know whether it should retry.
+  bool _menuMusicWanted = false;
+
+  /// Pre-create a round-robin player pool per effect that actually uses
+  /// the pool (see `_pooledEffects`). Safe to call fire-and-forget from
+  /// main().
   Future<void> init() async {
     for (final entry in _files.entries) {
-      final size = _poolSizes[entry.key] ?? _defaultPoolSize;
+      if (!_pooledEffects.contains(entry.key)) continue;
+      final size = _defaultPoolSize;
       final players = <AudioPlayer>[];
       for (var i = 0; i < size; i++) {
         final p = AudioPlayer();
@@ -165,8 +191,26 @@ class SoundService {
     }
   }
 
+  /// BUGFIX (background music "only plays after I tap something"): on
+  /// Web (and some WebView-based embeds) browsers refuse to play ANY
+  /// audio — even a fresh `AudioPlayer`, even muted-then-unmuted — until
+  /// the page has seen a real user gesture (click/tap/key). That's a
+  /// browser policy, not something app code can override, so the very
+  /// first automatic `startMenuMusic()` call on launch can silently fail
+  /// (caught below, logged only in debug). Previously nothing ever
+  /// retried it, so the music stayed off until the player happened to
+  /// trigger some OTHER sound (e.g. a button's `click()`), which is
+  /// exactly the "only after I tap something" symptom.
+  /// Now `_menuMusicWanted` records the intent even when the attempt is
+  /// blocked, and [notifyUserGesture] — wired up in `main.dart` to fire
+  /// on the very first tap/pointer-down ANYWHERE in the app, not just a
+  /// sound-producing button — retries immediately. That's the earliest
+  /// point a browser will allow it, so the music now starts on literally
+  /// the first touch of the screen instead of waiting for the user to
+  /// stumble into a button that happens to play a sound.
   Future<void> startMenuMusic() async {
     if (!enabled) return;
+    _menuMusicWanted = true;
     final existing = _menuMusicPlayer;
     if (existing != null && existing.state == PlayerState.playing) return;
 
@@ -178,10 +222,13 @@ class SoundService {
       await player.play(AssetSource(_menuMusicAsset), volume: 0.82);
     } catch (e) {
       if (kDebugMode) debugPrint('SoundService: menu music play failed ($e)');
+      // Left `_menuMusicWanted = true` so `notifyUserGesture` retries as
+      // soon as a gesture makes the browser allow it.
     }
   }
 
   Future<void> stopMenuMusic() async {
+    _menuMusicWanted = false;
     final player = _menuMusicPlayer;
     if (player == null) return;
     try {
@@ -189,6 +236,17 @@ class SoundService {
       await player.dispose();
     } catch (_) {}
     _menuMusicPlayer = null;
+  }
+
+  /// Call on every pointer-down/tap anywhere in the app (wired up once,
+  /// globally, in `main.dart`). Cheap no-op unless menu music was wanted
+  /// but isn't actually playing — see the bugfix note on
+  /// [startMenuMusic].
+  void notifyUserGesture() {
+    if (!_menuMusicWanted) return;
+    final player = _menuMusicPlayer;
+    if (player != null && player.state == PlayerState.playing) return;
+    startMenuMusic();
   }
 
   void refreshMenuMusic(bool onMenu) {

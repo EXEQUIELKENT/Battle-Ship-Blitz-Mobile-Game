@@ -961,6 +961,64 @@ class _BattleScreenState extends State<BattleScreen>
                   );
                 },
               ),
+
+              // Per-side "YOUR TURN" pill — unlike `_turnBadgeOverlay`
+              // (which only flashes once, right after the opening
+              // countdown, then never again), this sits on THIS half and
+              // fades in/out every single time the turn flag flips, on
+              // BOTH the red and blue side, so whoever's turn it is has
+              // an unmistakable, persistent marker on their own half for
+              // as long as it stays their turn — not just at kickoff.
+              Positioned(
+                top: 10,
+                left: 0,
+                right: 0,
+                child: IgnorePointer(
+                  child: Center(
+                    child: AnimatedSlide(
+                      duration: const Duration(milliseconds: 280),
+                      curve: Curves.easeOutBack,
+                      offset: isActiveHalf && inBattle
+                          ? Offset.zero
+                          : const Offset(0, -0.6),
+                      child: AnimatedOpacity(
+                        duration: const Duration(milliseconds: 220),
+                        opacity: isActiveHalf && inBattle ? 1 : 0,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 7),
+                          decoration: BoxDecoration(
+                            color: accent,
+                            borderRadius: BorderRadius.circular(20),
+                            border:
+                                Border.all(color: Colors.white, width: 2.5),
+                            boxShadow: [
+                              BoxShadow(
+                                color: accent.withValues(alpha: 0.55),
+                                blurRadius: 10,
+                                spreadRadius: 1,
+                              ),
+                            ],
+                          ),
+                          child: const Text(
+                            'YOUR TURN',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w900,
+                              fontSize: 13,
+                              letterSpacing: 0.6,
+                              shadows: [
+                                Shadow(
+                                    color: Color(0x66000000), blurRadius: 3),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ],
           ),
         );
