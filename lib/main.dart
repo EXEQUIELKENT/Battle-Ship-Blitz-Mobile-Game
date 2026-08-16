@@ -49,20 +49,29 @@ class BattleshipBlitzApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Battleship Blitz',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: AppColors.abyss,
-        colorScheme: const ColorScheme.dark(
-          primary: AppColors.sonar,
-          secondary: AppColors.ember,
-          surface: AppColors.deepSea,
+    // BUGFIX: see the doc comment on SoundService.notifyUserGesture — this
+    // Listener wraps the ENTIRE app (not just one button) so the very
+    // first tap anywhere retries menu music that a browser blocked from
+    // autoplaying, instead of it staying silent until the user happens to
+    // press something that plays its own sound.
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => SoundService.instance.notifyUserGesture(),
+      child: MaterialApp(
+        title: 'Battleship Blitz',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          brightness: Brightness.dark,
+          scaffoldBackgroundColor: AppColors.abyss,
+          colorScheme: const ColorScheme.dark(
+            primary: AppColors.sonar,
+            secondary: AppColors.ember,
+            surface: AppColors.deepSea,
+          ),
+          useMaterial3: true,
         ),
-        useMaterial3: true,
+        home: const HomeScreen(),
       ),
-      home: const HomeScreen(),
     );
   }
 }
