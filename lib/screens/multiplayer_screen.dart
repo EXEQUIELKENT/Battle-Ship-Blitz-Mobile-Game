@@ -176,6 +176,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                       icon: const Icon(Icons.arrow_back,
                           color: AppColors.cream),
                       onPressed: () {
+                        SoundService.instance.click();
                         net.stop();
                         Navigator.pop(context);
                       },

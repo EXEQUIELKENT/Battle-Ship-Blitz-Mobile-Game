@@ -227,7 +227,10 @@ class _PlacementScreenState extends State<PlacementScreen> {
                     Row(
                       children: [
                         GestureDetector(
-                          onTap: () => Navigator.pop(context),
+                          onTap: () {
+                            SoundService.instance.click();
+                            Navigator.pop(context);
+                          },
                           child: const Icon(Icons.arrow_back,
                               color: AppColors.cream),
                         ),
@@ -401,7 +404,7 @@ class _DockShip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final icon = AnimatedShip(spec: spec, skin: skin, size: 56);
+    final icon = AnimatedShip(spec: spec, skin: skin, size: 68);
 
     final child = GestureDetector(
       onTap: placed ? null : onTap,
@@ -429,7 +432,7 @@ class _DockShip extends StatelessWidget {
         color: Colors.transparent,
         child: Opacity(
           opacity: 0.85,
-          child: AnimatedShip(spec: spec, skin: skin, size: 90),
+          child: AnimatedShip(spec: spec, skin: skin, size: 110),
         ),
       ),
       childWhenDragging: Opacity(opacity: 0.25, child: child),

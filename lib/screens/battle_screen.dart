@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -295,11 +296,9 @@ class _BattleScreenState extends State<BattleScreen>
     }
     final res = byP1 ? controller.fireAt(r, c) : controller.p2FireAt(r, c);
     if (res == ShotResult.cooldown) {
-      _toast(
-        controller.mode == GameMode.vsAI && controller.aiTurnToFire
-            ? "It's the enemy's turn — hold fire!"
-            : 'Cannon reloading…',
-      );
+      // No bottom-of-screen popup for this — the cannon's own cooldown
+      // ring already shows reload state, and a denied-shot sound/haptic
+      // (below) is enough feedback without interrupting the view.
       SoundService.instance.denied();
       return;
     }
@@ -468,24 +467,57 @@ class _BattleScreenState extends State<BattleScreen>
                           animation: _projCtrl,
                           builder: (context, _) {
                             final t = _projCtrl.value;
-                            final p = Offset.lerp(_projFrom, _projTo, t)!;
-                            // Vertical ARC for the up-and-down lob effect.
-                            final arc =
-                                math.sin(t * math.pi) * _projCell * 3.0;
-                            final pos = p - Offset(0, arc);
+                            // Vertical ARC for the up-and-down lob effect,
+                            // reused for the ball itself and its trail.
+                            Offset posAt(double tt) {
+                              final cl = tt.clamp(0.0, 1.0);
+                              final p = Offset.lerp(_projFrom, _projTo, cl)!;
+                              final arc = math.sin(cl * math.pi) * _projCell * 3.0;
+                              return p - Offset(0, arc);
+                            }
+
                             // Cannonball launches noticeably LARGER than
                             // the target cell and slowly SHRINKS the whole
                             // way there, settling to exactly the grid
                             // cell's size right as it lands — a clear
                             // "incoming shot" effect that telegraphs
                             // where the ball is about to hit.
-                            final d = _projCell * (2.6 - 1.6 * t); // 2.6× → 1.0×
+                            double diamAt(double tt) =>
+                                _projCell * (2.6 - 1.6 * tt.clamp(0.0, 1.0));
+
+                            final pos = posAt(t);
+                            final d = diamAt(t);
+                            // Continuous spin while airborne, sold by the
+                            // sphere's highlight sweeping around it.
+                            final spin = t * math.pi * 6;
+
+                            Widget ghost(double dt, double opacity, double scale) {
+                              final tt = t - dt;
+                              if (tt <= 0) return const SizedBox.shrink();
+                              final gp = posAt(tt);
+                              final gd = diamAt(tt) * scale;
+                              return Positioned(
+                                left: gp.dx - gd / 2,
+                                top: gp.dy - gd / 2,
+                                child: Opacity(
+                                  opacity: opacity,
+                                  child: _cannonball(gd),
+                                ),
+                              );
+                            }
+
                             return Stack(
                               children: [
+                                // Faint motion-trail ghosts behind the ball.
+                                ghost(0.11, 0.14, 0.72),
+                                ghost(0.055, 0.26, 0.84),
                                 Positioned(
                                   left: pos.dx - d / 2,
                                   top: pos.dy - d / 2,
-                                  child: _cannonball(d),
+                                  child: Transform.rotate(
+                                    angle: spin,
+                                    child: _cannonball(d),
+                                  ),
                                 ),
                               ],
                             );
@@ -592,6 +624,18 @@ class _BattleScreenState extends State<BattleScreen>
     // The OPPONENT's grid is tappable to fire, on your turn.
     final gridFireable = thisIsOpponentOfActive && inBattle;
 
+    // This half belongs to whoever is currently active (the flip side of
+    // thisIsOpponentOfActive) — used to highlight "whose turn it is" with
+    // a soft blur glow behind their own grid.
+    final isActiveHalf = !thisIsOpponentOfActive;
+
+    // Ships that have been fully sunk on THIS half's own board get
+    // revealed on the grid in their destroyed form — common knowledge to
+    // both players once a ship goes down, regardless of the "empty grid"
+    // rule that otherwise hides ship positions.
+    final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
+    final sunkShips = [for (final s in board.ships) if (s.isSunk) s];
+
     // Only show markers whose cannonball has already landed. (PERF: these
     // come from the per-frame cache refreshed once in build() — see
     // _refreshDerivedCache — instead of being recomputed here on every
@@ -644,6 +688,34 @@ class _BattleScreenState extends State<BattleScreen>
           child: Stack(
             clipBehavior: Clip.none,
             children: [
+              // Turn-highlight blur: a soft frosted-glass halo behind the
+              // ACTIVE player's own grid, so it's unmistakable whose turn
+              // it is even before you notice the cannon or the badge.
+              Positioned(
+                left: gridLeft - gridSide * 0.16,
+                top: gridTop - gridSide * 0.16,
+                width: gridSide * 1.32,
+                height: gridSide * 1.32,
+                child: IgnorePointer(
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 320),
+                    opacity: isActiveHalf && inBattle ? 1 : 0,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(28),
+                      child: BackdropFilter(
+                        filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(28),
+                            color: accent.withValues(alpha: 0.16),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
               // Own grid
               Positioned(
                 left: gridLeft,
@@ -657,8 +729,10 @@ class _BattleScreenState extends State<BattleScreen>
                     // 1:1 video: battle grids are EMPTY — you never see
                     // either player's ships, only your hit/miss markers.
                     // (Guessing where the enemy fleet hides IS the game.)
+                    // Sunk ships are the one exception — see destroyedShips.
                     ships: null,
                     skin: null,
+                    destroyedShips: sunkShips,
                     enabled: gridFireable,
                     glowColor: AppColors.steelBlueDark,
                     cellColor: AppColors.steelBlue,
@@ -793,7 +867,7 @@ class _BattleScreenState extends State<BattleScreen>
             child: Stack(
               alignment: Alignment.center,
               children: [
-                AnimatedShip(spec: spec, skin: skin, size: 40),
+                AnimatedShip(spec: spec, skin: skin, size: 46),
                 if (board.shipOfKind(spec.kind)?.isSunk ?? false)
                   const Icon(Icons.close, color: AppColors.hit, size: 22),
               ],
@@ -918,17 +992,56 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
-  Widget _cannonball(double d) => Container(
+  Widget _cannonball(double d) => SizedBox(
         width: d,
         height: d,
-        decoration: const BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: RadialGradient(
-            center: Alignment(-0.35, -0.4),
-            radius: 0.9,
-            colors: [Color(0xFF8A949E), Color(0xFF2A323B)],
-          ),
-          boxShadow: [BoxShadow(color: Color(0x55000000), blurRadius: 2)],
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // Core sphere: richer three-stop metal gradient + a dark rim
+            // stroke so it reads as a solid iron ball rather than a flat
+            // dot, plus a soft drop shadow for weight.
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const RadialGradient(
+                  center: Alignment(-0.38, -0.42),
+                  radius: 0.95,
+                  stops: [0.0, 0.45, 1.0],
+                  colors: [
+                    Color(0xFFC3CBD3),
+                    Color(0xFF6E7883),
+                    Color(0xFF1D232A),
+                  ],
+                ),
+                border: Border.all(
+                  color: const Color(0xFF12161B),
+                  width: math.max(1.0, d * 0.045),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    blurRadius: d * 0.18,
+                    offset: Offset(0, d * 0.10),
+                  ),
+                ],
+              ),
+            ),
+            // Small specular highlight — the "shine" that sells a hard,
+            // polished sphere.
+            Positioned(
+              left: d * 0.17,
+              top: d * 0.13,
+              child: Container(
+                width: d * 0.24,
+                height: d * 0.17,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white.withValues(alpha: 0.55),
+                ),
+              ),
+            ),
+          ],
         ),
       );
 

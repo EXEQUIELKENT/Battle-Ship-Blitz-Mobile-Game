@@ -145,11 +145,46 @@ class CannonPainter extends CustomPainter {
       Paint()..color = Colors.black.withValues(alpha: 0.22),
     );
 
-    // Thick outer black ring
+    // Thick outer ring, beveled: a base fill plus a thin lighter arc along
+    // the upper-left edge so the ring reads as rounded metal, not a flat
+    // disc.
     canvas.drawCircle(center, outerR, Paint()..color = AppColors.outline);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: outerR * 0.94),
+      math.pi * 1.05,
+      math.pi * 0.55,
+      false,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.10)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = outerR * 0.10
+        ..strokeCap = StrokeCap.round,
+    );
 
-    // Colored accent ring (blue when ready / red while reloading)
-    canvas.drawCircle(center, outerR * 0.84, Paint()..color = accent);
+    // Colored accent ring — a subtle radial gradient instead of a flat
+    // fill gives it a coated-metal look, catching light toward the top.
+    canvas.drawCircle(
+      center,
+      outerR * 0.84,
+      Paint()..shader = uiGradient(center, outerR * 0.84, [
+        Color.lerp(accent, Colors.white, 0.22)!,
+        accent,
+        Color.lerp(accent, Colors.black, 0.28)!,
+      ]),
+    );
+
+    // Rivets studded evenly around the accent ring for mechanical detail.
+    final rivet = Paint()..color = AppColors.outline.withValues(alpha: 0.55);
+    final rivetShine = Paint()..color = Colors.white.withValues(alpha: 0.35);
+    const rivetCount = 10;
+    for (var i = 0; i < rivetCount; i++) {
+      final a = (2 * math.pi / rivetCount) * i;
+      final rp = center +
+          Offset(math.cos(a), math.sin(a)) * (outerR * 0.955);
+      canvas.drawCircle(rp, outerR * 0.035, rivet);
+      canvas.drawCircle(
+          rp - Offset(outerR * 0.01, outerR * 0.01), outerR * 0.014, rivetShine);
+    }
 
     // Cooldown sweep arc over the accent ring
     final arcPaint = Paint()
@@ -167,15 +202,25 @@ class CannonPainter extends CustomPainter {
 
     // Barrel dome (dark cylinder)
     final domeR = outerR * 0.58;
+    final domeCenter = center - Offset(0, domeR * 0.14);
     final domePaint = Paint()
       ..shader = uiGradient(
-        center,
+        domeCenter,
         domeR,
-        const [Color(0xFF55626E), Color(0xFF242E38)],
+        const [Color(0xFF64717E), Color(0xFF394552), Color(0xFF1B222A)],
       );
-    canvas.drawCircle(center - Offset(0, domeR * 0.14), domeR, domePaint);
+    canvas.drawCircle(domeCenter, domeR, domePaint);
+    // Inset shadow ring at the dome's base for a touch of depth.
     canvas.drawCircle(
-      center - Offset(0, domeR * 0.14),
+      domeCenter,
+      domeR * 0.92,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.18)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = domeR * 0.10,
+    );
+    canvas.drawCircle(
+      domeCenter,
       domeR,
       Paint()
         ..color = AppColors.outline
@@ -183,33 +228,57 @@ class CannonPainter extends CustomPainter {
         ..strokeWidth = 3,
     );
 
-    // Barrel mouth (darker inset circle near the top)
+    // Barrel mouth (darker inset circle near the top), with a thin
+    // metallic highlight crescent on its upper rim.
     final mouthR = domeR * 0.52;
     final mouthCenter = center - Offset(0, domeR * 0.52);
     canvas.drawCircle(mouthCenter, mouthR, Paint()..color = AppColors.outline);
+    canvas.drawArc(
+      Rect.fromCircle(center: mouthCenter, radius: mouthR * 0.92),
+      math.pi * 1.1,
+      math.pi * 0.6,
+      false,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.28)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = mouthR * 0.18
+        ..strokeCap = StrokeCap.round,
+    );
     canvas.drawCircle(
       mouthCenter - Offset(0, mouthR * 0.18),
       mouthR * 0.72,
       Paint()..color = const Color(0xFF0E151C),
     );
 
-    // Barrel highlight streak
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(
-          center: center + Offset(-domeR * 0.24, domeR * 0.28),
-          width: domeR * 0.3,
-          height: domeR * 0.7,
-        ),
-        Radius.circular(domeR * 0.15),
+    // Barrel highlight streak — a soft curved gloss instead of a flat
+    // rounded rect, closer to a polished-metal specular highlight.
+    canvas.drawArc(
+      Rect.fromCenter(
+        center: center + Offset(-domeR * 0.18, domeR * 0.06),
+        width: domeR * 0.42,
+        height: domeR * 1.15,
       ),
-      Paint()..color = Colors.white.withValues(alpha: ready ? 0.16 : 0.08),
+      math.pi * 0.75,
+      math.pi * 0.5,
+      false,
+      Paint()
+        ..color = Colors.white.withValues(alpha: ready ? 0.22 : 0.10)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = domeR * 0.16
+        ..strokeCap = StrokeCap.round,
     );
 
-    // Muzzle flash while recoiling
+    // Muzzle flash while recoiling: a soft smoke puff behind a bright
+    // starburst, so a shot reads as a fuller "boom" rather than one flat
+    // circle.
     if (recoil > 0.05) {
       final flashCenter = mouthCenter - Offset(0, mouthR * (1.2 + recoil));
       final flashR = outerR * (0.34 + recoil * 0.5);
+      canvas.drawCircle(
+        flashCenter - Offset(0, flashR * 0.2),
+        flashR * 1.35,
+        Paint()..color = Colors.white.withValues(alpha: (1 - recoil) * 0.18),
+      );
       canvas.drawCircle(
         flashCenter,
         flashR,

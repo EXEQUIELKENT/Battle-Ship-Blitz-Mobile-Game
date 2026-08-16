@@ -40,6 +40,11 @@ class BattleGrid extends StatefulWidget {
   final bool enabled;
   final Color glowColor;
 
+  /// Ships that have been fully sunk and should be revealed on this grid
+  /// in their destroyed form — shown regardless of [ships]/[skin], since a
+  /// sunk ship's kind and position are common knowledge to both players.
+  final List<PlacedShip> destroyedShips;
+
   /// Cell fill color (defaults to the video's steel blue).
   final Color cellColor;
 
@@ -59,6 +64,7 @@ class BattleGrid extends StatefulWidget {
     this.onTapCell,
     this.recentEvents = const [],
     this.enabled = true,
+    this.destroyedShips = const [],
     this.glowColor = AppColors.water,
     this.cellColor = AppColors.steelBlue,
     this.previewShip,
@@ -85,11 +91,6 @@ class _BattleGridState extends State<BattleGrid>
   Offset _dragPos = Offset.zero;
   bool _dragging = false;
 
-  /// PERF: ships != null means this is the placement-mode grid, which uses
-  /// the same ticker to gently bob the ships on the water the whole time
-  /// it's on screen — that one legitimately needs to keep running.
-  bool get _needsContinuousTicker => widget.ships != null;
-
   @override
   void initState() {
     super.initState();
@@ -97,17 +98,13 @@ class _BattleGridState extends State<BattleGrid>
       vsync: this,
       duration: const Duration(milliseconds: 800),
     );
-    if (_needsContinuousTicker) {
-      _fxCtrl.repeat();
-    }
-    // PERF: a battle grid has no continuous animation by default — the
+    // PERF: no continuous animation by default (ships no longer bob) — the
     // ticker only turns on for the ~1s a hit/miss/tap effect is actually
     // playing, and turns itself back off the moment nothing is animating.
     // Previously this ticker ran forever at 60fps and repainted the WHOLE
     // board (every past hit/miss mark) every single frame, which is why
     // the game visibly slowed down the more shots piled up on a grid.
     _fxCtrl.addListener(() {
-      if (_needsContinuousTicker) return;
       if (_fx.isEmpty && _tapFx.isEmpty) return;
       _fx.removeWhere((_, fx) => fx.done);
       _tapFx.removeWhere((_, started) =>
@@ -119,7 +116,7 @@ class _BattleGridState extends State<BattleGrid>
   }
 
   void _ensureTickerRunning() {
-    if (!_needsContinuousTicker && !_fxCtrl.isAnimating) {
+    if (!_fxCtrl.isAnimating) {
       _fxCtrl.repeat();
     }
   }
@@ -189,6 +186,8 @@ class _BattleGridState extends State<BattleGrid>
                           cellColor: widget.cellColor,
                         ),
                       ),
+                      if (widget.destroyedShips.isNotEmpty)
+                        ..._destroyedShipWidgets(cell),
                       if (widget.ships != null && widget.skin != null)
                         ..._shipWidgets(cell),
                       if (_dragging && _dragKind != null) _dragGhost(cell),
@@ -280,18 +279,58 @@ class _BattleGridState extends State<BattleGrid>
         if (ship.spec.kind != _dragKind)
           Positioned(
             key: ValueKey(ship.spec.kind),
-            left: ship.col * cell + 2,
-            top: ship.row * cell + 2,
-            width: ship.horizontal ? ship.spec.size * cell - 4 : cell - 4,
-            height: ship.horizontal ? cell - 4 : ship.spec.size * cell - 4,
+            left: ship.col * cell + 1,
+            top: ship.row * cell + 1,
+            width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
+            height: ship.horizontal ? cell - 2 : ship.spec.size * cell - 2,
             child: _ShipWithRotate(
               ship: ship,
               skin: widget.skin!,
               cell: cell,
-              t: _fxCtrl.value,
+              // Fixed neutral phase: ships are static now (no bobbing).
+              t: 0.5,
               showRotate: widget.onShipTap != null && !ship.isSunk,
             ),
           ),
+    ];
+  }
+
+  /// Reveals a fully-sunk ship on the grid in its destroyed form. Rendered
+  /// independently of [_shipWidgets] so it also appears on the "empty"
+  /// battle grids (where [ships] is null and only hit/miss markers would
+  /// otherwise show).
+  List<Widget> _destroyedShipWidgets(double cell) {
+    return [
+      for (final ship in widget.destroyedShips)
+        Positioned(
+          key: ValueKey('wreck-${ship.spec.kind}-${ship.row}-${ship.col}'),
+          left: ship.col * cell + 1,
+          top: ship.row * cell + 1,
+          width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
+          height: ship.horizontal ? cell - 2 : ship.spec.size * cell - 2,
+          child: IgnorePointer(
+            child: ship.horizontal
+                ? CustomPaint(
+                    painter: ShipPainter(
+                      spec: ship.spec,
+                      skin: wreckSkin,
+                      sunk: true,
+                      hitCount: ship.spec.size,
+                    ),
+                  )
+                : RotatedBox(
+                    quarterTurns: 1,
+                    child: CustomPaint(
+                      painter: ShipPainter(
+                        spec: ship.spec,
+                        skin: wreckSkin,
+                        sunk: true,
+                        hitCount: ship.spec.size,
+                      ),
+                    ),
+                  ),
+          ),
+        ),
     ];
   }
 
