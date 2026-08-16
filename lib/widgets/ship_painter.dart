@@ -6,6 +6,13 @@ import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/storage_service.dart';
 
+/// Charred "wreck" hull used to reveal a ship on the grid once it has
+/// been fully sunk — deliberately drab/dark so a destroyed ship reads as
+/// unmistakably different from a live one, regardless of either player's
+/// equipped ship skin.
+const ShipSkin wreckSkin =
+    ShipSkin('wreck', 'Wreck', Color(0xFF3A4148), Color(0xFF262C32), 0);
+
 /// Flat cartoon top-down ship painter with bold outlines,
 /// matching the playful reference UI style.
 class ShipPainter extends CustomPainter {
@@ -28,10 +35,17 @@ class ShipPainter extends CustomPainter {
     final w = size.width;
     final h = size.height;
 
-    final hullColor = sunk ? skin.hull.withValues(alpha: 0.45) : skin.hull;
-    final trimColor = sunk ? skin.trim.withValues(alpha: 0.45) : skin.trim;
+    // Destroyed version: charred toward near-black instead of just faded,
+    // so a sunk ship reads clearly as "wrecked" rather than a ghostly
+    // washed-out copy of the live one.
+    final hullColor = sunk
+        ? Color.lerp(skin.hull, const Color(0xFF14181C), 0.72)!
+        : skin.hull;
+    final trimColor = sunk
+        ? Color.lerp(skin.trim, const Color(0xFF14181C), 0.72)!
+        : skin.trim;
     final outlinePaint = Paint()
-      ..color = AppColors.outline.withValues(alpha: sunk ? 0.5 : 1)
+      ..color = AppColors.outline.withValues(alpha: sunk ? 0.85 : 1)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3
       ..strokeJoin = StrokeJoin.round;
@@ -40,7 +54,7 @@ class ShipPainter extends CustomPainter {
       ..color = trimColor
       ..style = PaintingStyle.fill;
     final detailStroke = Paint()
-      ..color = AppColors.outline.withValues(alpha: sunk ? 0.5 : 1)
+      ..color = AppColors.outline.withValues(alpha: sunk ? 0.85 : 1)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
 
@@ -79,6 +93,19 @@ class ShipPainter extends CustomPainter {
         const d = 4.5;
         canvas.drawLine(Offset(cx - d, cy - d), Offset(cx + d, cy + d), crater);
         canvas.drawLine(Offset(cx - d, cy + d), Offset(cx + d, cy - d), crater);
+      }
+    }
+
+    // Destroyed version: a few soft smoke wisps drifting off the wreck.
+    // Seeded by ship kind so the puffs stay put (no per-frame flicker).
+    if (sunk) {
+      final smokeRng = math.Random(spec.kind.index * 97 + 11);
+      final smoke = Paint()..color = Colors.white.withValues(alpha: 0.30);
+      for (var i = 0; i < 3; i++) {
+        final sx = w * (0.20 + 0.6 * smokeRng.nextDouble());
+        final sy = h * (0.20 - i * 0.09);
+        final sr = h * (0.13 - i * 0.02);
+        canvas.drawCircle(Offset(sx, sy), sr, smoke);
       }
     }
     canvas.restore();
@@ -227,8 +254,11 @@ class ShipPainter extends CustomPainter {
       oldDelegate.skin.hull != skin.hull;
 }
 
-/// Standalone flat ship widget (dock tray, customization previews).
-class AnimatedShip extends StatefulWidget {
+/// Standalone flat ship widget (dock tray, customization previews, hero
+/// art). Kept under its original name for API compatibility, but it no
+/// longer bobs — it's a plain static render (see the "no ship animations"
+/// pass) at a larger default size so ships read clearly at a glance.
+class AnimatedShip extends StatelessWidget {
   final ShipSpec spec;
   final ShipSkin skin;
   final double size;
@@ -238,48 +268,19 @@ class AnimatedShip extends StatefulWidget {
     super.key,
     required this.spec,
     required this.skin,
-    this.size = 120,
+    this.size = 150,
     this.vertical = false,
   });
 
   @override
-  State<AnimatedShip> createState() => _AnimatedShipState();
-}
-
-class _AnimatedShipState extends State<AnimatedShip>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 3))
-      ..repeat();
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (context, _) {
-        final painter = ShipPainter(
-          spec: widget.spec,
-          skin: widget.skin,
-          wavePhase: _ctrl.value,
-        );
-        final child = CustomPaint(
-          painter: painter,
-          size: Size(widget.size, widget.size * 0.55),
-        );
-        if (!widget.vertical) return child;
-        return RotatedBox(quarterTurns: 1, child: child);
-      },
+    // wavePhase 0.5 is the painter's neutral/no-bob position.
+    final painter = ShipPainter(spec: spec, skin: skin, wavePhase: 0.5);
+    final child = CustomPaint(
+      painter: painter,
+      size: Size(size, size * 0.55),
     );
+    if (!vertical) return child;
+    return RotatedBox(quarterTurns: 1, child: child);
   }
 }

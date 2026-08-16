@@ -146,7 +146,7 @@ class _HomeScreenState extends State<HomeScreen>
                           child: AnimatedShip(
                             spec: kFleet.first,
                             skin: profile.shipSkin,
-                            size: 170,
+                            size: 200,
                           ),
                         ),
                         const SizedBox(height: 18),
@@ -299,6 +299,9 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _soundButton(ProfileStore profile) {
     return GestureDetector(
       onTap: () {
+        // Play the click while sound is still in its current state, so
+        // toggling OFF gets an audible confirmation on the way out.
+        SoundService.instance.click();
         profile.toggleSound();
         SoundService.instance.enabled = !SoundService.instance.enabled;
       },
@@ -429,7 +432,10 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () {
+              SoundService.instance.click();
+              Navigator.pop(ctx);
+            },
             child: Text(
               'CANCEL',
               style: AppText.label(
@@ -438,6 +444,7 @@ class _HomeScreenState extends State<HomeScreen>
           ),
           TextButton(
             onPressed: () {
+              SoundService.instance.click();
               profile.setName(ctrl.text);
               Navigator.pop(ctx);
             },
