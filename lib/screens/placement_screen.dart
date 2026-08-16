@@ -239,6 +239,28 @@ class _PlacementScreenState extends State<PlacementScreen> {
     );
   }
 
+  /// The real, on-screen size of one grid cell — read straight from the
+  /// grid's own RenderBox (same technique `onMove`/`onAcceptWithDetails`
+  /// already use) so the dock icons and the drag "feedback" ghost can be
+  /// sized to match the actual board instead of a guessed constant.
+  /// Previously the dock icons and the dragged ship were both fixed
+  /// pixel sizes (68 / 110) that had no relationship to the grid's real
+  /// cell size or to how many cells a ship actually occupies — that
+  /// mismatch is why a ship being dragged looked mis-sized/misaligned
+  /// against the green highlight cells underneath it.
+  /// Before the grid has been laid out for the first time (very first
+  /// build) the RenderBox isn't available yet, so this falls back to an
+  /// estimate from the screen width, which is close enough for that one
+  /// frame and self-corrects on the next rebuild.
+  double _cellSize(BuildContext context) {
+    final gridBox =
+        _gridKey.currentContext?.findRenderObject() as RenderBox?;
+    if (gridBox != null && gridBox.hasSize) {
+      return gridBox.size.width / kBoardSize;
+    }
+    return MediaQuery.of(context).size.width / kBoardSize;
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = context.read<GameController>();
@@ -247,6 +269,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
         ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
         : context.watch<ProfileStore>().playerName.toUpperCase();
     final skin = isP2 ? _p2PlaceSkin : _p1PlaceSkin;
+    final cellSize = _cellSize(context);
 
     if (_showHandoff) {
       return HandoffScreen(
@@ -343,18 +366,19 @@ class _PlacementScreenState extends State<PlacementScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    for (final spec in kFleet)
-                      _DockShip(
-                        spec: spec,
-                        skin: skin,
-                        placed: _board.shipOfKind(spec.kind) != null,
-                        selected: _selected == spec.kind,
-                        onTap: () {
-                          SoundService.instance.click();
-                          setState(() => _selected =
-                              _selected == spec.kind ? null : spec.kind);
-                        },
-                      ),
+                     for (final spec in kFleet)
+                       _DockShip(
+                         spec: spec,
+                         skin: skin,
+                         cell: cellSize,
+                         placed: _board.shipOfKind(spec.kind) != null,
+                         selected: _selected == spec.kind,
+                         onTap: () {
+                           SoundService.instance.click();
+                           setState(() => _selected =
+                               _selected == spec.kind ? null : spec.kind);
+                         },
+                       ),
                   ],
                 ),
               ),
@@ -477,6 +501,7 @@ class _DockShip extends StatelessWidget {
   final ShipSkin skin;
   final bool placed;
   final bool selected;
+  final double cell;
   final VoidCallback onTap;
 
   const _DockShip({
@@ -484,12 +509,24 @@ class _DockShip extends StatelessWidget {
     required this.skin,
     required this.placed,
     required this.selected,
+    required this.cell,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final icon = AnimatedShip(spec: spec, skin: skin, size: 68);
+    // Resting dock icon: width scales with the ship's cell-length (same
+    // "unit * spec.size" pattern the battle-screen fleet row uses)
+    // instead of every ship — a 2-cell destroyer and a 5-cell carrier
+    // alike — rendering inside the same fixed 68px box.
+    const dockUnit = 11.0;
+    const dockBeam = 30.0;
+    final icon = AnimatedShip(
+      spec: spec,
+      skin: skin,
+      width: dockUnit * spec.size + 14,
+      height: dockBeam,
+    );
 
     final child = GestureDetector(
       onTap: placed ? null : onTap,
@@ -513,11 +550,22 @@ class _DockShip extends StatelessWidget {
 
     return Draggable<({ShipKind kind, bool horizontal})>(
       data: (kind: spec.kind, horizontal: true),
+      // Sized to the REAL grid cell (cell * spec.size wide, one cell
+      // tall) instead of a fixed 110×60.5 box every ship used to share
+      // regardless of length or the device's actual cell size — that
+      // mismatch is what made the ghost ship look oversized/misaligned
+      // against the green/red highlight cells while dragging it onto
+      // the grid.
       feedback: Material(
         color: Colors.transparent,
         child: Opacity(
           opacity: 0.85,
-          child: AnimatedShip(spec: spec, skin: skin, size: 110),
+          child: AnimatedShip(
+            spec: spec,
+            skin: skin,
+            width: cell * spec.size,
+            height: cell,
+          ),
         ),
       ),
       childWhenDragging: Opacity(opacity: 0.25, child: child),

@@ -1,0 +1,204 @@
+diff --git a/lib/screens/battle_screen.dart b/lib/screens/battle_screen.dart
+index 8c9c416..625dd89 100644
+--- a/lib/screens/battle_screen.dart
++++ b/lib/screens/battle_screen.dart
+@@ -12,6 +12,7 @@ import '../services/sound_service.dart';
+ import '../services/storage_service.dart';
+ import '../widgets/battle_grid.dart';
+ import '../widgets/cannon_widget.dart';
++import '../widgets/neon_widgets.dart';
+ import '../widgets/ship_painter.dart';
+ import 'result_screen.dart';
+ 
+@@ -180,15 +181,19 @@ class _BattleScreenState extends State<BattleScreen>
+         }
+       }
+     }
+-    if (controller.phase == BattlePhase.finished && !_navigatedToResult) {
+-      _navigatedToResult = true;
+-      Future.delayed(const Duration(milliseconds: 1500), () {
+-        if (!mounted) return;
+-        Navigator.of(context).pushReplacement(
+-          MaterialPageRoute(builder: (_) => const ResultScreen()),
+-        );
+-      });
+-    }
++  }
++
++  /// Advances to the result screen — now the ONLY way there once the
++  /// match ends (see the game-over bar in build()). Previously this
++  /// fired on its own 1.5s after `BattlePhase.finished`, which yanked
++  /// players away right as both grids revealed their full fleets,
++  /// before there was any real chance to look at where everything was.
++  void _goToResult() {
++    if (_navigatedToResult) return;
++    _navigatedToResult = true;
++    Navigator.of(context).pushReplacement(
++      MaterialPageRoute(builder: (_) => const ResultScreen()),
++    );
+   }
+ 
+   /// AI / remote opponent fired at the BOTTOM player's grid.
+@@ -518,6 +523,21 @@ class _BattleScreenState extends State<BattleScreen>
+ 
+                   // ===== "Your turn" badge (single-sided, active player) =====
+                   if (_showTurnBadge) _turnBadgeOverlay(bottomIsP1, bandH),
++
++                  // ===== Game-over bar: both grids reveal every ship the
++                  // instant the match ends (see `gameOver` in _buildHalf),
++                  // and this bar is what lets players actually take that
++                  // in — it replaces the old fixed 1.5s auto-navigate
++                  // timer, so the reveal stays on screen for as long as
++                  // the player wants until they tap CONTINUE. =====
++                  if (controller.phase == BattlePhase.finished)
++                    Positioned(
++                      left: 0,
++                      right: 0,
++                      top: halfH,
++                      height: bandH,
++                      child: _gameOverBar(),
++                    ),
+                 ],
+               );
+             },
+@@ -724,7 +744,7 @@ class _BattleScreenState extends State<BattleScreen>
+                       child: ClipRRect(
+                         borderRadius: BorderRadius.circular(16),
+                         child: BackdropFilter(
+-                          filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
++                          filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+                           child: Container(
+                             decoration: BoxDecoration(
+                               borderRadius: BorderRadius.circular(16),
+@@ -1050,6 +1070,24 @@ class _BattleScreenState extends State<BattleScreen>
+     );
+   }
+ 
++  /// Solid bar over the middle band once the match is finished — tapping
++  /// CONTINUE is the only way to leave this screen at that point (see
++  /// _goToResult), so both fleets stay fully revealed until the player
++  /// is actually done looking.
++  Widget _gameOverBar() {
++    return Container(
++      color: AppColors.navy,
++      alignment: Alignment.center,
++      child: NeonButton(
++        label: 'CONTINUE',
++        icon: Icons.arrow_forward,
++        color: AppColors.seafoam,
++        compact: true,
++        onPressed: _goToResult,
++      ),
++    );
++  }
++
+   Widget _cannonball(double d) => SizedBox(
+         width: d,
+         height: d,
+diff --git a/lib/screens/placement_screen.dart b/lib/screens/placement_screen.dart
+index e62814a..499634f 100644
+--- a/lib/screens/placement_screen.dart
++++ b/lib/screens/placement_screen.dart
+@@ -239,6 +239,28 @@ class _PlacementScreenState extends State<PlacementScreen> {
+     );
+   }
+ 
++  /// The real, on-screen size of one grid cell — read straight from the
++  /// grid's own RenderBox (same technique `onMove`/`onAcceptWithDetails`
++  /// already use) so the dock icons and the drag "feedback" ghost can be
++  /// sized to match the actual board instead of a guessed constant.
++  /// Previously the dock icons and the dragged ship were both fixed
++  /// pixel sizes (68 / 110) that had no relationship to the grid's real
++  /// cell size or to how many cells a ship actually occupies — that
++  /// mismatch is why a ship being dragged looked mis-sized/misaligned
++  /// against the green highlight cells underneath it.
++  /// Before the grid has been laid out for the first time (very first
++  /// build) the RenderBox isn't available yet, so this falls back to an
++  /// estimate from the screen width, which is close enough for that one
++  /// frame and self-corrects on the next rebuild.
++  double _cellSize(BuildContext context) {
++    final gridBox =
++        _gridKey.currentContext?.findRenderObject() as RenderBox?;
++    if (gridBox != null && gridBox.hasSize) {
++      return gridBox.size.width / kBoardSize;
++    }
++    return MediaQuery.of(context).size.width / kBoardSize;
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     final controller = context.read<GameController>();
+@@ -247,6 +269,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
+         ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
+         : context.watch<ProfileStore>().playerName.toUpperCase();
+     final skin = isP2 ? _p2PlaceSkin : _p1PlaceSkin;
++    final cellSize = _cellSize(context);
+ 
+     if (_showHandoff) {
+       return HandoffScreen(
+@@ -347,6 +370,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
+                       _DockShip(
+                         spec: spec,
+                         skin: skin,
++                        cell: cellSize,
+                         placed: _board.shipOfKind(spec.kind) != null,
+                         selected: _selected == spec.kind,
+                         onTap: () {
+@@ -477,6 +501,7 @@ class _DockShip extends StatelessWidget {
+   final ShipSkin skin;
+   final bool placed;
+   final bool selected;
++  final double cell;
+   final VoidCallback onTap;
+ 
+   const _DockShip({
+@@ -484,12 +509,24 @@ class _DockShip extends StatelessWidget {
+     required this.skin,
+     required this.placed,
+     required this.selected,
++    required this.cell,
+     required this.onTap,
+   });
+ 
+   @override
+   Widget build(BuildContext context) {
+-    final icon = AnimatedShip(spec: spec, skin: skin, size: 68);
++    // Resting dock icon: width scales with the ship's cell-length (same
++    // "unit * spec.size" pattern the battle-screen fleet row uses)
++    // instead of every ship — a 2-cell destroyer and a 5-cell carrier
++    // alike — rendering inside the same fixed 68px box.
++    const dockUnit = 11.0;
++    const dockBeam = 30.0;
++    final icon = AnimatedShip(
++      spec: spec,
++      skin: skin,
++      width: dockUnit * spec.size + 14,
++      height: dockBeam,
++    );
+ 
+     final child = GestureDetector(
+       onTap: placed ? null : onTap,
+@@ -513,11 +550,22 @@ class _DockShip extends StatelessWidget {
+ 
+     return Draggable<({ShipKind kind, bool horizontal})>(
+       data: (kind: spec.kind, horizontal: true),
++      // Sized to the REAL grid cell (cell * spec.size wide, one cell
++      // tall) instead of a fixed 110×60.5 box every ship used to share
++      // regardless of length or the device's actual cell size — that
++      // mismatch is what made the ghost ship look oversized/misaligned
++      // against the green/red highlight cells while dragging it onto
++      // the grid.
+       feedback: Material(
+         color: Colors.transparent,
+         child: Opacity(
+           opacity: 0.85,
+-          child: AnimatedShip(spec: spec, skin: skin, size: 110),
++          child: AnimatedShip(
++            spec: spec,
++            skin: skin,
++            width: cell * spec.size,
++            height: cell,
++          ),
+         ),
+       ),
+       childWhenDragging: Opacity(opacity: 0.25, child: child),
