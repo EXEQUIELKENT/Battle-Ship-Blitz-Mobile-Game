@@ -35,6 +35,12 @@ class _PlacementScreenState extends State<PlacementScreen> {
   bool _showHandoff = false;
   static const double _dockH = 64;
 
+  /// Live "where will this land" highlight — driven by whichever drag is
+  /// currently active: a fresh ship being dragged in from the dock tray,
+  /// or an already-placed ship being repositioned on the grid.
+  PlacedShip? _previewShip;
+  bool _previewValid = true;
+
   @override
   void initState() {
     super.initState();
@@ -83,7 +89,10 @@ class _PlacementScreenState extends State<PlacementScreen> {
     if (!ship.horizontal && r + ship.spec.size > kBoardSize) {
       r = kBoardSize - ship.spec.size;
     }
-    if (r == ship.row && c == ship.col) return;
+    if (r == ship.row && c == ship.col) {
+      setState(() => _previewShip = null);
+      return;
+    }
     _board.removeShip(kind);
     if (_board.canPlace(ship.spec, r, c, ship.horizontal)) {
       _board.place(ship.spec, r, c, ship.horizontal);
@@ -92,7 +101,49 @@ class _PlacementScreenState extends State<PlacementScreen> {
       _board.place(ship.spec, ship.row, ship.col, ship.horizontal);
       SoundService.instance.denied();
     }
-    setState(() {});
+    setState(() => _previewShip = null);
+  }
+
+  /// [Board.canPlace] but treating [ignore]'s own current footprint as
+  /// unoccupied — used for the live drag highlight so a ship being
+  /// repositioned doesn't flag itself as a collision.
+  bool _canPlaceIgnoring(
+      ShipKind ignore, ShipSpec spec, int row, int col, bool horizontal) {
+    if (horizontal) {
+      if (col + spec.size > kBoardSize) return false;
+    } else {
+      if (row + spec.size > kBoardSize) return false;
+    }
+    for (var i = 0; i < spec.size; i++) {
+      final r = horizontal ? row : row + i;
+      final c = horizontal ? col + i : col;
+      final occupant = _board.shipAt(r, c);
+      if (occupant != null && occupant.spec.kind != ignore) return false;
+    }
+    return true;
+  }
+
+  /// Live highlight while an already-placed ship is being dragged around
+  /// the grid — called continuously as the finger moves, before the drag
+  /// actually ends (see [_moveShip]).
+  void _onShipDragPreview(ShipKind kind, int row, int col) {
+    final ship = _board.shipOfKind(kind);
+    if (ship == null) return;
+    final spec = ship.spec;
+    final horizontal = ship.horizontal;
+    var r = row;
+    var c = col;
+    if (horizontal && c + spec.size > kBoardSize) {
+      c = kBoardSize - spec.size;
+    }
+    if (!horizontal && r + spec.size > kBoardSize) {
+      r = kBoardSize - spec.size;
+    }
+    setState(() {
+      _previewShip =
+          PlacedShip(spec: spec, row: r, col: c, horizontal: horizontal);
+      _previewValid = _canPlaceIgnoring(kind, spec, r, c, horizontal);
+    });
   }
 
   void _onGridTap(int r, int c) {
@@ -116,6 +167,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
     SoundService.instance.click();
     setState(() {
       _selected = null;
+      _previewShip = null;
       _board.ships.clear();
       _board.ships.addAll(Board.random().ships);
     });
@@ -308,57 +360,90 @@ class _PlacementScreenState extends State<PlacementScreen> {
               ),
 
               // ---------- Grid (drop target) ----------
+              // No side padding and no size cap: the grid fills all the
+              // room the Expanded region gives it (still a square, via
+              // BattleGrid's own AspectRatio), rather than the old
+              // 16px-padded, 440px-capped box.
               Expanded(
                 child: Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: DragTarget<({ShipKind kind, bool horizontal})>(
-                      onWillAcceptWithDetails: (_) => true,
-                      onAcceptWithDetails: (details) {
-                        final spec =
-                            kFleet.firstWhere((s) => s.kind == details.data.kind);
-                        final gridBox = _gridKey.currentContext
-                            ?.findRenderObject() as RenderBox?;
-                        if (gridBox == null) return;
-                        final local = gridBox.globalToLocal(details.offset);
-                        final cell = gridBox.size.width / kBoardSize;
-                        var c = (local.dx / cell).floor();
-                        var r = (local.dy / cell).floor();
-                        final h = details.data.horizontal;
-                        if (h && c + spec.size > kBoardSize) {
-                          c = kBoardSize - spec.size;
-                        }
-                        if (!h && r + spec.size > kBoardSize) {
-                          r = kBoardSize - spec.size;
-                        }
-                        r = r.clamp(0, kBoardSize - 1);
-                        c = c.clamp(0, kBoardSize - 1);
-                        if (_board.canPlace(spec, r, c, h)) {
-                          _board.place(spec, r, c, h);
-                          SoundService.instance.place();
-                          setState(() => _selected = null);
-                        } else {
-                          SoundService.instance.denied();
-                        }
-                      },
-                      builder: (context, candidates, rejected) {
-                        return Container(
-                          key: _gridKey,
-                          constraints: const BoxConstraints(maxWidth: 440),
-                          child: BattleGrid(
-                            shots: List.generate(kBoardSize,
-                                (_) => List.filled(kBoardSize, 0)),
-                            ships: _board.ships,
-                            skin: skin,
-                            cellColor: AppColors.steelBlue,
-                            glowColor: AppColors.steelBlueDark,
-                            onTapCell: _onGridTap,
-                            onShipTap: _rotateShip,
-                            onShipDragEnd: _moveShip,
-                          ),
-                        );
-                      },
-                    ),
+                  child: DragTarget<({ShipKind kind, bool horizontal})>(
+                    onWillAcceptWithDetails: (_) => true,
+                    onMove: (details) {
+                      final spec =
+                          kFleet.firstWhere((s) => s.kind == details.data.kind);
+                      final gridBox = _gridKey.currentContext
+                          ?.findRenderObject() as RenderBox?;
+                      if (gridBox == null) return;
+                      final local = gridBox.globalToLocal(details.offset);
+                      final cell = gridBox.size.width / kBoardSize;
+                      var c = (local.dx / cell).floor();
+                      var r = (local.dy / cell).floor();
+                      final h = details.data.horizontal;
+                      if (h && c + spec.size > kBoardSize) {
+                        c = kBoardSize - spec.size;
+                      }
+                      if (!h && r + spec.size > kBoardSize) {
+                        r = kBoardSize - spec.size;
+                      }
+                      r = r.clamp(0, kBoardSize - 1);
+                      c = c.clamp(0, kBoardSize - 1);
+                      setState(() {
+                        _previewShip =
+                            PlacedShip(spec: spec, row: r, col: c, horizontal: h);
+                        _previewValid = _board.canPlace(spec, r, c, h);
+                      });
+                    },
+                    onLeave: (_) => setState(() => _previewShip = null),
+                    onAcceptWithDetails: (details) {
+                      final spec =
+                          kFleet.firstWhere((s) => s.kind == details.data.kind);
+                      final gridBox = _gridKey.currentContext
+                          ?.findRenderObject() as RenderBox?;
+                      if (gridBox == null) return;
+                      final local = gridBox.globalToLocal(details.offset);
+                      final cell = gridBox.size.width / kBoardSize;
+                      var c = (local.dx / cell).floor();
+                      var r = (local.dy / cell).floor();
+                      final h = details.data.horizontal;
+                      if (h && c + spec.size > kBoardSize) {
+                        c = kBoardSize - spec.size;
+                      }
+                      if (!h && r + spec.size > kBoardSize) {
+                        r = kBoardSize - spec.size;
+                      }
+                      r = r.clamp(0, kBoardSize - 1);
+                      c = c.clamp(0, kBoardSize - 1);
+                      if (_board.canPlace(spec, r, c, h)) {
+                        _board.place(spec, r, c, h);
+                        SoundService.instance.place();
+                        setState(() {
+                          _selected = null;
+                          _previewShip = null;
+                        });
+                      } else {
+                        SoundService.instance.denied();
+                        setState(() => _previewShip = null);
+                      }
+                    },
+                    builder: (context, candidates, rejected) {
+                      return Container(
+                        key: _gridKey,
+                        child: BattleGrid(
+                          shots: List.generate(kBoardSize,
+                              (_) => List.filled(kBoardSize, 0)),
+                          ships: _board.ships,
+                          skin: skin,
+                          cellColor: AppColors.steelBlue,
+                          glowColor: AppColors.steelBlueDark,
+                          previewShip: _previewShip,
+                          previewValid: _previewValid,
+                          onTapCell: _onGridTap,
+                          onShipTap: _rotateShip,
+                          onShipDragEnd: _moveShip,
+                          onShipDragUpdate: _onShipDragPreview,
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),

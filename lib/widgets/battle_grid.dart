@@ -56,6 +56,13 @@ class BattleGrid extends StatefulWidget {
   final void Function(ShipKind kind, int newRow, int newCol)? onShipDragEnd;
   final void Function(ShipKind kind)? onShipTap;
 
+  /// Fired continuously while an already-placed ship is being dragged
+  /// around the grid (before the drag ends), with the candidate cell the
+  /// ship would land on if released right now. Lets the parent screen
+  /// drive [previewShip]/[previewValid] so a highlight tracks the ship
+  /// live under the player's finger, not just at drop time.
+  final void Function(ShipKind kind, int row, int col)? onShipDragUpdate;
+
   const BattleGrid({
     super.key,
     required this.shots,
@@ -71,6 +78,7 @@ class BattleGrid extends StatefulWidget {
     this.previewValid = true,
     this.onShipDragEnd,
     this.onShipTap,
+    this.onShipDragUpdate,
   });
 
   @override
@@ -253,7 +261,14 @@ class _BattleGridState extends State<BattleGrid>
   void Function(DragUpdateDetails)? _onPanUpdate(double cell) {
     if (widget.onShipDragEnd == null) return null;
     return (d) {
-      if (_dragging) setState(() => _dragPos = d.localPosition);
+      if (!_dragging) return;
+      setState(() => _dragPos = d.localPosition);
+      final kind = _dragKind;
+      if (kind != null && widget.onShipDragUpdate != null) {
+        final c = (_dragPos.dx / cell).floor().clamp(0, kBoardSize - 1);
+        final r = (_dragPos.dy / cell).floor().clamp(0, kBoardSize - 1);
+        widget.onShipDragUpdate!(kind, r, c);
+      }
     };
   }
 
@@ -466,19 +481,24 @@ class _GridPainter extends CustomPainter {
           Offset(0, i * cell), Offset(size.width, i * cell), linePaint);
     }
 
-    // ---- Placement ghost ----
+    // ---- Placement highlight: shows exactly which cells a ship will
+    // occupy before it's dropped (drag-from-dock or repositioning an
+    // already-placed ship) — a filled tint plus a crisp outline so it
+    // reads clearly as "landing here", not just a faint tint. ----
     if (preview != null) {
-      final p = Paint()
-        ..color = (previewValid ? AppColors.green : AppColors.hit)
-            .withValues(alpha: 0.45);
+      final highlight = previewValid ? AppColors.green : AppColors.hit;
+      final fill = Paint()..color = highlight.withValues(alpha: 0.50);
+      final outline = Paint()
+        ..color = highlight.withValues(alpha: 0.95)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = cell * 0.06;
       for (final cp in preview!.cells) {
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromLTWH(cp[1] * cell + 2, cp[0] * cell + 2, cell - 4, cell - 4),
-            Radius.circular(cell * 0.14),
-          ),
-          p,
+        final rrect = RRect.fromRectAndRadius(
+          Rect.fromLTWH(cp[1] * cell + 2, cp[0] * cell + 2, cell - 4, cell - 4),
+          Radius.circular(cell * 0.14),
         );
+        canvas.drawRRect(rrect, fill);
+        canvas.drawRRect(rrect, outline);
       }
     }
 
