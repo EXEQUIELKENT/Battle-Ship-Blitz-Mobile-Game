@@ -244,14 +244,21 @@ class GameController extends ChangeNotifier {
 
     final shooter = shooterIsP1 ? profile.playerName : _opponentName();
     final coord = '${String.fromCharCode(65 + r)}${c + 1}';
+    // NOTE: the hit/sunk/miss SOUND (and haptic) used to be triggered right
+    // here, the instant the shot is registered — i.e. the moment you tap,
+    // long before the cannonball has actually flown across the screen and
+    // visually landed (BattleScreen's ~430ms `_projCtrl` flight animation).
+    // That meant you'd hear "sunk!" immediately on tap while the ball was
+    // still mid-air, so the destroy sound never actually lined up with the
+    // ship being revealed as wreckage — it just came early every time.
+    // Sound is now triggered from BattleScreen's `_resolveImpact()` (see
+    // `_playImpactSound`), the same moment the impact marker/shake/ship
+    // wreckage actually appear, so what you hear matches what you see land.
     if (result == ShotResult.sunk) {
-      SoundService.instance.sunk();
       _log('💥 $shooter SANK the ${sunk!.spec.name} at $coord!');
     } else if (result == ShotResult.hit) {
-      SoundService.instance.hit();
       _log('🔥 $shooter scored a HIT at $coord');
     } else {
-      SoundService.instance.miss();
       _log('🌊 $shooter missed at $coord');
     }
 
