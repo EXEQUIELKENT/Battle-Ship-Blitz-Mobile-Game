@@ -749,9 +749,16 @@ class _BattleScreenState extends State<BattleScreen>
                 ),
               ),
 
-              // Turn-highlight blur: a soft frosted-glass halo OVER the
-              // ACTIVE player's own grid, so it's unmistakable whose turn
+              // Turn-highlight blur: a soft frosted-glass halo over the
+              // WAITING player's own grid, so it's unmistakable whose turn
               // it is even before you notice the cannon or the badge.
+              // (Previously this sat on `isActiveHalf` — the ACTIVE
+              // player's own grid — which meant your grid, hit/miss marks
+              // and all, got hazed over during your own turn while your
+              // idle opponent's stayed perfectly crisp: backwards, since
+              // the player currently acting is the one who most needs a
+              // clear view. Flipped to `!isActiveHalf` so the halo now
+              // marks the side that's waiting instead.)
               // Uses a small FIXED glow margin (clamped to this half's own
               // bounds) instead of a percentage of gridSide — the old
               // percentage-based halo could balloon well past the grid
@@ -759,7 +766,11 @@ class _BattleScreenState extends State<BattleScreen>
               // read as the blur effect "leaking" outside the grid.
               // Placed AFTER the grid in the Stack so the BackdropFilter
               // blurs the grid contents (destroyed ships, hit cells, miss
-              // cells) in addition to the background.
+              // cells) in addition to the background — kept deliberately
+              // light (sigma 3, down from 7) so that blurred grid still
+              // reads: gridlines and hit/miss/destroyed markers stay
+              // visible through the haze instead of dissolving into a
+              // solid smear.
               Builder(builder: (context) {
                 const haloMargin = 10.0;
                 final haloLeft = math.max(0.0, gridLeft - haloMargin);
@@ -776,11 +787,11 @@ class _BattleScreenState extends State<BattleScreen>
                   child: IgnorePointer(
                     child: AnimatedOpacity(
                       duration: const Duration(milliseconds: 320),
-                      opacity: isActiveHalf && inBattle ? 1 : 0,
+                      opacity: !isActiveHalf && inBattle ? 1 : 0,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(16),
                         child: BackdropFilter(
-                          filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+                          filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
                           child: Container(
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(16),

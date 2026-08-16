@@ -1,204 +1,186 @@
 diff --git a/lib/screens/battle_screen.dart b/lib/screens/battle_screen.dart
-index 8c9c416..625dd89 100644
+index 32eb654..b36eb70 100644
 --- a/lib/screens/battle_screen.dart
 +++ b/lib/screens/battle_screen.dart
-@@ -12,6 +12,7 @@ import '../services/sound_service.dart';
- import '../services/storage_service.dart';
- import '../widgets/battle_grid.dart';
- import '../widgets/cannon_widget.dart';
-+import '../widgets/neon_widgets.dart';
- import '../widgets/ship_painter.dart';
- import 'result_screen.dart';
+@@ -749,9 +749,16 @@ class _BattleScreenState extends State<BattleScreen>
+                 ),
+               ),
  
-@@ -180,15 +181,19 @@ class _BattleScreenState extends State<BattleScreen>
-         }
-       }
-     }
--    if (controller.phase == BattlePhase.finished && !_navigatedToResult) {
--      _navigatedToResult = true;
--      Future.delayed(const Duration(milliseconds: 1500), () {
--        if (!mounted) return;
--        Navigator.of(context).pushReplacement(
--          MaterialPageRoute(builder: (_) => const ResultScreen()),
--        );
--      });
--    }
-+  }
-+
-+  /// Advances to the result screen — now the ONLY way there once the
-+  /// match ends (see the game-over bar in build()). Previously this
-+  /// fired on its own 1.5s after `BattlePhase.finished`, which yanked
-+  /// players away right as both grids revealed their full fleets,
-+  /// before there was any real chance to look at where everything was.
-+  void _goToResult() {
-+    if (_navigatedToResult) return;
-+    _navigatedToResult = true;
-+    Navigator.of(context).pushReplacement(
-+      MaterialPageRoute(builder: (_) => const ResultScreen()),
-+    );
-   }
- 
-   /// AI / remote opponent fired at the BOTTOM player's grid.
-@@ -518,6 +523,21 @@ class _BattleScreenState extends State<BattleScreen>
- 
-                   // ===== "Your turn" badge (single-sided, active player) =====
-                   if (_showTurnBadge) _turnBadgeOverlay(bottomIsP1, bandH),
-+
-+                  // ===== Game-over bar: both grids reveal every ship the
-+                  // instant the match ends (see `gameOver` in _buildHalf),
-+                  // and this bar is what lets players actually take that
-+                  // in — it replaces the old fixed 1.5s auto-navigate
-+                  // timer, so the reveal stays on screen for as long as
-+                  // the player wants until they tap CONTINUE. =====
-+                  if (controller.phase == BattlePhase.finished)
-+                    Positioned(
-+                      left: 0,
-+                      right: 0,
-+                      top: halfH,
-+                      height: bandH,
-+                      child: _gameOverBar(),
-+                    ),
-                 ],
-               );
-             },
-@@ -724,7 +744,7 @@ class _BattleScreenState extends State<BattleScreen>
+-              // Turn-highlight blur: a soft frosted-glass halo OVER the
+-              // ACTIVE player's own grid, so it's unmistakable whose turn
++              // Turn-highlight blur: a soft frosted-glass halo over the
++              // WAITING player's own grid, so it's unmistakable whose turn
+               // it is even before you notice the cannon or the badge.
++              // (Previously this sat on `isActiveHalf` — the ACTIVE
++              // player's own grid — which meant your grid, hit/miss marks
++              // and all, got hazed over during your own turn while your
++              // idle opponent's stayed perfectly crisp: backwards, since
++              // the player currently acting is the one who most needs a
++              // clear view. Flipped to `!isActiveHalf` so the halo now
++              // marks the side that's waiting instead.)
+               // Uses a small FIXED glow margin (clamped to this half's own
+               // bounds) instead of a percentage of gridSide — the old
+               // percentage-based halo could balloon well past the grid
+@@ -759,7 +766,11 @@ class _BattleScreenState extends State<BattleScreen>
+               // read as the blur effect "leaking" outside the grid.
+               // Placed AFTER the grid in the Stack so the BackdropFilter
+               // blurs the grid contents (destroyed ships, hit cells, miss
+-              // cells) in addition to the background.
++              // cells) in addition to the background — kept deliberately
++              // light (sigma 3, down from 7) so that blurred grid still
++              // reads: gridlines and hit/miss/destroyed markers stay
++              // visible through the haze instead of dissolving into a
++              // solid smear.
+               Builder(builder: (context) {
+                 const haloMargin = 10.0;
+                 final haloLeft = math.max(0.0, gridLeft - haloMargin);
+@@ -776,11 +787,11 @@ class _BattleScreenState extends State<BattleScreen>
+                   child: IgnorePointer(
+                     child: AnimatedOpacity(
+                       duration: const Duration(milliseconds: 320),
+-                      opacity: isActiveHalf && inBattle ? 1 : 0,
++                      opacity: !isActiveHalf && inBattle ? 1 : 0,
                        child: ClipRRect(
                          borderRadius: BorderRadius.circular(16),
                          child: BackdropFilter(
--                          filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-+                          filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+-                          filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
++                          filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
                            child: Container(
                              decoration: BoxDecoration(
                                borderRadius: BorderRadius.circular(16),
-@@ -1050,6 +1070,24 @@ class _BattleScreenState extends State<BattleScreen>
-     );
-   }
- 
-+  /// Solid bar over the middle band once the match is finished — tapping
-+  /// CONTINUE is the only way to leave this screen at that point (see
-+  /// _goToResult), so both fleets stay fully revealed until the player
-+  /// is actually done looking.
-+  Widget _gameOverBar() {
-+    return Container(
-+      color: AppColors.navy,
-+      alignment: Alignment.center,
-+      child: NeonButton(
-+        label: 'CONTINUE',
-+        icon: Icons.arrow_forward,
-+        color: AppColors.seafoam,
-+        compact: true,
-+        onPressed: _goToResult,
-+      ),
-+    );
-+  }
-+
-   Widget _cannonball(double d) => SizedBox(
-         width: d,
-         height: d,
 diff --git a/lib/screens/placement_screen.dart b/lib/screens/placement_screen.dart
-index e62814a..499634f 100644
+index ea1d51a..771aa96 100644
 --- a/lib/screens/placement_screen.dart
 +++ b/lib/screens/placement_screen.dart
-@@ -239,6 +239,28 @@ class _PlacementScreenState extends State<PlacementScreen> {
-     );
+@@ -46,6 +46,21 @@ class _PlacementScreenState extends State<PlacementScreen> {
+     super.initState();
+     final controller = context.read<GameController>();
+     _board = widget.isPlayer2 ? controller.boards[1] : controller.boards[0];
++    // `_cellSize()` below falls back to a rough MediaQuery-based estimate
++    // until the grid has actually been laid out at least once (its
++    // RenderBox isn't available on the very first build). That first,
++    // slightly-off estimate is what gets baked into the dock ships' drag
++    // "feedback" size — and since the carrier (5 cells, first in the
++    // dock) is usually the very first ship a player drags, a small
++    // per-cell error is magnified 5x, producing an oversized/misaligned
++    // ghost exactly on that first placement (subsequent drags are fine,
++    // since by then a rebuild has already happened and picked up the
++    // real size). Scheduling one harmless extra rebuild right after the
++    // first frame guarantees the real, precise cell size is in place
++    // before the player can interact with anything.
++    WidgetsBinding.instance.addPostFrameCallback((_) {
++      if (mounted) setState(() {});
++    });
    }
  
-+  /// The real, on-screen size of one grid cell — read straight from the
-+  /// grid's own RenderBox (same technique `onMove`/`onAcceptWithDetails`
-+  /// already use) so the dock icons and the drag "feedback" ghost can be
-+  /// sized to match the actual board instead of a guessed constant.
-+  /// Previously the dock icons and the dragged ship were both fixed
-+  /// pixel sizes (68 / 110) that had no relationship to the grid's real
-+  /// cell size or to how many cells a ship actually occupies — that
-+  /// mismatch is why a ship being dragged looked mis-sized/misaligned
-+  /// against the green highlight cells underneath it.
-+  /// Before the grid has been laid out for the first time (very first
-+  /// build) the RenderBox isn't available yet, so this falls back to an
-+  /// estimate from the screen width, which is close enough for that one
-+  /// frame and self-corrects on the next rebuild.
-+  double _cellSize(BuildContext context) {
-+    final gridBox =
-+        _gridKey.currentContext?.findRenderObject() as RenderBox?;
-+    if (gridBox != null && gridBox.hasSize) {
-+      return gridBox.size.width / kBoardSize;
-+    }
-+    return MediaQuery.of(context).size.width / kBoardSize;
-+  }
-+
-   @override
-   Widget build(BuildContext context) {
-     final controller = context.read<GameController>();
-@@ -247,6 +269,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
-         ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
-         : context.watch<ProfileStore>().playerName.toUpperCase();
-     final skin = isP2 ? _p2PlaceSkin : _p1PlaceSkin;
-+    final cellSize = _cellSize(context);
+   ShipSpec? get _selectedSpec =>
+diff --git a/lib/widgets/battle_grid.dart b/lib/widgets/battle_grid.dart
+index 9f8155c..3260a13 100644
+--- a/lib/widgets/battle_grid.dart
++++ b/lib/widgets/battle_grid.dart
+@@ -101,9 +101,28 @@ class _BattleGridState extends State<BattleGrid>
+   /// self-clearing; this is what replaced the old persistent crosshair.
+   final Map<String, DateTime> _tapFx = {};
  
-     if (_showHandoff) {
-       return HandoffScreen(
-@@ -347,6 +370,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
-                       _DockShip(
-                         spec: spec,
-                         skin: skin,
-+                        cell: cellSize,
-                         placed: _board.shipOfKind(spec.kind) != null,
-                         selected: _selected == spec.kind,
-                         onTap: () {
-@@ -477,6 +501,7 @@ class _DockShip extends StatelessWidget {
-   final ShipSkin skin;
-   final bool placed;
-   final bool selected;
-+  final double cell;
-   final VoidCallback onTap;
- 
-   const _DockShip({
-@@ -484,12 +509,24 @@ class _DockShip extends StatelessWidget {
-     required this.skin,
-     required this.placed,
-     required this.selected,
-+    required this.cell,
-     required this.onTap,
-   });
+-  // Drag state (placement)
++  // Drag state (placement) — repositioning an already-placed ship.
++  //
++  // Previously this only tracked the raw finger position (`_dragPos`) and
++  // derived the ship's landing cell straight from it every frame
++  // (`_dragPos / cell`). That treats wherever you happened to grab the
++  // ship as its new top-left cell, so a ship grabbed anywhere but its own
++  // first cell would jump the moment the drag started, and grabbing it in
++  // a different spot next time produced a different, equally-wrong offset
++  // — i.e. the position "bugs out" a little more accurately each time you
++  // move it, exactly as reported.
++  //
++  // Fixed by anchoring on the DELTA between the finger's start position
++  // and its current position, added to the ship's actual row/col at drag
++  // start — so the ship tracks the finger 1:1 from wherever it was
++  // grabbed, snapped to the grid, instead of being re-anchored to the
++  // finger every frame.
+   ShipKind? _dragKind;
+-  Offset _dragPos = Offset.zero;
++  Offset _dragStartPos = Offset.zero;
++  int _dragAnchorRow = 0;
++  int _dragAnchorCol = 0;
++  int _dragPreviewRow = 0;
++  int _dragPreviewCol = 0;
+   bool _dragging = false;
  
    @override
-   Widget build(BuildContext context) {
--    final icon = AnimatedShip(spec: spec, skin: skin, size: 68);
-+    // Resting dock icon: width scales with the ship's cell-length (same
-+    // "unit * spec.size" pattern the battle-screen fleet row uses)
-+    // instead of every ship — a 2-cell destroyer and a 5-cell carrier
-+    // alike — rendering inside the same fixed 68px box.
-+    const dockUnit = 11.0;
-+    const dockBeam = 30.0;
-+    final icon = AnimatedShip(
-+      spec: spec,
-+      skin: skin,
-+      width: dockUnit * spec.size + 14,
-+      height: dockBeam,
-+    );
+@@ -259,7 +278,11 @@ class _BattleGridState extends State<BattleGrid>
+           setState(() {
+             _dragKind = s.spec.kind;
+             _dragging = true;
+-            _dragPos = d.localPosition;
++            _dragStartPos = d.localPosition;
++            _dragAnchorRow = s.row;
++            _dragAnchorCol = s.col;
++            _dragPreviewRow = s.row;
++            _dragPreviewCol = s.col;
+           });
+           return;
+         }
+@@ -271,13 +294,21 @@ class _BattleGridState extends State<BattleGrid>
+     if (widget.onShipDragEnd == null) return null;
+     return (d) {
+       if (!_dragging) return;
+-      setState(() => _dragPos = d.localPosition);
+       final kind = _dragKind;
+-      if (kind != null && widget.onShipDragUpdate != null) {
+-        final c = (_dragPos.dx / cell).floor().clamp(0, kBoardSize - 1);
+-        final r = (_dragPos.dy / cell).floor().clamp(0, kBoardSize - 1);
+-        widget.onShipDragUpdate!(kind, r, c);
+-      }
++      if (kind == null) return;
++      // Whole-cell delta between where the finger started and where it is
++      // now — applied on top of the ship's own starting row/col, so the
++      // grab point stays fixed relative to the ship no matter where on
++      // its body it was picked up.
++      final dCol = ((d.localPosition.dx - _dragStartPos.dx) / cell).round();
++      final dRow = ((d.localPosition.dy - _dragStartPos.dy) / cell).round();
++      final r = (_dragAnchorRow + dRow).clamp(0, kBoardSize - 1).toInt();
++      final c = (_dragAnchorCol + dCol).clamp(0, kBoardSize - 1).toInt();
++      setState(() {
++        _dragPreviewRow = r;
++        _dragPreviewCol = c;
++      });
++      widget.onShipDragUpdate?.call(kind, r, c);
+     };
+   }
  
-     final child = GestureDetector(
-       onTap: placed ? null : onTap,
-@@ -513,11 +550,22 @@ class _DockShip extends StatelessWidget {
- 
-     return Draggable<({ShipKind kind, bool horizontal})>(
-       data: (kind: spec.kind, horizontal: true),
-+      // Sized to the REAL grid cell (cell * spec.size wide, one cell
-+      // tall) instead of a fixed 110×60.5 box every ship used to share
-+      // regardless of length or the device's actual cell size — that
-+      // mismatch is what made the ghost ship look oversized/misaligned
-+      // against the green/red highlight cells while dragging it onto
-+      // the grid.
-       feedback: Material(
-         color: Colors.transparent,
-         child: Opacity(
-           opacity: 0.85,
--          child: AnimatedShip(spec: spec, skin: skin, size: 110),
-+          child: AnimatedShip(
-+            spec: spec,
-+            skin: skin,
-+            width: cell * spec.size,
-+            height: cell,
-+          ),
-         ),
-       ),
-       childWhenDragging: Opacity(opacity: 0.25, child: child),
+@@ -285,9 +316,7 @@ class _BattleGridState extends State<BattleGrid>
+     if (widget.onShipDragEnd == null) return null;
+     return (d) {
+       if (_dragging && _dragKind != null) {
+-        final c = (_dragPos.dx / cell).floor().clamp(0, kBoardSize - 1);
+-        final r = (_dragPos.dy / cell).floor().clamp(0, kBoardSize - 1);
+-        widget.onShipDragEnd!(_dragKind!, r, c);
++        widget.onShipDragEnd!(_dragKind!, _dragPreviewRow, _dragPreviewCol);
+       }
+       setState(() {
+         _dragging = false;
+@@ -362,11 +391,18 @@ class _BattleGridState extends State<BattleGrid>
+     final spec = kFleet.firstWhere((s) => s.kind == _dragKind);
+     final horizontal =
+         widget.ships!.firstWhere((s) => s.spec.kind == _dragKind).horizontal;
+-    final w = horizontal ? spec.size * cell : cell;
+-    final h = horizontal ? cell : spec.size * cell;
++    // Same left/top/width/height formula as `_shipWidgets` (grid-anchored,
++    // `-2` inset) using `_dragPreviewRow`/`_dragPreviewCol` — the exact
++    // cell the ship will land on if released right now (see
++    // `_onPanUpdate`) — instead of centering the ghost on the raw,
++    // continuous finger position. That's what kept the ghost glued to the
++    // grid cells as you drag, rather than floating free of them and only
++    // "landing" correctly by chance.
++    final w = horizontal ? spec.size * cell - 2 : cell - 2;
++    final h = horizontal ? cell - 2 : spec.size * cell - 2;
+     return Positioned(
+-      left: _dragPos.dx - w / 2,
+-      top: _dragPos.dy - h / 2,
++      left: _dragPreviewCol * cell + 1,
++      top: _dragPreviewRow * cell + 1,
+       width: w,
+       height: h,
+       child: IgnorePointer(
