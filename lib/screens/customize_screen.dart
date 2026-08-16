@@ -53,7 +53,10 @@ class _CustomizeScreenState extends State<CustomizeScreen>
                     IconButton(
                       icon: const Icon(Icons.arrow_back,
                           color: AppColors.cream),
-                      onPressed: () => Navigator.pop(context),
+                      onPressed: () {
+                        SoundService.instance.click();
+                        Navigator.pop(context);
+                      },
                     ),
                     Expanded(
                       child: Text(
@@ -180,11 +183,14 @@ class _ShipsTab extends StatelessWidget {
                       border:
                           Border.all(color: AppColors.cellBorder, width: 2),
                     ),
-                    child: Center(
-                      child: AnimatedShip(
-                        spec: kFleet[1], // battleship preview
-                        skin: skin,
-                        size: 100,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Center(
+                        child: AnimatedShip(
+                          spec: kFleet[1], // battleship preview
+                          skin: skin,
+                          size: 130,
+                        ),
                       ),
                     ),
                   ),
