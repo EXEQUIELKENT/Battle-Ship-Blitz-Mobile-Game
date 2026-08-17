@@ -141,6 +141,15 @@ class _BattleScreenState extends State<BattleScreen>
   final Map<bool, List<List<int>>> _shotsCache = {};
   final Map<bool, List<CombatEventLike>> _eventsCache = {};
 
+  /// Bumped every time a [CombatEvent.impactAt] is actually set (a ball
+  /// visually lands) — see `_resolveImpact` and the overlapping-shot
+  /// branch in `_onUpdate`. `controller.revision` does NOT change when
+  /// this happens (impact resolution mutates event metadata, not the
+  /// controller's own shot-fired state), so this is the signal
+  /// `_refreshDerivedCache` needs to know a shot just became visible.
+  int _impactResolutions = 0;
+  int _cachedImpactResolutions = -1;
+
   // Prevent the same AI event from being scheduled more than once while
   // the deliberate firing delay is waiting to expire.
   final Set<CombatEvent> _delayedOpponentEvents = <CombatEvent>{};
@@ -216,7 +225,15 @@ class _BattleScreenState extends State<BattleScreen>
           // its sound right now too, since `_resolveImpact` (which will
           // fire later) is resolving a DIFFERENT, earlier pending shot.
           if (e.impactAt == null) {
-            e.impactAt = null;
+            e.impactAt = DateTime.now();
+            _impactResolutions++;
+            controller.touch();
+            _playImpactSound(e.result);
+            if (e.result == ShotResult.sunk) {
+              _shake(_shakeSunkMagnitude);
+            } else if (e.result == ShotResult.hit) {
+              _shake(_shakeHitMagnitude);
+            }
           }
         } else if (!_delayedOpponentEvents.contains(e)) {
           _delayedOpponentEvents.add(e);
@@ -294,6 +311,7 @@ class _BattleScreenState extends State<BattleScreen>
           e.byPlayer == byP1 &&
           e.impactAt == null) {
         e.impactAt = DateTime.now();
+        _impactResolutions++;
         break;
       }
     }
@@ -650,22 +668,42 @@ class _BattleScreenState extends State<BattleScreen>
     if (controller.revision == _cachedRevision &&
         samePending &&
         _cachedPendingByP1 == _pendingByP1 &&
+        _cachedImpactResolutions == _impactResolutions &&
         _shotsCache.isNotEmpty) {
       return; // nothing relevant changed since the last build — reuse it.
     }
     _cachedRevision = controller.revision;
     _cachedPendingImpactKey = pendingKey == null ? null : [pendingKey[0], pendingKey[1]];
     _cachedPendingByP1 = _pendingByP1;
+    _cachedImpactResolutions = _impactResolutions;
     for (final halfIsP1 in const [true, false]) {
-      final shotsOnThisGrid = halfIsP1 ? controller.p2Shots : controller.myShots;
+      // BUGFIX (AI's target cell flashing hit/miss before it actually
+      // fires): this used to read straight from controller.myShots /
+      // controller.p2Shots, which GameController updates the INSTANT a
+      // shot is resolved internally — for the AI that's the moment
+      // `_aiThink()` picks its target and resolves it against the board,
+      // well before `_launchOpponentBall`'s own pre-fire pause and the
+      // cannonball's flight animation even start, let alone finish.
+      // `_shotVisible` only masked this while `_pendingImpact` happened
+      // to already be set to that exact cell — but `_pendingImpact` isn't
+      // set until `_launchOpponentBall` gets around to it, so there was a
+      // real window (its pre-fire delay) where the marker was already
+      // showing on the grid for a shot that, visually, the AI hadn't
+      // fired yet.
+      // Landed shots are now built purely from `CombatEvent.impactAt` —
+      // the exact same "did the cannonball actually land" signal
+      // `_eventsCache` below already uses for the hit/miss FX overlay —
+      // so a cell only ever shows its marker once its ball has visibly
+      // landed, never before it's even been launched.
+      final landed = <int, int>{}; // (r * kBoardSize + c) -> 1 miss / 2 hit
+      for (final e in controller.events) {
+        if (e.byPlayer == halfIsP1 || e.impactAt == null) continue;
+        final hit = e.result == ShotResult.hit || e.result == ShotResult.sunk;
+        landed[e.row * kBoardSize + e.col] = hit ? 2 : 1;
+      }
       _shotsCache[halfIsP1] = [
         for (var r = 0; r < kBoardSize; r++)
-          [
-            for (var c = 0; c < kBoardSize; c++)
-              _shotVisible(shotsOnThisGrid, halfIsP1, r, c)
-                  ? shotsOnThisGrid[r][c]
-                  : 0
-          ]
+          [for (var c = 0; c < kBoardSize; c++) landed[r * kBoardSize + c] ?? 0]
       ];
       _eventsCache[halfIsP1] = controller.events
           .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)
@@ -955,19 +993,6 @@ class _BattleScreenState extends State<BattleScreen>
         );
       },
     );
-  }
-
-  /// Hide cells whose shot is still "in flight" (impact hasn't landed).
-  bool _shotVisible(List<List<int>> shots, bool halfIsP1, int r, int c) {
-    if (shots[r][c] == 0) return false;
-    if (_pendingImpact != null &&
-        _pendingImpact![0] == r &&
-        _pendingImpact![1] == c &&
-        _pendingByP1 != halfIsP1) {
-      // A ball is flying toward a cell on this grid.
-      return false;
-    }
-    return true;
   }
 
   // -------------------------------------------------------- MIDDLE BAND

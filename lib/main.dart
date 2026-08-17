@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import 'core/route_observer.dart';
 import 'core/theme.dart';
 import 'screens/home_screen.dart';
 import 'services/game_controller.dart';
@@ -72,6 +73,7 @@ class BattleshipBlitzApp extends StatelessWidget {
       child: MaterialApp(
         title: 'Battleship Blitz',
         debugShowCheckedModeBanner: false,
+        navigatorObservers: [appRouteObserver],
         theme: ThemeData(
           brightness: Brightness.dark,
           scaffoldBackgroundColor: AppColors.abyss,

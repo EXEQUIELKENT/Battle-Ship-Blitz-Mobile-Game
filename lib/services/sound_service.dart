@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:audioplayers/audioplayers.dart';
@@ -191,26 +192,52 @@ class SoundService {
     }
   }
 
-  /// BUGFIX (background music "only plays after I tap something"): on
-  /// Web (and some WebView-based embeds) browsers refuse to play ANY
-  /// audio — even a fresh `AudioPlayer`, even muted-then-unmuted — until
-  /// the page has seen a real user gesture (click/tap/key). That's a
-  /// browser policy, not something app code can override, so the very
-  /// first automatic `startMenuMusic()` call on launch can silently fail
-  /// (caught below, logged only in debug). Previously nothing ever
-  /// retried it, so the music stayed off until the player happened to
-  /// trigger some OTHER sound (e.g. a button's `click()`), which is
-  /// exactly the "only after I tap something" symptom.
-  /// Now `_menuMusicWanted` records the intent even when the attempt is
-  /// blocked, and [notifyUserGesture] — wired up in `main.dart` to fire
-  /// on the very first tap/pointer-down ANYWHERE in the app, not just a
-  /// sound-producing button — retries immediately. That's the earliest
-  /// point a browser will allow it, so the music now starts on literally
-  /// the first touch of the screen instead of waiting for the user to
-  /// stumble into a button that happens to play a sound.
+  Timer? _menuMusicRetryTimer;
+  static const _menuMusicAutoRetries = 6;
+  static const _menuMusicRetryGap = Duration(milliseconds: 500);
+
+  /// BUGFIX (background music "only plays after I tap something"): two
+  /// distinct causes were bundled under this one symptom, and only one of
+  /// them actually needs a tap to fix.
+  ///
+  /// 1. On Web (and some WebView-based embeds), browsers refuse to play
+  ///    ANY audio — even a fresh `AudioPlayer`, even muted-then-unmuted —
+  ///    until the page has seen a real user gesture. That genuinely can't
+  ///    be worked around without a gesture, so [notifyUserGesture] (wired
+  ///    up in `main.dart` to fire on the very first tap/pointer-down
+  ///    ANYWHERE in the app, not just a sound-producing button) retries
+  ///    the instant one happens — the earliest a browser will allow it.
+  /// 2. On native Android/iOS there is no such policy — nothing there
+  ///    *requires* a gesture — but `main()` fires `SoundService.init()`
+  ///    unawaited at the same moment this runs, spinning up ~21 pooled
+  ///    `AudioPlayer`s for sound effects concurrently with this looping
+  ///    track's own first `play()` call. That contention can make the
+  ///    very first attempt silently land on a not-yet-ready platform
+  ///    audio session. Previously the only retry path was
+  ///    [notifyUserGesture], so on native the music only ever came back
+  ///    to life by accident, whenever the player happened to tap a
+  ///    button — exactly the "only after I tap something" symptom, on a
+  ///    platform where a tap was never actually required.
+  ///
+  /// Fixed by keeping the gesture retry (still needed for case 1) AND
+  /// adding a short, self-driven retry burst that needs no gesture at
+  /// all (fixes case 2 — and also helps case 1 slightly, on browsers
+  /// that don't block a plain retry once the page itself has settled).
   Future<void> startMenuMusic() async {
     if (!enabled) return;
+    final alreadyWanted = _menuMusicWanted;
     _menuMusicWanted = true;
+    await _attemptMenuMusicPlay();
+    if (!alreadyWanted) {
+      // Only kick off a fresh retry burst for a brand-new request — a
+      // request that was already wanted (e.g. a gesture-triggered retry)
+      // just makes its one attempt above and leaves any burst already in
+      // flight alone.
+      _scheduleMenuMusicAutoRetry();
+    }
+  }
+
+  Future<void> _attemptMenuMusicPlay() async {
     final existing = _menuMusicPlayer;
     if (existing != null && existing.state == PlayerState.playing) return;
 
@@ -222,13 +249,33 @@ class SoundService {
       await player.play(AssetSource(_menuMusicAsset), volume: 0.82);
     } catch (e) {
       if (kDebugMode) debugPrint('SoundService: menu music play failed ($e)');
-      // Left `_menuMusicWanted = true` so `notifyUserGesture` retries as
-      // soon as a gesture makes the browser allow it.
+      // Left `_menuMusicWanted = true` so a retry (gesture-triggered or
+      // the auto-retry burst below) picks it back up.
     }
+  }
+
+  void _scheduleMenuMusicAutoRetry() {
+    _menuMusicRetryTimer?.cancel();
+    var attempt = 0;
+    _menuMusicRetryTimer = Timer.periodic(_menuMusicRetryGap, (t) {
+      attempt++;
+      final player = _menuMusicPlayer;
+      final playing = player != null && player.state == PlayerState.playing;
+      if (!_menuMusicWanted || playing || attempt >= _menuMusicAutoRetries) {
+        t.cancel();
+        return; // Either it's already playing, no longer wanted, or
+                // we've made a reasonable number of attempts — beyond
+                // this point only notifyUserGesture (the genuine
+                // browser-autoplay-block case) should keep retrying.
+      }
+      _attemptMenuMusicPlay();
+    });
   }
 
   Future<void> stopMenuMusic() async {
     _menuMusicWanted = false;
+    _menuMusicRetryTimer?.cancel();
+    _menuMusicRetryTimer = null;
     final player = _menuMusicPlayer;
     if (player == null) return;
     try {

@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/route_observer.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
@@ -24,7 +25,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, RouteAware {
   late final AnimationController _titleCtrl;
   AIDifficulty _difficulty = AIDifficulty.normal;
 
@@ -42,10 +43,32 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      appRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
     SoundService.instance.stopMenuMusic();
     _titleCtrl.dispose();
     super.dispose();
+  }
+
+  /// See the doc comment on [appRouteObserver] — fires whenever HomeScreen
+  /// becomes the visible top route again (e.g. REMATCH / MAIN MENU on the
+  /// result screen popping back to it), which is exactly when the menu
+  /// music — turned off back when PlacementScreen/BattleScreen started —
+  /// needs to be turned back on. `startMenuMusic()` is a safe no-op if
+  /// it's already playing.
+  @override
+  void didPopNext() {
+    super.didPopNext();
+    if (mounted) SoundService.instance.startMenuMusic();
   }
 
   void _startVsAI() {
