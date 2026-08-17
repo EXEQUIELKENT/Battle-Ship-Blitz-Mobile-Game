@@ -141,6 +141,10 @@ class _BattleScreenState extends State<BattleScreen>
   final Map<bool, List<List<int>>> _shotsCache = {};
   final Map<bool, List<CombatEventLike>> _eventsCache = {};
 
+  // Prevent the same AI event from being scheduled more than once while
+  // the deliberate firing delay is waiting to expire.
+  final Set<CombatEvent> _delayedOpponentEvents = <CombatEvent>{};
+
   @override
   void initState() {
     super.initState();
@@ -214,7 +218,8 @@ class _BattleScreenState extends State<BattleScreen>
           if (e.impactAt == null) {
             e.impactAt = null;
           }
-        } else {
+        } else if (!_delayedOpponentEvents.contains(e)) {
+          _delayedOpponentEvents.add(e);
           _launchOpponentBall(e);
         }
       }
@@ -235,7 +240,16 @@ class _BattleScreenState extends State<BattleScreen>
   }
 
   /// AI / remote opponent fired at the BOTTOM player's grid.
-  void _launchOpponentBall(CombatEvent e) {
+  Future<void> _launchOpponentBall(CombatEvent e) async {
+    // The AI now pauses before visibly firing so a missed human shot is not
+    // followed by an almost-instant cannon blast. Remote multiplayer keeps
+    // its previous timing.
+    final controller = context.read<GameController>();
+    if (controller.mode == GameMode.vsAI) {
+      await Future.delayed(const Duration(milliseconds: 900));
+    }
+    if (!mounted || controller.phase != BattlePhase.battling) return;
+
     final top = _geom[true];
     final bottom = _geom[false];
     if (top == null || bottom == null || _projCtrl.isAnimating) {
@@ -910,10 +924,13 @@ class _BattleScreenState extends State<BattleScreen>
                     // even if it still visually grazes the grid's edge on
                     // an unusual screen size.
                     child: IgnorePointer(
-                      child: CannonWidget(
-                        skin: profile.cannonSkin,
-                        cooldownFraction: cooldown,
-                        enabled: controller.battling && !_countingDown,
+                      child: AnimatedOpacity(
+                        duration: const Duration(milliseconds: 250),
+                        opacity: gameOver ? 0 : 1,
+                        child: CannonWidget(
+                          skin: profile.cannonSkin,
+                          cooldownFraction: cooldown,
+                          enabled: controller.battling && !_countingDown,
                         size: cannonSize,
                         fireTrigger: cannonStream.stream,
                         readyTrigger: readyStream.stream,
@@ -922,7 +939,8 @@ class _BattleScreenState extends State<BattleScreen>
                         // grid cell (see gridFirable / onTapCell above); the
                         // cannon itself just reacts (recoil + muzzle flash)
                         // as a "shot fired" indicator.
-                        onFire: null,
+                          onFire: null,
+                        ),
                       ),
                     ),
                   );
