@@ -7,8 +7,6 @@ on:
 permissions:
   contents: write
 
-auto_cancel: false
-
 jobs:
   patch:
     runs-on: ubuntu-latest
@@ -40,11 +38,6 @@ jobs:
               raise SystemExit('Expected battle cache block was not found.')
           text = text.replace(old, new, 1)
 
-          old = """      if (!e.byPlayer && age < 200 && mounted) {\n        if (_projCtrl.isAnimating) {\n"""
-          new = """      if (!e.byPlayer && age < 200 && mounted) {\n        if (_projCtrl.isAnimating) {\n"""
-          # Keep this branch unchanged; the actual scheduling guard is added\n          # only to the launch call below so the in-flight behavior stays intact.\n          if old not in text:
-              raise SystemExit('Expected opponent update block was not found.')
-
           old = """        } else {\n          _launchOpponentBall(e);\n        }\n"""
           new = """        } else if (!_delayedOpponentEvents.contains(e)) {\n          _delayedOpponentEvents.add(e);\n          _launchOpponentBall(e);\n        }\n"""
           if old not in text:
@@ -56,11 +49,6 @@ jobs:
           if old not in text:
               raise SystemExit('Expected opponent launch method was not found.')
           text = text.replace(old, new, 1)
-
-          old = """    _eventsCache[halfIsP1] = controller.events\n          .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)\n"""
-          # No-op marker: validate the surrounding section still matches the\n          # expected source version before writing.
-          if old not in text:
-              raise SystemExit('Expected event cache section was not found.')
 
           old = """                    child: IgnorePointer(\n                      child: CannonWidget(\n                        skin: profile.cannonSkin,\n                        cooldownFraction: cooldown,\n                        enabled: controller.battling && !_countingDown,\n"""
           new = """                    child: IgnorePointer(\n                      child: AnimatedOpacity(\n                        duration: const Duration(milliseconds: 250),\n                        opacity: gameOver ? 0 : 1,\n                        child: CannonWidget(\n                          skin: profile.cannonSkin,\n                          cooldownFraction: cooldown,\n                          enabled: controller.battling && !_countingDown,\n"""
