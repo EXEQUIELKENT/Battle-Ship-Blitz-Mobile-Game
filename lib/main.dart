@@ -63,8 +63,47 @@ Future<void> main() async {
   );
 }
 
-class BattleshipBlitzApp extends StatelessWidget {
+class BattleshipBlitzApp extends StatefulWidget {
   const BattleshipBlitzApp({super.key});
+
+  @override
+  State<BattleshipBlitzApp> createState() => _BattleshipBlitzAppState();
+}
+
+/// BUGFIX (all sound and sound effects disappearing mid-game on phones):
+/// this app previously had no `WidgetsBindingObserver` anywhere, so it
+/// never reacted to the app leaving/returning to the foreground. See
+/// `SoundService.onAppResumed()` for why that silently kills audio on
+/// Android/iOS after any backgrounding (lock screen, phone call, app
+/// switch, notification shade) — this observer is what actually calls it.
+class _BattleshipBlitzAppState extends State<BattleshipBlitzApp>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        SoundService.instance.onAppResumed();
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        SoundService.instance.onAppPaused();
+        break;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

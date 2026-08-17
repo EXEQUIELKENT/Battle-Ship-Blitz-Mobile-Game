@@ -104,7 +104,26 @@ class SoundService {
   /// Pre-create a round-robin player pool per effect that actually uses
   /// the pool (see `_pooledEffects`). Safe to call fire-and-forget from
   /// main().
-  Future<void> init() async {
+  Future<void> init() => _rebuildPool();
+
+  bool _rebuildingPool = false;
+
+  /// (Re)builds the pooled `AudioPlayer`s from scratch: disposes whatever
+  /// is currently in `_pool` (a no-op the first time, since it's empty)
+  /// and creates fresh players with their source/mode/release-mode set
+  /// up again. Shared by [init] and [onAppResumed] — see the bugfix note
+  /// on [onAppResumed] for why rebuilding on resume matters.
+  Future<void> _rebuildPool() async {
+    for (final players in _pool.values) {
+      for (final p in players) {
+        try {
+          await p.dispose();
+        } catch (_) {/* already gone/invalid — fine */}
+      }
+    }
+    _pool.clear();
+    _cursor.clear();
+
     for (final entry in _files.entries) {
       if (!_pooledEffects.contains(entry.key)) continue;
       final size = _defaultPoolSize;
@@ -121,6 +140,47 @@ class SoundService {
       _pool[entry.key] = players;
       _cursor[entry.key] = 0;
     }
+  }
+
+  /// BUGFIX (all sound effects going silent mid-game on phones): nothing
+  /// in the app previously observed `AppLifecycleState`, so SoundService
+  /// never knew when it left or returned to the foreground. On Android,
+  /// backgrounding the app (locking the screen, taking a call, swiping to
+  /// another app, even just pulling down the notification shade) can make
+  /// the OS reclaim the native SoundPool session backing the low-latency
+  /// pooled players to free resources; iOS deactivates the shared
+  /// AVAudioSession in the same situations. Either way the Dart-side
+  /// `AudioPlayer` objects survive and still report a normal idle/
+  /// completed state, so `_play()` happily keeps picking them — but their
+  /// underlying native sample is gone, so `play()` returns successfully
+  /// and produces no sound at all for the rest of the match, which is
+  /// exactly the "audio disappears mid-game" symptom. Rebuilding the pool
+  /// (reloading every asset into brand-new native players) the instant the
+  /// app comes back to the foreground restores real audio immediately
+  /// instead of leaving it dead until a full app restart. Menu music is
+  /// nudged back to life the same way, since its player can be silently
+  /// killed the same way (e.g. returning to the app from the home screen).
+  Future<void> onAppResumed() async {
+    if (_rebuildingPool) return;
+    _rebuildingPool = true;
+    try {
+      await _rebuildPool();
+      if (_menuMusicWanted) {
+        await _attemptMenuMusicPlay();
+        _scheduleMenuMusicAutoRetry();
+      }
+    } finally {
+      _rebuildingPool = false;
+    }
+  }
+
+  /// Companion to [onAppResumed]: just stops the menu-music auto-retry
+  /// burst (if one happens to be running) so it doesn't spin pointlessly
+  /// while backgrounded. There's nothing else to proactively tear down —
+  /// one-shot players clean themselves up on completion regardless of
+  /// lifecycle state, and [onAppResumed] fully rebuilds the pool anyway.
+  void onAppPaused() {
+    _menuMusicRetryTimer?.cancel();
   }
 
   Future<void> _play(String key) async {
