@@ -26,9 +26,7 @@ import 'result_screen.dart';
 ///  • Middle band: two ship-status rows (top solid / bottom faded),
 ///    EXIT pill on the edge and the white dots badge.
 ///  • Battle starts with a giant translucent 3-2-1 countdown mirrored on
-///    both halves, then a one-time "Your turn" badge after GO. In local
-///    play the badge appears only on the STARTING player's half, so both
-///    players can tell whose turn it is.
+///    both halves, then play begins on GO.
 ///  • Battle grids are EMPTY (ships hidden) — you guess where the enemy
 ///    fleet is. A HIT lets you fire again; only a MISS passes the turn.
 ///  • Firing is a SINGLE TAP: tap any untried cell on the opponent's grid
@@ -66,11 +64,6 @@ class _BattleScreenState extends State<BattleScreen>
   bool _countingDown = false;
   int _countdownValue = 3;
   bool _countdownGo = false;
-
-  // ----- "Your turn" badge -----
-  bool _showTurnBadge = false;
-  late final AnimationController _badgeCtrl;
-  late final Animation<double> _badgeScale;
 
   // ----- Cannonball flight + impact -----
   late final AnimationController _projCtrl;
@@ -166,26 +159,6 @@ class _BattleScreenState extends State<BattleScreen>
       duration: const Duration(milliseconds: 380),
     );
 
-    _badgeCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..addStatusListener((s) {
-        if (s == AnimationStatus.completed && mounted) {
-          setState(() => _showTurnBadge = false);
-        }
-      });
-    _badgeScale = TweenSequence<double>([
-      TweenSequenceItem(
-          tween: Tween(begin: 0.0, end: 1.1)
-              .chain(CurveTween(curve: Curves.easeOutBack)),
-          weight: 30),
-      TweenSequenceItem(tween: ConstantTween(1.0), weight: 45),
-      TweenSequenceItem(
-          tween: Tween(begin: 1.1, end: 0.0)
-              .chain(CurveTween(curve: Curves.easeIn)),
-          weight: 25),
-    ]).animate(_badgeCtrl);
-
     _projCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 430),
@@ -219,9 +192,7 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() {
       _countingDown = false;
       _countdownGo = false;
-      _showTurnBadge = true; // "Your turn" right after GO
     });
-    _badgeCtrl.forward(from: 0);
   }
 
   void _onUpdate() {
@@ -468,7 +439,6 @@ class _BattleScreenState extends State<BattleScreen>
     _cannon2Fire.close();
     _cannon1Ready.close();
     _cannon2Ready.close();
-    _badgeCtrl.dispose();
     _projCtrl.dispose();
     _slideCtrl.dispose();
     _shakeCtrl.dispose();
@@ -616,9 +586,6 @@ class _BattleScreenState extends State<BattleScreen>
 
                   // ===== Countdown overlay (mirrored) =====
                   if (_countingDown) _countdownOverlay(bandH),
-
-                  // ===== "Your turn" badge (single-sided, active player) =====
-                  if (_showTurnBadge) _turnBadgeOverlay(bottomIsP1, bandH),
 
                   // ===== Game-over bar: both grids reveal every ship the
                   // instant the match ends (see `gameOver` in _buildHalf),
@@ -962,63 +929,6 @@ class _BattleScreenState extends State<BattleScreen>
                 },
               ),
 
-              // Per-side "YOUR TURN" pill — unlike `_turnBadgeOverlay`
-              // (which only flashes once, right after the opening
-              // countdown, then never again), this sits on THIS half and
-              // fades in/out every single time the turn flag flips, on
-              // BOTH the red and blue side, so whoever's turn it is has
-              // an unmistakable, persistent marker on their own half for
-              // as long as it stays their turn — not just at kickoff.
-              Positioned(
-                top: 10,
-                left: 0,
-                right: 0,
-                child: IgnorePointer(
-                  child: Center(
-                    child: AnimatedSlide(
-                      duration: const Duration(milliseconds: 280),
-                      curve: Curves.easeOutBack,
-                      offset: isActiveHalf && inBattle
-                          ? Offset.zero
-                          : const Offset(0, -0.6),
-                      child: AnimatedOpacity(
-                        duration: const Duration(milliseconds: 220),
-                        opacity: isActiveHalf && inBattle ? 1 : 0,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 7),
-                          decoration: BoxDecoration(
-                            color: accent,
-                            borderRadius: BorderRadius.circular(20),
-                            border:
-                                Border.all(color: Colors.white, width: 2.5),
-                            boxShadow: [
-                              BoxShadow(
-                                color: accent.withValues(alpha: 0.55),
-                                blurRadius: 10,
-                                spreadRadius: 1,
-                              ),
-                            ],
-                          ),
-                          child: const Text(
-                            'YOUR TURN',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w900,
-                              fontSize: 13,
-                              letterSpacing: 0.6,
-                              shadows: [
-                                Shadow(
-                                    color: Color(0x66000000), blurRadius: 3),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
             ],
           ),
         );
@@ -1175,88 +1085,6 @@ class _BattleScreenState extends State<BattleScreen>
             SizedBox(height: bandH),
             Expanded(child: number(mirrored: false)),
           ],
-        ),
-      ),
-    );
-  }
-
-  /// Big circular white-outline "Your turn" badge. SINGLE-SIDED: it shows
-  /// only on the ACTIVE player's half (bottom/upright for P1, top/rotated
-  /// for P2) so both players can tell whose turn it is — never mirrored
-  /// to both halves at once.
-  Widget _turnBadgeOverlay(bool bottomIsP1, double bandH) {
-    // Driven by the LIVE turn flag so it always matches whose turn it is.
-    final activeIsP1 = !_p2Active;
-    final color = activeIsP1 ? AppColors.hit : AppColors.blue;
-    final controller = context.read<GameController>();
-    final isLocal = controller.mode == GameMode.local;
-    return Positioned.fill(
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: _badgeCtrl,
-          builder: (context, _) {
-            final scale = _badgeScale.value;
-            final badge = Center(
-              child: RotatedBox(
-                // Rotate for the top (P2) half so P2 reads it upright.
-                quarterTurns: activeIsP1 ? 0 : 2,
-                child: Transform.scale(
-                  scale: scale,
-                  child: Container(
-                    width: 180,
-                    height: 180,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: color,
-                      border: Border.all(color: Colors.white, width: 7),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x55000000),
-                          blurRadius: 12,
-                          offset: Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    child: Center(
-                      child: Text(
-                        '${activeIsP1 ? 'RED' : 'BLUE'}\nYOUR TURN',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 27,
-                          height: 1.05,
-                          shadows: [
-                            Shadow(color: Color(0x66000000), blurRadius: 4)
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            );
-            if (!isLocal) {
-              // vs AI / online: the human is always the bottom player.
-              return Column(
-                children: [
-                  const Expanded(child: SizedBox.shrink()),
-                  SizedBox(height: bandH),
-                  Expanded(child: badge),
-                ],
-              );
-            }
-            // Local pass-and-play: show on the ACTIVE player's half only.
-            return Column(
-              children: [
-                Expanded(
-                    child: activeIsP1 ? const SizedBox.shrink() : badge),
-                SizedBox(height: bandH),
-                Expanded(
-                    child: activeIsP1 ? badge : const SizedBox.shrink()),
-              ],
-            );
-          },
         ),
       ),
     );

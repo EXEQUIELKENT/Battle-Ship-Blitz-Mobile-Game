@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -27,7 +29,17 @@ Future<void> main() async {
   final profile = ProfileStore();
   await profile.load();
   SoundService.instance.enabled = profile.soundOn;
-  await SoundService.instance.init();
+  // BUGFIX (menu music "only starts after a tap"): this used to `await`
+  // init() here, which blocks runApp() — and therefore the very first
+  // frame — until ~21 pooled AudioPlayers finish loading. HomeScreen fires
+  // its automatic startMenuMusic() attempt on that first frame, so every
+  // millisecond init() adds is a millisecond less of whatever residual
+  // browser "user activation" window was available (e.g. from the click
+  // that loaded the page). Firing init() without awaiting it lets the UI
+  // — and the menu-music attempt — start immediately, while the effect
+  // pool keeps loading in the background; nothing in the first frame
+  // actually needs the pool to be ready yet.
+  unawaited(SoundService.instance.init());
 
   final network = NetworkService();
   final controller = GameController(profile: profile, network: network);
