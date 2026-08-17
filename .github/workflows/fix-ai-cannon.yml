@@ -1,0 +1,58 @@
+name: Fix AI Cannon
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch AI cannon source position
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('lib/screens/battle_screen.dart')
+          text = path.read_text(encoding='utf-8')
+          old = "    final from = _cannonMouth(top, _slideCtrl.value);\n"
+          new = "    // P2/AI uses the inverse of the P1 slide controller.\n    // During the AI turn the cannon moves out from home to the AI grid,\n    // so the projectile must spawn from that same visible cannon position.\n    final from = _cannonMouth(top, 1 - _slideCtrl.value);\n"
+          if old not in text:
+              raise SystemExit('AI cannon source line not found.')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+      - name: Verify source
+        run: |
+          git diff --check
+          grep -F "final from = _cannonMouth(top, 1 - _slideCtrl.value);" lib/screens/battle_screen.dart
+
+      - name: Create folder-structured ZIP
+        run: |
+          rm -rf artifact
+          mkdir -p artifact/lib/screens artifact/lib/services
+          cp lib/screens/battle_screen.dart artifact/lib/screens/battle_screen.dart
+          cp lib/services/game_controller.dart artifact/lib/services/game_controller.dart
+          cd artifact
+          zip -qr ../Battle-Ship-Blitz-Mobile-Game-AI-Cannon-Fix.zip lib
+
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Battle-Ship-Blitz-Mobile-Game-AI-Cannon-Fix
+          path: Battle-Ship-Blitz-Mobile-Game-AI-Cannon-Fix.zip
+          if-no-files-found: error
+
+      - name: Commit source changes and remove temporary workflow
+        run: |
+          rm -f .github/workflows/fix-ai-cannon.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/screens/battle_screen.dart .github/workflows/fix-ai-cannon.yml
+          git commit -m "fix: show AI cannon at firing position"
+          git push origin main
