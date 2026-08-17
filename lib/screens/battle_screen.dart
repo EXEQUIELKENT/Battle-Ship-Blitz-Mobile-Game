@@ -260,7 +260,10 @@ class _BattleScreenState extends State<BattleScreen>
     }
     // The AI's cannon may be slid out to its grid center (during its turn)
     // or parked at home — fire from wherever it currently sits.
-    final from = _cannonMouth(top, _slideCtrl.value);
+    // P2/AI uses the inverse of the P1 slide controller.
+    // During the AI turn the cannon moves out from home to the AI grid,
+    // so the projectile must spawn from that same visible cannon position.
+    final from = _cannonMouth(top, 1 - _slideCtrl.value);
     final to = bottom.cellCenterScreen(e.row, e.col) +
         _mouthDir(bottom) * (bottom.cannonSize * 0.25);
     setState(() {
