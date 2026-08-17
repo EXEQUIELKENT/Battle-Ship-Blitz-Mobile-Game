@@ -9,13 +9,21 @@ import 'ship_painter.dart';
 
 /// A transient cell effect (explosion / splash).
 class CellFx {
+  final int row;
+  final int col;
   final ShotResult result;
   final DateTime start;
-  CellFx(this.result) : start = DateTime.now();
+  final Random rng; // cached so explosion particles are stable per-frame
+
+  CellFx(this.row, this.col, this.result)
+      : start = DateTime.now(),
+        rng = Random(row * 31 + col);
 
   double get progress =>
       (DateTime.now().difference(start).inMilliseconds / 800).clamp(0.0, 1.0);
   bool get done => progress >= 1.0;
+
+  int get key => row * kBoardSize + col;
 }
 
 /// Lightweight event descriptor (avoids importing the controller here).
@@ -98,11 +106,16 @@ class BattleGrid extends StatefulWidget {
 class _BattleGridState extends State<BattleGrid>
     with SingleTickerProviderStateMixin {
   late final AnimationController _fxCtrl;
-  final Map<String, CellFx> _fx = {};
+  final Map<int, CellFx> _fx = {};
 
-  /// Instant tap-feedback ripples (cell → time tapped). Short-lived and
+  /// Instant tap-feedback ripples (int cell-key → time tapped). Short-lived and
   /// self-clearing; this is what replaced the old persistent crosshair.
-  final Map<String, DateTime> _tapFx = {};
+  final Map<int, DateTime> _tapFx = {};
+
+  /// Only process NEW events in didUpdateWidget — avoids re-scanning the
+  /// entire landed-events list on every 100ms cooldown tick (the list only
+  /// grows, so tracking the last-seen length is sufficient).
+  int _lastProcessedEvents = 0;
 
   // Drag state (placement) — repositioning an already-placed ship.
   //
@@ -161,16 +174,32 @@ class _BattleGridState extends State<BattleGrid>
   @override
   void didUpdateWidget(BattleGrid oldWidget) {
     super.didUpdateWidget(oldWidget);
-    var addedNew = false;
-    for (final e in widget.recentEvents) {
-      final key = '${e.row},${e.col}';
+    final events = widget.recentEvents;
+    // The events list only grows during a match (shots are appended), but
+    // can shrink if the board is reset within the same widget instance.
+    // Detect that and flush stale FX state.
+    if (events.length < _lastProcessedEvents) {
+      _fx.clear();
+      _tapFx.clear();
+      _lastProcessedEvents = 0;
+    }
+    // Skip entirely if no new events have landed since last time — the
+    // parent rebuilds every 100ms for the cooldown tick, but recentEvents
+    // only grows when a shot actually lands.
+    if (events.length <= _lastProcessedEvents) {
+      _fx.removeWhere((_, fx) => fx.done);
+      return;
+    }
+    for (var i = _lastProcessedEvents; i < events.length; i++) {
+      final e = events[i];
+      final key = e.row * kBoardSize + e.col;
       if (!_fx.containsKey(key)) {
-        _fx[key] = CellFx(e.result);
-        addedNew = true;
+        _fx[key] = CellFx(e.row, e.col, e.result);
+        _ensureTickerRunning();
       }
     }
+    _lastProcessedEvents = events.length;
     _fx.removeWhere((_, fx) => fx.done);
-    if (addedNew) _ensureTickerRunning();
   }
 
   @override
@@ -251,7 +280,7 @@ class _BattleGridState extends State<BattleGrid>
       // In placement mode, tapping a ship rotates it.
       if (widget.onShipTap != null && widget.ships != null) {
         for (final s in widget.ships!) {
-          if (s.cells.any((cellPos) => cellPos[0] == r && cellPos[1] == c)) {
+          if (s.containsCell(r, c)) {
             widget.onShipTap!(s.spec.kind);
             return;
           }
@@ -265,8 +294,7 @@ class _BattleGridState extends State<BattleGrid>
   /// Instant ripple at the tapped cell — the tap IS the shot, so this is
   /// the only "targeting" feedback the grid needs (no persistent cursor).
   void _pulseTap(int r, int c) {
-    final key = '$r,$c';
-    _tapFx[key] = DateTime.now();
+    _tapFx[r * kBoardSize + c] = DateTime.now();
     _ensureTickerRunning();
   }
 
@@ -278,7 +306,7 @@ class _BattleGridState extends State<BattleGrid>
       final c = (d.localPosition.dx / cell).floor();
       final r = (d.localPosition.dy / cell).floor();
       for (final s in widget.ships!) {
-        if (s.cells.any((cp) => cp[0] == r && cp[1] == c)) {
+        if (s.containsCell(r, c)) {
           setState(() {
             _dragKind = s.spec.kind;
             _dragging = true;
@@ -569,8 +597,8 @@ class _RotateArrow extends StatelessWidget {
 
 class _GridPainter extends CustomPainter {
   final List<List<int>> shots;
-  final Map<String, CellFx> fx;
-  final Map<String, DateTime> tapFx;
+  final Map<int, CellFx> fx;
+  final Map<int, DateTime> tapFx;
   final PlacedShip? preview;
   final bool previewValid;
   final List<int>? aimCell;
@@ -647,15 +675,12 @@ class _GridPainter extends CustomPainter {
     }
 
     // ---- Transient effects ----
-    fx.forEach((key, effect) {
-      final parts = key.split(',');
-      final r = int.parse(parts[0]);
-      final c = int.parse(parts[1]);
-      final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
+    fx.forEach((_, effect) {
+      final center = Offset(effect.col * cell + cell / 2, effect.row * cell + cell / 2);
       final prog = effect.progress;
       if (effect.result == ShotResult.hit || effect.result == ShotResult.sunk) {
         _drawExplosion(canvas, center, cell, prog,
-            big: effect.result == ShotResult.sunk);
+            big: effect.result == ShotResult.sunk, rng: effect.rng);
       } else if (effect.result == ShotResult.miss) {
         _drawSplash(canvas, center, cell, prog);
       }
@@ -667,9 +692,8 @@ class _GridPainter extends CustomPainter {
     tapFx.forEach((key, started) {
       final t = now.difference(started).inMilliseconds / 260;
       if (t >= 1.0) return;
-      final parts = key.split(',');
-      final r = int.parse(parts[0]);
-      final c = int.parse(parts[1]);
+      final r = key ~/ kBoardSize;
+      final c = key % kBoardSize;
       final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
       _drawTapRipple(canvas, center, cell, t.clamp(0.0, 1.0));
     });
@@ -726,9 +750,7 @@ class _GridPainter extends CustomPainter {
   /// Returns true if the given cell is part of any destroyed ship.
   bool _isCellInDestroyedShip(int r, int c) {
     for (final ship in destroyedShips) {
-      for (final cp in ship.cells) {
-        if (cp[0] == r && cp[1] == c) return true;
-      }
+      if (ship.containsCell(r, c)) return true;
     }
     return false;
   }
@@ -736,8 +758,7 @@ class _GridPainter extends CustomPainter {
   /// Impact flash: toned-down yellow starburst core + fewer white sparkle
   /// stars flying outward; sinks into the persistent black-square marker.
   void _drawExplosion(Canvas canvas, Offset center, double cell, double t,
-      {bool big = false}) {
-    final rng = Random(center.dx.toInt() * 31 + center.dy.toInt());
+      {bool big = false, required Random rng}) {
     final scale = big ? 1.2 : 0.7;
     // Yellow starburst (4 rounded rays) — flashes in, then fades.
     final burstAlpha = (1 - t * 1.35).clamp(0.0, 1.0);

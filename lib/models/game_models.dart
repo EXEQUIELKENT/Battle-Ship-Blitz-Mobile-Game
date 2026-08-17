@@ -35,6 +35,11 @@ class PlacedShip {
   final bool horizontal;
   final Set<int> hitIndices; // indices within cells list that were hit
 
+  late final List<List<int>> cells = List.generate(
+    spec.size,
+    (i) => horizontal ? [row, col + i] : [row + i, col],
+  );
+
   PlacedShip({
     required this.spec,
     required this.row,
@@ -43,11 +48,30 @@ class PlacedShip {
     Set<int>? hitIndices,
   }) : hitIndices = hitIndices ?? <int>{};
 
-  List<List<int>> get cells {
-    return List.generate(
-      spec.size,
-      (i) => horizontal ? [row, col + i] : [row + i, col],
-    );
+  /// O(1) cell-membership check without allocating a cells list.
+  bool containsCell(int r, int c) {
+    if (horizontal) {
+      if (r != row) return false;
+      final i = c - col;
+      return i >= 0 && i < spec.size;
+    } else {
+      if (c != col) return false;
+      final i = r - row;
+      return i >= 0 && i < spec.size;
+    }
+  }
+
+  /// Returns the local cell index for (r, c) or null if not on this ship.
+  int? cellIndexAt(int r, int c) {
+    if (horizontal) {
+      if (r != row) return null;
+      final i = c - col;
+      return (i >= 0 && i < spec.size) ? i : null;
+    } else {
+      if (c != col) return null;
+      final i = r - row;
+      return (i >= 0 && i < spec.size) ? i : null;
+    }
   }
 
   bool get isSunk => hitIndices.length >= spec.size;
@@ -84,14 +108,11 @@ class Board {
   final Set<String> _shots = {}; // "r,c" already fired at
 
   bool containsShipAt(int r, int c) =>
-      ships.any((s) => s.cells.any((cell) => cell[0] == r && cell[1] == c));
+      ships.any((s) => s.containsCell(r, c));
 
   PlacedShip? shipAt(int r, int c) {
     for (final s in ships) {
-      final cells = s.cells;
-      for (var i = 0; i < cells.length; i++) {
-        if (cells[i][0] == r && cells[i][1] == c) return s;
-      }
+      if (s.containsCell(r, c)) return s;
     }
     return null;
   }
@@ -145,12 +166,9 @@ class Board {
     final ship = shipAt(r, c);
     if (ship == null) return (ShotResult.miss, null);
 
-    final cells = ship.cells;
-    for (var i = 0; i < cells.length; i++) {
-      if (cells[i][0] == r && cells[i][1] == c) {
-        ship.hitIndices.add(i);
-        break;
-      }
+    final idx = ship.cellIndexAt(r, c);
+    if (idx != null) {
+      ship.hitIndices.add(idx);
     }
     return (ship.isSunk ? ShotResult.sunk : ShotResult.hit, ship.isSunk ? ship : null);
   }

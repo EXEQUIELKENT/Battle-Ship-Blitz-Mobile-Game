@@ -218,7 +218,17 @@ class _BattleScreenState extends State<BattleScreen>
       // already in flight, don't clobber its pending state — just mark
       // the impact so the marker appears (local turn-taking means this
       // only matters for the async AI/remote modes).
-      if (!e.byPlayer && age < 200 && mounted) {
+      //
+      // In local pass-and-play BOTH players are local, so P2's shots also
+      // have byPlayer==false (P2 is "the opponent" from P1's POV), but they
+      // are NOT async — _fireAtCell already called _launchBall for them.
+      // Processing them here as opponent shots causes a double-launch
+      // (projectile restart, double cannonFire) and, on the next 100ms
+      // cooldown tick, _projCtrl.isAnimating is true so the overlapping-shot
+      // branch fires the impact sound + screen shake PREMATURELY (before the
+      // ball visibly lands). Excluding GameMode.local prevents this entirely;
+      // P2's feedback is handled synchronously by _launchBall just like P1's.
+      if (!e.byPlayer && age < 200 && mounted && controller.mode != GameMode.local) {
         if (_projCtrl.isAnimating) {
           // Another ball is already mid-flight, so this event's impact is
           // shown immediately with no travel animation of its own — play
@@ -670,46 +680,36 @@ class _BattleScreenState extends State<BattleScreen>
         _cachedPendingByP1 == _pendingByP1 &&
         _cachedImpactResolutions == _impactResolutions &&
         _shotsCache.isNotEmpty) {
-      return; // nothing relevant changed since the last build — reuse it.
+      return;
     }
     _cachedRevision = controller.revision;
     _cachedPendingImpactKey = pendingKey == null ? null : [pendingKey[0], pendingKey[1]];
     _cachedPendingByP1 = _pendingByP1;
     _cachedImpactResolutions = _impactResolutions;
     for (final halfIsP1 in const [true, false]) {
-      // BUGFIX (AI's target cell flashing hit/miss before it actually
-      // fires): this used to read straight from controller.myShots /
-      // controller.p2Shots, which GameController updates the INSTANT a
-      // shot is resolved internally — for the AI that's the moment
-      // `_aiThink()` picks its target and resolves it against the board,
-      // well before `_launchOpponentBall`'s own pre-fire pause and the
-      // cannonball's flight animation even start, let alone finish.
-      // `_shotVisible` only masked this while `_pendingImpact` happened
-      // to already be set to that exact cell — but `_pendingImpact` isn't
-      // set until `_launchOpponentBall` gets around to it, so there was a
-      // real window (its pre-fire delay) where the marker was already
-      // showing on the grid for a shot that, visually, the AI hadn't
-      // fired yet.
-      // Landed shots are now built purely from `CombatEvent.impactAt` —
-      // the exact same "did the cannonball actually land" signal
-      // `_eventsCache` below already uses for the hit/miss FX overlay —
-      // so a cell only ever shows its marker once its ball has visibly
-      // landed, never before it's even been launched.
-      final landed = <int, int>{}; // (r * kBoardSize + c) -> 1 miss / 2 hit
+      // PERF: reuse persistent mutable arrays instead of allocating new
+      // 10×10 lists on every cache rebuild (happens on every shot). The
+      // inner lists are created once and mutated in place; only the outer
+      // list gets a fresh reference via List.of() to trip shouldRepaint.
+      final cache = _shotsCache.putIfAbsent(
+        halfIsP1,
+        () => List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0)),
+      );
+      for (var r = 0; r < kBoardSize; r++) {
+        for (var c = 0; c < kBoardSize; c++) {
+          cache[r][c] = 0;
+        }
+      }
+      final evCache = _eventsCache.putIfAbsent(halfIsP1, () => []);
+      evCache.clear();
       for (final e in controller.events) {
         if (e.byPlayer == halfIsP1 || e.impactAt == null) continue;
         final hit = e.result == ShotResult.hit || e.result == ShotResult.sunk;
-        landed[e.row * kBoardSize + e.col] = hit ? 2 : 1;
+        cache[e.row][e.col] = hit ? 2 : 1;
+        evCache.add(CombatEventLike(e.row, e.col, e.result,
+            sunkShipName: e.sunkShipName));
       }
-      _shotsCache[halfIsP1] = [
-        for (var r = 0; r < kBoardSize; r++)
-          [for (var c = 0; c < kBoardSize; c++) landed[r * kBoardSize + c] ?? 0]
-      ];
-      _eventsCache[halfIsP1] = controller.events
-          .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)
-          .map((e) => CombatEventLike(e.row, e.col, e.result,
-              sunkShipName: e.sunkShipName))
-          .toList();
+      _shotsCache[halfIsP1] = List.of(cache);
     }
   }
 

@@ -57,6 +57,7 @@ class GameController extends ChangeNotifier {
   bool rpAwarded = false;
 
   final List<CombatEvent> events = [];
+  /// Battle log (oldest-first order via add/removeAt(0) for O(1) appends).
   final List<String> combatLog = [];
   int revision = 0;
 
@@ -255,7 +256,9 @@ class GameController extends ChangeNotifier {
       _log('🌊 $shooter missed at $coord');
     }
 
-    _checkVictory();
+    if (hit) {
+      _checkVictory();
+    }
     notifyListeners();
   }
 
@@ -551,9 +554,9 @@ class GameController extends ChangeNotifier {
   }
 
   void _log(String msg) {
-    combatLog.insert(0, msg);
+    combatLog.add(msg);
     if (combatLog.length > 30) {
-      combatLog.removeLast();
+      combatLog.removeAt(0);
     }
   }
 
