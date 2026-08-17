@@ -330,10 +330,13 @@ class GameController extends ChangeNotifier {
     }
     _aiThinkAccumulator += 0.1;
     // Difficulty = reaction delay
+    // AI reaction delay is intentionally longer so the opponent does not
+    // snap-fire immediately after the human misses. The cannon cooldown
+    // still controls the minimum time between consecutive AI shots.
     final delay = switch (difficulty) {
-      AIDifficulty.easy => 1.6,
-      AIDifficulty.normal => 0.9,
-      AIDifficulty.hard => 0.4,
+      AIDifficulty.easy => 2.2,
+      AIDifficulty.normal => 1.6,
+      AIDifficulty.hard => 1.0,
     };
     if (_aiThinkAccumulator < delay) return;
     _aiThinkAccumulator = 0;
