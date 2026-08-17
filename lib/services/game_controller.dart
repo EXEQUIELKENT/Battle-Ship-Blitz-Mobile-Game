@@ -8,23 +8,16 @@ import 'network_service.dart';
 import 'sound_service.dart';
 import 'storage_service.dart';
 
-/// How a battle is played.
 enum GameMode { vsAI, local, hotspot, online }
-
-/// Battle lifecycle.
 enum BattlePhase { idle, placing, battling, finished }
 
-/// Visual combat event (for animations & the combat log).
 class CombatEvent {
   final int row;
   final int col;
   final ShotResult result;
-  final bool byPlayer; // true = the local human fired this shot
+  final bool byPlayer;
   final String? sunkShipName;
   final DateTime time;
-
-  /// When the projectile actually landed (set by the battle screen after the
-  /// cannonball flight animation completes). Null until impact.
   DateTime? impactAt;
 
   CombatEvent({
@@ -36,36 +29,19 @@ class CombatEvent {
   }) : time = DateTime.now();
 }
 
-/// Central game state machine. Supports:
-///  - vs AI (easy / normal / hard)
-///  - local pass-and-play (simultaneous, shared screen)
-///  - hotspot / online (socket-based)
 class GameController extends ChangeNotifier {
-  GameController({
-    required this.profile,
-    required this.network,
-  });
+  GameController({required this.profile, required this.network});
 
   final ProfileStore profile;
   final NetworkService network;
 
-  // ----- Configuration -----
   GameMode mode = GameMode.vsAI;
   AIDifficulty difficulty = AIDifficulty.normal;
-
-  // ----- State -----
   BattlePhase phase = BattlePhase.idle;
-
-  // Board indexes: 0 = "player 1" (local human), 1 = opponent (AI / P2 / remote)
   final List<Board> boards = [Board(), Board()];
-
-  /// Tracking grid of MY shots at the enemy: 0 = unknown, 1 = miss, 2 = hit.
   final List<List<int>> myShots = List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0));
-
-  /// Tracking grid of P2's shots (local mode only).
   final List<List<int>> p2Shots = List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0));
 
-  // Cooldowns (0 = ready)
   double cooldown1 = 0;
   double cooldown2 = 0;
   double cooldownMax1 = kCooldownSeconds.toDouble();
@@ -80,38 +56,27 @@ class GameController extends ChangeNotifier {
 
   final List<CombatEvent> events = [];
   final List<String> combatLog = [];
-
-  /// Bumped every time [myShots]/[p2Shots]/[events] actually change (a shot
-  /// is fired). The 100ms cooldown [_ticker] does NOT bump this. The battle
-  /// screen uses it to cache its per-frame derived grid data instead of
-  /// recomputing it on every single cooldown tick — see PERF note there.
   int revision = 0;
 
   Timer? _ticker;
   StreamSubscription? _netSub;
   final Random _rng = Random();
 
-  // AI state
   final List<List<int>> _aiShots = List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0));
   final List<List<int>> _aiQueue = [];
-
-  /// Whether it's currently the AI's turn to fire. The battle starts on the
-  /// HUMAN's turn; a miss hands the turn over, a hit keeps it. This makes
-  /// vs-AI obey the same "hit keeps turn / miss passes turn" rule as local.
   bool aiTurnToFire = false;
 
+  // True after the AI has selected/resolved its next target internally but
+  // before the visible cannon actually fires. This prevents the 100ms ticker
+  // from selecting another target during the visual firing delay.
+  bool _aiShotPending = false;
+  static const Duration _aiVisualFireDelay = Duration(milliseconds: 900);
+
   bool get battling => phase == BattlePhase.battling;
-
-  double get cooldownFraction1 =>
-      cooldownMax1 == 0 ? 1 : (1 - cooldown1 / cooldownMax1).clamp(0.0, 1.0);
-
-  double get cooldownFraction2 =>
-      cooldownMax2 == 0 ? 1 : (1 - cooldown2 / cooldownMax2).clamp(0.0, 1.0);
-
-  int get mySunk => boards[1].sunkCount; // enemy ships I sank
-  int get enemySunk => boards[0].sunkCount; // my ships enemy sank
-
-  // ------------------------------------------------------------ LIFECYCLE ---
+  double get cooldownFraction1 => cooldownMax1 == 0 ? 1 : (1 - cooldown1 / cooldownMax1).clamp(0.0, 1.0);
+  double get cooldownFraction2 => cooldownMax2 == 0 ? 1 : (1 - cooldown2 / cooldownMax2).clamp(0.0, 1.0);
+  int get mySunk => boards[1].sunkCount;
+  int get enemySunk => boards[0].sunkCount;
 
   void startPlacement({Board? preset}) {
     _teardown();
@@ -121,7 +86,6 @@ class GameController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Begins the battle once both boards are ready.
   void beginBattle({Board? enemyBoard}) {
     boards[1] = enemyBoard ?? Board.random(rng: _rng);
     phase = BattlePhase.battling;
@@ -130,7 +94,8 @@ class GameController extends ChangeNotifier {
     cooldownMax2 = mode == GameMode.local ? cooldownMax1 : kCooldownSeconds.toDouble();
     cooldown1 = 0;
     cooldown2 = 0;
-    aiTurnToFire = false; // battle always opens on the human's turn
+    aiTurnToFire = false;
+    _aiShotPending = false;
     events.clear();
     combatLog.clear();
     _aiQueue.clear();
@@ -152,22 +117,17 @@ class GameController extends ChangeNotifier {
     _ticker = null;
     _netSub?.cancel();
     _netSub = null;
+    _aiShotPending = false;
   }
 
-  /// Attach to an established network session.
   void attachNetwork() {
     _netSub?.cancel();
     _netSub = network.messages.listen(_onNetMessage);
   }
 
-  // -------------------------------------------------------------- FIRING ---
-
-  /// Local human fires at the enemy grid.
   ShotResult fireAt(int r, int c) {
     if (!battling) return ShotResult.invalid;
     if (mode == GameMode.vsAI && aiTurnToFire) {
-      // It's the AI's turn — a hit keeps the AI firing, so the human's
-      // cannon must wait its turn even if their own cooldown has expired.
       SoundService.instance.denied();
       return ShotResult.cooldown;
     }
@@ -182,23 +142,19 @@ class GameController extends ChangeNotifier {
 
     cooldown1 = cooldownMax1;
     if (mode == GameMode.hotspot || mode == GameMode.online) {
-      // Ask the remote peer to resolve the shot.
       network.sendFire(r, c);
       notifyListeners();
-      return ShotResult.hit; // optimistic; real result arrives async
+      return ShotResult.hit;
     }
 
     final (result, sunk) = boards[1].receiveShot(r, c);
     _registerShot(shooterIsP1: true, r: r, c: c, result: result, sunk: sunk);
-    // A hit keeps the human's turn (fire again); only a miss hands the
-    // turn to the AI. Same rule as local pass-and-play.
     if (mode == GameMode.vsAI && result == ShotResult.miss) {
       aiTurnToFire = true;
     }
     return result;
   }
 
-  /// Player 2 fires (local mode).
   ShotResult p2FireAt(int r, int c) {
     if (!battling || mode != GameMode.local) return ShotResult.invalid;
     if (cooldown2 > 0) {
@@ -215,13 +171,7 @@ class GameController extends ChangeNotifier {
     return result;
   }
 
-  void _registerShot({
-    required bool shooterIsP1,
-    required int r,
-    required int c,
-    required ShotResult result,
-    PlacedShip? sunk,
-  }) {
+  void _registerShot({required bool shooterIsP1, required int r, required int c, required ShotResult result, PlacedShip? sunk}) {
     final hit = result == ShotResult.hit || result == ShotResult.sunk;
     if (shooterIsP1) {
       myShots[r][c] = hit ? 2 : 1;
@@ -229,28 +179,11 @@ class GameController extends ChangeNotifier {
       p2Shots[r][c] = hit ? 2 : 1;
     }
 
-    final evt = CombatEvent(
-      row: r,
-      col: c,
-      result: result,
-      byPlayer: shooterIsP1,
-      sunkShipName: sunk?.spec.name,
-    );
-    events.add(evt);
+    events.add(CombatEvent(row: r, col: c, result: result, byPlayer: shooterIsP1, sunkShipName: sunk?.spec.name));
     revision++;
 
     final shooter = shooterIsP1 ? profile.playerName : _opponentName();
     final coord = '${String.fromCharCode(65 + r)}${c + 1}';
-    // NOTE: the hit/sunk/miss SOUND (and haptic) used to be triggered right
-    // here, the instant the shot is registered — i.e. the moment you tap,
-    // long before the cannonball has actually flown across the screen and
-    // visually landed (BattleScreen's ~430ms `_projCtrl` flight animation).
-    // That meant you'd hear "sunk!" immediately on tap while the ball was
-    // still mid-air, so the destroy sound never actually lined up with the
-    // ship being revealed as wreckage — it just came early every time.
-    // Sound is now triggered from BattleScreen's `_resolveImpact()` (see
-    // `_playImpactSound`), the same moment the impact marker/shake/ship
-    // wreckage actually appear, so what you hear matches what you see land.
     if (result == ShotResult.sunk) {
       _log('💥 $shooter SANK the ${sunk!.spec.name} at $coord!');
     } else if (result == ShotResult.hit) {
@@ -258,18 +191,15 @@ class GameController extends ChangeNotifier {
     } else {
       _log('🌊 $shooter missed at $coord');
     }
-
     _checkVictory();
     notifyListeners();
   }
 
-  String _opponentName() {
-    return switch (mode) {
-      GameMode.vsAI => 'Enemy AI',
-      GameMode.local => 'Player 2',
-      _ => network.peerName,
-    };
-  }
+  String _opponentName() => switch (mode) {
+    GameMode.vsAI => 'Enemy AI',
+    GameMode.local => 'Player 2',
+    _ => network.peerName,
+  };
 
   void _checkVictory() {
     if (!battling) return;
@@ -282,9 +212,7 @@ class GameController extends ChangeNotifier {
 
   void surrender() {
     if (!battling) return;
-    if (mode == GameMode.hotspot || mode == GameMode.online) {
-      network.sendSurrender();
-    }
+    if (mode == GameMode.hotspot || mode == GameMode.online) network.sendSurrender();
     _finish(p1Win: false, reason: 'You surrendered the battle.');
   }
 
@@ -292,6 +220,7 @@ class GameController extends ChangeNotifier {
     if (phase == BattlePhase.finished) return;
     phase = BattlePhase.finished;
     _ticker?.cancel();
+    _aiShotPending = false;
     iWon = p1Win;
     p2Won = !p1Win;
     endReason = reason;
@@ -317,22 +246,18 @@ class GameController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ------------------------------------------------------------------- AI ---
-
   double _aiThinkAccumulator = 0;
 
   void _aiThink() {
-    // Wait for the cannon to fully reload before firing again (this also
-    // gives the previous cannonball time to land before the next launch).
+    // A target is already committed to the next visible AI shot. Do not
+    // choose another cell while the cannon is waiting to fire.
+    if (_aiShotPending) return;
     if (cooldown2 > 0) {
       _aiThinkAccumulator = 0;
       return;
     }
+
     _aiThinkAccumulator += 0.1;
-    // Difficulty = reaction delay
-    // AI reaction delay is intentionally longer so the opponent does not
-    // snap-fire immediately after the human misses. The cannon cooldown
-    // still controls the minimum time between consecutive AI shots.
     final delay = switch (difficulty) {
       AIDifficulty.easy => 2.2,
       AIDifficulty.normal => 1.6,
@@ -346,12 +271,15 @@ class GameController extends ChangeNotifier {
     final int r = target[0];
     final int c = target[1];
 
-    cooldown2 = cooldownMax2;
+    // The logical result is resolved now so game state is deterministic, but
+    // the cannon reload does NOT begin yet. The visible cannon fires after
+    // the same 900ms delay used by BattleScreen. Starting cooldown here was
+    // the cause of the cannon appearing to reload before it fired.
+    _aiShotPending = true;
     final (result, sunk) = boards[0].receiveShot(r, c);
     _aiShots[r][c] = (result == ShotResult.hit || result == ShotResult.sunk) ? 2 : 1;
 
     if (result == ShotResult.hit || result == ShotResult.sunk) {
-      // Queue neighbors for hunt mode (except easy which stays random)
       if (difficulty != AIDifficulty.easy) {
         for (final offset in [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
           final int nr = r + offset[0];
@@ -362,23 +290,30 @@ class GameController extends ChangeNotifier {
         }
       }
       if (result == ShotResult.sunk) _aiQueue.clear();
-      // A hit keeps the AI's turn (it fires again); only a miss passes it.
     } else {
-      // Miss → hand the turn back to the human.
       aiTurnToFire = false;
     }
 
     _registerShot(shooterIsP1: false, r: r, c: c, result: result, sunk: sunk);
+
+    // BattleScreen uses the same 900ms pre-fire delay. The reload starts at
+    // that point, when the cannon actually fires, instead of when the target
+    // is merely selected/resolved internally.
+    Future.delayed(_aiVisualFireDelay, () {
+      if (!_aiShotPending) return;
+      _aiShotPending = false;
+      if (phase == BattlePhase.battling) {
+        cooldown2 = cooldownMax2;
+        notifyListeners();
+      }
+    });
   }
 
   List<int>? _aiPickTarget() {
-    // Returns [row, col] of the next AI shot.
-    // 1. Hunt queue first
     while (_aiQueue.isNotEmpty) {
       final t = _aiQueue.removeAt(0);
       if (_aiShots[t[0]][t[1]] == 0) return t;
     }
-    // 2. Random with parity on hard mode
     final candidates = <List<int>>[];
     for (var r = 0; r < kBoardSize; r++) {
       for (var c = 0; c < kBoardSize; c++) {
@@ -398,12 +333,9 @@ class GameController extends ChangeNotifier {
     return candidates[_rng.nextInt(candidates.length)];
   }
 
-  // -------------------------------------------------------------- NETWORK ---
-
   void _onNetMessage(Map<String, dynamic> msg) {
     switch (msg['type']) {
       case 'fire':
-        // Remote fired at us — resolve and reply.
         final r = msg['r'] as int;
         final c = msg['c'] as int;
         final (result, sunk) = boards[0].receiveShot(r, c);
@@ -411,14 +343,12 @@ class GameController extends ChangeNotifier {
         _registerShot(shooterIsP1: false, r: r, c: c, result: result, sunk: sunk);
         break;
       case 'result':
-        // Resolution of one of our shots.
         final r = msg['r'] as int;
         final c = msg['c'] as int;
         final result = ShotResult.values[msg['res'] as int];
         PlacedShip? sunk;
         final sunkName = msg['sunk'] as String?;
         if (result == ShotResult.sunk && sunkName != null) {
-          // Mark the ship on our tracking board as sunk via the enemy board
           final enemyBoard = boards[1];
           for (final ship in enemyBoard.ships) {
             if (ship.spec.name == sunkName) {
@@ -443,6 +373,7 @@ class GameController extends ChangeNotifier {
     rpAwarded = false;
     suddenTimeout = false;
     _aiThinkAccumulator = 0;
+    _aiShotPending = false;
     notifyListeners();
   }
 
@@ -451,8 +382,6 @@ class GameController extends ChangeNotifier {
     if (combatLog.length > 30) combatLog.removeLast();
   }
 
-  /// Forces a rebuild without changing logical state (used after mutating
-  /// event metadata like [CombatEvent.impactAt] from the battle screen).
   void touch() => notifyListeners();
 
   @override
