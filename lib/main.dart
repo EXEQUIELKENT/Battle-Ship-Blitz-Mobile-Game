@@ -14,10 +14,12 @@ import 'services/storage_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -29,21 +31,25 @@ Future<void> main() async {
 
   final profile = ProfileStore();
   await profile.load();
+
   SoundService.instance.enabled = profile.soundOn;
-  // BUGFIX (menu music "only starts after a tap"): this used to `await`
-  // init() here, which blocks runApp() — and therefore the very first
-  // frame — until ~21 pooled AudioPlayers finish loading. HomeScreen fires
-  // its automatic startMenuMusic() attempt on that first frame, so every
-  // millisecond init() adds is a millisecond less of whatever residual
-  // browser "user activation" window was available (e.g. from the click
-  // that loaded the page). Firing init() without awaiting it lets the UI
-  // — and the menu-music attempt — start immediately, while the effect
-  // pool keeps loading in the background; nothing in the first frame
-  // actually needs the pool to be ready yet.
+
+  // Request the first main-menu music playback immediately during app
+  // startup instead of waiting for a button press.
+  //
+  // SoundService handles autoplay rejection/retries on platforms that have
+  // an autoplay policy. On native Android/iOS this can begin immediately.
+  unawaited(SoundService.instance.startMenuMusic());
+
+  // Load the pooled sound effects in the background so their initialization
+  // cannot delay the first menu frame or the first music request.
   unawaited(SoundService.instance.init());
 
   final network = NetworkService();
-  final controller = GameController(profile: profile, network: network);
+  final controller = GameController(
+    profile: profile,
+    network: network,
+  );
 
   runApp(
     MultiProvider(
@@ -62,14 +68,12 @@ class BattleshipBlitzApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // BUGFIX: see the doc comment on SoundService.notifyUserGesture — this
-    // Listener wraps the ENTIRE app (not just one button) so the very
-    // first tap anywhere retries menu music that a browser blocked from
-    // autoplaying, instead of it staying silent until the user happens to
-    // press something that plays its own sound.
+    // Fallback for browsers that reject audible autoplay: the first
+    // interaction anywhere in the app retries the already-requested music.
     return Listener(
       behavior: HitTestBehavior.translucent,
-      onPointerDown: (_) => SoundService.instance.notifyUserGesture(),
+      onPointerDown: (_) =>
+          SoundService.instance.notifyUserGesture(),
       child: MaterialApp(
         title: 'Battleship Blitz',
         debugShowCheckedModeBanner: false,
