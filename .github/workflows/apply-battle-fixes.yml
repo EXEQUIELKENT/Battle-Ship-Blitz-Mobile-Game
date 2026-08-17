@@ -1,0 +1,112 @@
+name: Apply Battle Fixes
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+auto_cancel: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch battle files
+        shell: python
+        run: |
+          from pathlib import Path
+
+          controller = Path('lib/services/game_controller.dart')
+          text = controller.read_text(encoding='utf-8')
+          old = """    final delay = switch (difficulty) {\n      AIDifficulty.easy => 1.6,\n      AIDifficulty.normal => 0.9,\n      AIDifficulty.hard => 0.4,\n    };"""
+          new = """    // AI reaction delay is intentionally longer so the opponent does not\n    // snap-fire immediately after the human misses. The cannon cooldown\n    // still controls the minimum time between consecutive AI shots.\n    final delay = switch (difficulty) {\n      AIDifficulty.easy => 2.2,\n      AIDifficulty.normal => 1.6,\n      AIDifficulty.hard => 1.0,\n    };"""
+          if old not in text:
+              raise SystemExit('Expected AI delay block was not found.')
+          controller.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          battle = Path('lib/screens/battle_screen.dart')
+          text = battle.read_text(encoding='utf-8')
+
+          old = """  final Map<bool, List<CombatEventLike>> _eventsCache = {};\n"""
+          new = """  final Map<bool, List<CombatEventLike>> _eventsCache = {};\n\n  // Prevent the same AI event from being scheduled more than once while\n  // the deliberate firing delay is waiting to expire.\n  final Set<CombatEvent> _delayedOpponentEvents = <CombatEvent>{};\n"""
+          if old not in text:
+              raise SystemExit('Expected battle cache block was not found.')
+          text = text.replace(old, new, 1)
+
+          old = """      if (!e.byPlayer && age < 200 && mounted) {\n        if (_projCtrl.isAnimating) {\n"""
+          new = """      if (!e.byPlayer && age < 200 && mounted) {\n        if (_projCtrl.isAnimating) {\n"""
+          # Keep this branch unchanged; the actual scheduling guard is added\n          # only to the launch call below so the in-flight behavior stays intact.\n          if old not in text:
+              raise SystemExit('Expected opponent update block was not found.')
+
+          old = """        } else {\n          _launchOpponentBall(e);\n        }\n"""
+          new = """        } else if (!_delayedOpponentEvents.contains(e)) {\n          _delayedOpponentEvents.add(e);\n          _launchOpponentBall(e);\n        }\n"""
+          if old not in text:
+              raise SystemExit('Expected opponent launch call was not found.')
+          text = text.replace(old, new, 1)
+
+          old = """  void _launchOpponentBall(CombatEvent e) {\n    final top = _geom[true];\n"""
+          new = """  Future<void> _launchOpponentBall(CombatEvent e) async {\n    // The AI now pauses before visibly firing so a missed human shot is not\n    // followed by an almost-instant cannon blast. Remote multiplayer keeps\n    // its previous timing.\n    final controller = context.read<GameController>();\n    if (controller.mode == GameMode.vsAI) {\n      await Future.delayed(const Duration(milliseconds: 900));\n    }\n    if (!mounted || controller.phase != BattlePhase.battling) return;\n\n    final top = _geom[true];\n"""
+          if old not in text:
+              raise SystemExit('Expected opponent launch method was not found.')
+          text = text.replace(old, new, 1)
+
+          old = """    _eventsCache[halfIsP1] = controller.events\n          .where((e) => e.byPlayer != halfIsP1 && e.impactAt != null)\n"""
+          # No-op marker: validate the surrounding section still matches the\n          # expected source version before writing.
+          if old not in text:
+              raise SystemExit('Expected event cache section was not found.')
+
+          old = """                    child: IgnorePointer(\n                      child: CannonWidget(\n                        skin: profile.cannonSkin,\n                        cooldownFraction: cooldown,\n                        enabled: controller.battling && !_countingDown,\n"""
+          new = """                    child: IgnorePointer(\n                      child: AnimatedOpacity(\n                        duration: const Duration(milliseconds: 250),\n                        opacity: gameOver ? 0 : 1,\n                        child: CannonWidget(\n                          skin: profile.cannonSkin,\n                          cooldownFraction: cooldown,\n                          enabled: controller.battling && !_countingDown,\n"""
+          if old not in text:
+              raise SystemExit('Expected cannon widget block was not found.')
+          text = text.replace(old, new, 1)
+
+          old = """                        onFire: null,\n                      ),\n                    ),\n                  );\n"""
+          new = """                          onFire: null,\n                        ),\n                      ),\n                    ),\n                  );\n"""
+          if old not in text:
+              raise SystemExit('Expected cannon widget closing block was not found.')
+          text = text.replace(old, new, 1)
+
+          battle.write_text(text, encoding='utf-8')
+
+      - name: Verify changes
+        run: |
+          git diff --check
+          test "$(grep -c 'AIDifficulty.easy => 2.2' lib/services/game_controller.dart)" = "1"
+          test "$(grep -c 'opacity: gameOver ? 0 : 1' lib/screens/battle_screen.dart)" = "1"
+          test "$(grep -c '_delayedOpponentEvents' lib/screens/battle_screen.dart)" -ge "2"
+
+      - name: Create modified-files ZIP
+        run: |
+          mkdir -p artifact
+          cp lib/services/game_controller.dart artifact/game_controller.dart
+          cp lib/screens/battle_screen.dart artifact/battle_screen.dart
+          cd artifact
+          zip -q ../Battle-Ship-Blitz-Mobile-Game-Fixes.zip game_controller.dart battle_screen.dart
+
+      - name: Upload modified-files ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Battle-Ship-Blitz-Mobile-Game-Fixes
+          path: Battle-Ship-Blitz-Mobile-Game-Fixes.zip
+          if-no-files-found: error
+
+      - name: Commit source changes and remove temporary workflow
+        run: |
+          rm -f .github/workflows/apply-battle-fixes.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/services/game_controller.dart lib/screens/battle_screen.dart .github/workflows/apply-battle-fixes.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "fix: slow AI fire and hide cannons after game over"
+          git push origin main
