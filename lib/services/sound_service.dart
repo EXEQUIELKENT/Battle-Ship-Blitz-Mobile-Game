@@ -81,10 +81,23 @@ class SoundService {
   /// single effect can never spin up more than `max` native players, and
   /// the pool shrinks back down to something reasonable once the burst
   /// passes (see [_ManagedPool]).
+  ///
+  /// BUGFIX (audio still cutting off mid/late match on real phones): a
+  /// HIT grants an immediate extra shot (see battle_screen.dart), so a
+  /// lucky/skilled streak fires `cannonFire()` + `hit()` back-to-back
+  /// several times in a row — not a "pathological burst", just normal
+  /// good play, and MORE likely the longer a match runs and the more of
+  /// the board is uncovered. The old caps (max 4) meant a streak of only
+  /// 3-4 quick hits could already exhaust `hit`'s/`cannon_fire`'s pool,
+  /// forcing [_ManagedPool.play]'s "every player busy" fallback: STOP the
+  /// oldest still-playing copy of that same effect to reuse its player —
+  /// a deliberate, audible cut-off, exactly the reported symptom. Raised
+  /// so a realistic hit streak has real headroom before that fallback
+  /// ever has to trigger.
   static const Map<String, (int min, int max)> _poolSizes = {
-    'cannon_fire': (2, 4),
-    'hit': (2, 4),
-    'miss': (2, 4),
+    'cannon_fire': (2, 7),
+    'hit': (2, 7),
+    'miss': (2, 6),
     'sunk': (1, 3),
     'victory': (1, 2),
     'defeat': (1, 2),

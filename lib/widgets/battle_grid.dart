@@ -216,65 +216,97 @@ class _BattleGridState extends State<BattleGrid>
         builder: (context, constraints) {
           final size = constraints.maxWidth;
           final cell = size / kBoardSize;
-          return AnimatedBuilder(
-            animation: _fxCtrl,
-            builder: (context, _) {
-              return GestureDetector(
-                onTapUp: _onTap(cell),
-                onPanStart: _onPanStart(cell),
-                onPanUpdate: _onPanUpdate(cell),
-                onPanEnd: _onPanEnd(cell),
-                child: Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.outline, width: 3.5),
-                    color: AppColors.waterDark,
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x55000000),
-                        offset: Offset(0, 4),
-                        blurRadius: 0,
-                      ),
-                    ],
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: Stack(
-                    children: [
-                      CustomPaint(
-                        size: Size.square(size),
-                        painter: _GridPainter(
-                          shots: widget.shots,
-                          fx: _fx,
-                          tapFx: _tapFx,
-                          preview: widget.previewShip,
-                          previewValid: widget.previewValid,
-                          gridColor: widget.glowColor,
-                          cellColor: widget.cellColor,
-                          gridLineColor: widget.gridLineColor,
-                          destroyedShips: widget.destroyedShips,
-                        ),
-                      ),
-                      if (widget.destroyedShips.isNotEmpty)
-                        ..._destroyedShipWidgets(cell),
-                      if (widget.ships != null && widget.skin != null)
-                        ..._shipWidgets(cell),
-                      if (_dragging && _dragKind != null) _dragGhost(cell),
-                      // REDESIGN: the targeting reticle is now a real
-                      // widget (see `_Crosshair`) instead of something
-                      // hand-drawn instantly inside the grid's painter —
-                      // that's what lets it smoothly animate its position/
-                      // scale/opacity via AnimatedPositioned/Scale/Opacity
-                      // instead of just popping onto whatever cell
-                      // [aimCell] points at. Always present (not gated
-                      // behind `aimCell != null`) so it can animate OUT
-                      // cleanly too; it's fully invisible/inert whenever
-                      // there's nothing to aim at.
-                      _Crosshair(cell: cell, target: widget.aimCell),
-                    ],
-                  ),
+          // PERF (mobile jank under many hit/miss/destroyed marks): this
+          // used to wrap the ENTIRE grid subtree — background, all 100
+          // cells' persistent hit/miss markers, every ship/wreck widget —
+          // in one `AnimatedBuilder(animation: _fxCtrl, ...)`. Since
+          // `_fxCtrl` ticks at 60fps for ~800ms after literally every shot
+          // (any splash/explosion/tap-ripple keeps it running), that meant
+          // the WHOLE board — including every mark from every PAST shot,
+          // not just the one animating — was rebuilt and repainted on
+          // every single frame for most of an active match. Cost grew
+          // directly with how many marks had accumulated, which is
+          // exactly "struggles when there are too many hit/miss/destroyed
+          // ships on the grid" — imperceptible on a desktop GPU, very
+          // visible on a low/mid-range phone's.
+          //
+          // Fixed by splitting the grid into two independent layers:
+          //  * `_StaticGridPainter` — background, gridlines, the
+          //    placement preview, and every PERSISTENT hit/miss marker.
+          //    Repaints only when the board state actually changes
+          //    (`shouldRepaint` keyed on `shots`/`preview`/etc.), fully
+          //    independent of `_fxCtrl` — so it does NOT redraw on every
+          //    animation frame.
+          //  * `_FxGridPainter` — only the transient splash/explosion/
+          //    tap-ripple effects, wrapped in its own small, LOCAL
+          //    `AnimatedBuilder`. This is the only thing that still
+          //    rebuilds/repaints at 60fps, and its cost is bounded by the
+          //    (small, constant) number of effects actually in flight,
+          //    never by match history.
+          // Ship/wreck widgets and the crosshair also moved OUTSIDE the
+          // ticker's rebuild scope entirely — they only rebuild on a
+          // normal `setState`/parent rebuild now, not 60 times a second.
+          return RepaintBoundary(
+            child: GestureDetector(
+              onTapUp: _onTap(cell),
+              onPanStart: _onPanStart(cell),
+              onPanUpdate: _onPanUpdate(cell),
+              onPanEnd: _onPanEnd(cell),
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.outline, width: 3.5),
+                  color: AppColors.waterDark,
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x55000000),
+                      offset: Offset(0, 4),
+                      blurRadius: 0,
+                    ),
+                  ],
                 ),
-              );
-            },
+                clipBehavior: Clip.antiAlias,
+                child: Stack(
+                  children: [
+                    CustomPaint(
+                      size: Size.square(size),
+                      painter: _StaticGridPainter(
+                        shots: widget.shots,
+                        preview: widget.previewShip,
+                        previewValid: widget.previewValid,
+                        gridColor: widget.glowColor,
+                        cellColor: widget.cellColor,
+                        gridLineColor: widget.gridLineColor,
+                        destroyedShips: widget.destroyedShips,
+                      ),
+                    ),
+                    AnimatedBuilder(
+                      animation: _fxCtrl,
+                      builder: (context, _) => CustomPaint(
+                        size: Size.square(size),
+                        painter: _FxGridPainter(fx: _fx, tapFx: _tapFx),
+                      ),
+                    ),
+                    if (widget.destroyedShips.isNotEmpty)
+                      ..._destroyedShipWidgets(cell),
+                    if (widget.ships != null && widget.skin != null)
+                      ..._shipWidgets(cell),
+                    if (_dragging && _dragKind != null) _dragGhost(cell),
+                    // REDESIGN: the targeting reticle is now a real
+                    // widget (see `_Crosshair`) instead of something
+                    // hand-drawn instantly inside the grid's painter —
+                    // that's what lets it smoothly animate its position/
+                    // scale/opacity via AnimatedPositioned/Scale/Opacity
+                    // instead of just popping onto whatever cell
+                    // [aimCell] points at. Always present (not gated
+                    // behind `aimCell != null`) so it can animate OUT
+                    // cleanly too; it's fully invisible/inert whenever
+                    // there's nothing to aim at.
+                    _Crosshair(cell: cell, target: widget.aimCell),
+                  ],
+                ),
+              ),
+            ),
           );
         },
       ),
@@ -797,10 +829,14 @@ class _CrosshairPainter extends CustomPainter {
   bool shouldRepaint(covariant _CrosshairPainter oldDelegate) => false;
 }
 
-class _GridPainter extends CustomPainter {
+/// Background, gridlines, the placement preview, and every PERSISTENT
+/// hit/miss marker. Deliberately kept independent of the transient fx
+/// state — see the PERF note on `BattleGrid.build()` — so `shouldRepaint`
+/// only fires when the board actually changes, not on every 60fps
+/// animation tick while a splash/explosion/tap-ripple is playing
+/// somewhere on the grid.
+class _StaticGridPainter extends CustomPainter {
   final List<List<int>> shots;
-  final Map<int, CellFx> fx;
-  final Map<int, DateTime> tapFx;
   final PlacedShip? preview;
   final bool previewValid;
   final Color gridColor;
@@ -808,10 +844,8 @@ class _GridPainter extends CustomPainter {
   final Color gridLineColor;
   final List<PlacedShip> destroyedShips;
 
-  _GridPainter({
+  _StaticGridPainter({
     required this.shots,
-    required this.fx,
-    this.tapFx = const {},
     this.preview,
     this.previewValid = true,
     required this.gridColor,
@@ -873,35 +907,6 @@ class _GridPainter extends CustomPainter {
         }
       }
     }
-
-    // ---- Transient effects ----
-    // REDESIGN: every impact — hit, miss, or sunk — gets a water splash
-    // first (the cannonball always lands "in the water" of the grid cell
-    // regardless of outcome), with hit/sunk shots additionally layering
-    // the explosion burst on top. That's what gives the sequence
-    // "impact → water splash → result marker → hit/sunk feedback" instead
-    // of misses getting no impact effect at all.
-    fx.forEach((_, effect) {
-      final center = Offset(effect.col * cell + cell / 2, effect.row * cell + cell / 2);
-      final prog = effect.progress;
-      _drawSplash(canvas, center, cell, prog, rng: effect.rng);
-      if (effect.result == ShotResult.hit || effect.result == ShotResult.sunk) {
-        _drawExplosion(canvas, center, cell, prog,
-            big: effect.result == ShotResult.sunk, rng: effect.rng);
-      }
-    });
-
-    // ---- Instant tap ripple: a quick "yes, that tap registered" pulse
-    // right where the finger landed. ----
-    final now = DateTime.now();
-    tapFx.forEach((key, started) {
-      final t = now.difference(started).inMilliseconds / 260;
-      if (t >= 1.0) return;
-      final r = key ~/ kBoardSize;
-      final c = key % kBoardSize;
-      final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
-      _drawTapRipple(canvas, center, cell, t.clamp(0.0, 1.0));
-    });
   }
 
   /// Miss marker (video): slightly darker cell + tiny grey ✕.
@@ -947,6 +952,61 @@ class _GridPainter extends CustomPainter {
       if (ship.containsCell(r, c)) return true;
     }
     return false;
+  }
+
+  @override
+  bool shouldRepaint(_StaticGridPainter oldDelegate) {
+    return !identical(oldDelegate.shots, shots) ||
+        oldDelegate.preview != preview ||
+        oldDelegate.previewValid != previewValid ||
+        oldDelegate.cellColor != cellColor ||
+        oldDelegate.gridColor != gridColor ||
+        !identical(oldDelegate.destroyedShips, destroyedShips);
+  }
+}
+
+/// Only the TRANSIENT splash/explosion/tap-ripple effects — everything
+/// that actually needs to repaint every animation frame. Kept as its own
+/// tiny painter (see the PERF note on `BattleGrid.build()`) so the 60fps
+/// ticker only ever has to redraw a small, bounded number of active
+/// effects instead of the whole board.
+class _FxGridPainter extends CustomPainter {
+  final Map<int, CellFx> fx;
+  final Map<int, DateTime> tapFx;
+
+  _FxGridPainter({required this.fx, this.tapFx = const {}});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cell = size.width / kBoardSize;
+
+    // REDESIGN: every impact — hit, miss, or sunk — gets a water splash
+    // first (the cannonball always lands "in the water" of the grid cell
+    // regardless of outcome), with hit/sunk shots additionally layering
+    // the explosion burst on top. That's what gives the sequence
+    // "impact → water splash → result marker → hit/sunk feedback" instead
+    // of misses getting no impact effect at all.
+    fx.forEach((_, effect) {
+      final center = Offset(effect.col * cell + cell / 2, effect.row * cell + cell / 2);
+      final prog = effect.progress;
+      _drawSplash(canvas, center, cell, prog, rng: effect.rng);
+      if (effect.result == ShotResult.hit || effect.result == ShotResult.sunk) {
+        _drawExplosion(canvas, center, cell, prog,
+            big: effect.result == ShotResult.sunk, rng: effect.rng);
+      }
+    });
+
+    // ---- Instant tap ripple: a quick "yes, that tap registered" pulse
+    // right where the finger landed. ----
+    final now = DateTime.now();
+    tapFx.forEach((key, started) {
+      final t = now.difference(started).inMilliseconds / 260;
+      if (t >= 1.0) return;
+      final r = key ~/ kBoardSize;
+      final c = key % kBoardSize;
+      final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
+      _drawTapRipple(canvas, center, cell, t.clamp(0.0, 1.0));
+    });
   }
 
   /// Impact flash: toned-down yellow starburst core + fewer white sparkle
@@ -1075,19 +1135,15 @@ class _GridPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_GridPainter oldDelegate) {
-    // While anything transient is animating, its visual progress is driven
-    // by wall-clock time (see CellFx.progress), not by field identity, so
-    // we must keep repainting every tick.
-    if (fx.isNotEmpty || tapFx.isNotEmpty) return true;
-    // Otherwise only repaint when something that actually affects pixels
-    // changed — this is what stops the board from being fully redrawn on
-    // every 100ms game-cooldown tick once nothing is animating.
-    return !identical(oldDelegate.shots, shots) ||
-        oldDelegate.preview != preview ||
-        oldDelegate.previewValid != previewValid ||
-        oldDelegate.cellColor != cellColor ||
-        oldDelegate.gridColor != gridColor ||
-        !identical(oldDelegate.destroyedShips, destroyedShips);
+  bool shouldRepaint(_FxGridPainter oldDelegate) {
+    // This painter's whole job is the transient layer, so it only ever
+    // needs to repaint while there's actually something transient to
+    // show — the AnimatedBuilder driving it already stops ticking (see
+    // `_fxCtrl`) the instant both maps go empty, so this doesn't spin
+    // forever; it just needs to say yes on every tick while it's running.
+    return fx.isNotEmpty ||
+        tapFx.isNotEmpty ||
+        !identical(oldDelegate.fx, fx) ||
+        !identical(oldDelegate.tapFx, tapFx);
   }
 }

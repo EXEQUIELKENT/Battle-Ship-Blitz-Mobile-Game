@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -953,25 +952,34 @@ class _BattleScreenState extends State<BattleScreen>
                 ),
               ),
 
-              // Turn-highlight blur: a soft frosted-glass halo over the
-              // ACTIVE player's OWN grid (this half's owner is the one
-              // currently firing). That grid isn't tappable right now —
-              // you fire at the OPPONENT's grid, on the other half; see
-              // `gridFirable` above — so blurring it acts as a spotlight:
-              // it de-emphasizes the inert board you don't need and keeps
+              // Turn-highlight dim: a soft scrim over the ACTIVE player's
+              // OWN grid (this half's owner is the one currently firing).
+              // That grid isn't tappable right now — you fire at the
+              // OPPONENT's grid, on the other half; see `gridFirable`
+              // above — so dimming it acts as a spotlight: it
+              // de-emphasizes the inert board you don't need and keeps
               // attention on the live, interactive target grid instead.
               // Uses a small FIXED glow margin (clamped to this half's own
               // bounds) instead of a percentage of gridSide — the old
               // percentage-based halo could balloon well past the grid
               // (and even past the screen edge) on larger boards, which
-              // read as the blur effect "leaking" outside the grid.
-              // Placed AFTER the grid in the Stack so the BackdropFilter
-              // blurs the grid contents (destroyed ships, hit cells, miss
-              // cells) in addition to the background — kept deliberately
-              // light (sigma 3) so the blurred grid still reads:
-              // gridlines and hit/miss/destroyed markers stay visible
-              // through the haze instead of dissolving into a solid
-              // smear.
+              // read as the effect "leaking" outside the grid.
+              //
+              // PERF (mobile jank): this used to be a `BackdropFilter`
+              // Gaussian blur. Since `isActiveHalf` is true for one half
+              // or the other for the ENTIRE match (turns just alternate
+              // which one), that meant a live backdrop-sampled blur ran
+              // continuously — not just during a brief transition — for
+              // the whole game. BackdropFilter is one of the most
+              // expensive operations Flutter can do per frame (it has to
+              // re-sample and Gaussian-blur everything already painted
+              // behind it), and unlike the grid's own repaint cost this
+              // one didn't even scale with match progress — it was just a
+              // constant, avoidable tax on every frame, brutal on
+              // low/mid-range GPUs. A plain translucent scrim achieves the
+              // same "de-emphasize this board" spotlight effect at
+              // near-zero cost (a flat color fill, no backdrop sampling),
+              // so the grid underneath just dims instead of blurring.
               Builder(builder: (context) {
                 const haloMargin = 10.0;
                 final haloLeft = math.max(0.0, gridLeft - haloMargin);
@@ -989,16 +997,11 @@ class _BattleScreenState extends State<BattleScreen>
                     child: AnimatedOpacity(
                       duration: const Duration(milliseconds: 320),
                       opacity: isActiveHalf && inBattle ? 1 : 0,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: BackdropFilter(
-                          filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(16),
-                              color: accent.withValues(alpha: 0.16),
-                            ),
-                          ),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          color: Color.lerp(Colors.black, accent, 0.35)!
+                              .withValues(alpha: 0.30),
                         ),
                       ),
                     ),
