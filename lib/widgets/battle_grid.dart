@@ -16,8 +16,8 @@ class CellFx {
   final Random rng; // cached so explosion particles are stable per-frame
 
   CellFx(this.row, this.col, this.result)
-      : start = DateTime.now(),
-        rng = Random(row * 31 + col);
+    : start = DateTime.now(),
+      rng = Random(row * 31 + col);
 
   double get progress =>
       (DateTime.now().difference(start).inMilliseconds / 800).clamp(0.0, 1.0);
@@ -157,8 +157,10 @@ class _BattleGridState extends State<BattleGrid>
     _fxCtrl.addListener(() {
       if (_fx.isEmpty && _tapFx.isEmpty) return;
       _fx.removeWhere((_, fx) => fx.done);
-      _tapFx.removeWhere((_, started) =>
-          DateTime.now().difference(started).inMilliseconds >= 260);
+      _tapFx.removeWhere(
+        (_, started) =>
+            DateTime.now().difference(started).inMilliseconds >= 260,
+      );
       if (_fx.isEmpty && _tapFx.isEmpty && _fxCtrl.isAnimating) {
         _fxCtrl.stop();
       }
@@ -230,22 +232,53 @@ class _BattleGridState extends State<BattleGrid>
           // ships on the grid" — imperceptible on a desktop GPU, very
           // visible on a low/mid-range phone's.
           //
-          // Fixed by splitting the grid into two independent layers:
+          // Fixed by splitting the grid into two independent PAINT
+          // LAYERS — and this is the part that's easy to get wrong: just
+          // splitting the drawing code into two `CustomPainter`s is NOT
+          // enough on its own. Without a `RepaintBoundary` around each
+          // one, they're still two plain sibling `RenderObject`s sharing
+          // whatever picture their nearest actual repaint-boundary
+          // ancestor records — and a plain `CustomPaint` is NOT itself a
+          // repaint boundary. Flutter's invalidation walks UP from
+          // whichever child called `markNeedsPaint()` to the nearest
+          // boundary and re-records that boundary's ENTIRE picture,
+          // repainting every non-boundary descendant in it — including
+          // siblings whose own `shouldRepaint` said no. So without an
+          // explicit boundary around each layer, the fx layer ticking at
+          // 60fps would still have forced the static layer (and every
+          // ship/wreck) to repaint right along with it every frame — all
+          // the original cost, PLUS the overhead of the extra widgets.
+          // That's the actual reason an earlier version of this split
+          // made real-device performance WORSE instead of better.
           //  * `_StaticGridPainter` — background, gridlines, the
           //    placement preview, and every PERSISTENT hit/miss marker.
-          //    Repaints only when the board state actually changes
-          //    (`shouldRepaint` keyed on `shots`/`preview`/etc.), fully
-          //    independent of `_fxCtrl` — so it does NOT redraw on every
-          //    animation frame.
+          //    Its own `RepaintBoundary` means it only repaints when the
+          //    board state actually changes (`shouldRepaint` keyed on
+          //    `shots`/`preview`/etc.), and — critically — is no longer
+          //    dragged into a repaint just because its FX sibling ticks.
           //  * `_FxGridPainter` — only the transient splash/explosion/
           //    tap-ripple effects, wrapped in its own small, LOCAL
-          //    `AnimatedBuilder`. This is the only thing that still
-          //    rebuilds/repaints at 60fps, and its cost is bounded by the
-          //    (small, constant) number of effects actually in flight,
-          //    never by match history.
+          //    `AnimatedBuilder` AND its own `RepaintBoundary`. This is
+          //    the only thing that still repaints at 60fps, its cost is
+          //    bounded by the (small, constant) number of effects in
+          //    flight rather than match history, and — now — its
+          //    repainting is confined to its OWN layer instead of
+          //    spilling out onto its siblings.
           // Ship/wreck widgets and the crosshair also moved OUTSIDE the
-          // ticker's rebuild scope entirely — they only rebuild on a
-          // normal `setState`/parent rebuild now, not 60 times a second.
+          // ticker's rebuild scope entirely (only rebuild on a normal
+          // `setState`/parent rebuild, not 60 times a second) and each
+          // get their own `RepaintBoundary` too (see `_animatedShipBox`/
+          // `_destroyedShipWidgets`), so a sunk ship's occasional repaint
+          // doesn't ripple across every OTHER ship on the same grid.
+          //
+          // One more `RepaintBoundary` around the WHOLE grid: this widget
+          // sits next to the cannon (its own animated recoil/smoke/pulse)
+          // in the battle screen's Stack. Without a boundary here, the
+          // cannon firing could force a repaint of this entire region too
+          // — now cheap either way, since every expensive piece inside is
+          // already independently boundaried above, but this stops even
+          // the grid's own (otherwise-static) border/shadow chrome from
+          // being walked on every cannon animation frame.
           return RepaintBoundary(
             child: GestureDetector(
               onTapUp: _onTap(cell),
@@ -268,23 +301,27 @@ class _BattleGridState extends State<BattleGrid>
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
                   children: [
-                    CustomPaint(
-                      size: Size.square(size),
-                      painter: _StaticGridPainter(
-                        shots: widget.shots,
-                        preview: widget.previewShip,
-                        previewValid: widget.previewValid,
-                        gridColor: widget.glowColor,
-                        cellColor: widget.cellColor,
-                        gridLineColor: widget.gridLineColor,
-                        destroyedShips: widget.destroyedShips,
+                    RepaintBoundary(
+                      child: CustomPaint(
+                        size: Size.square(size),
+                        painter: _StaticGridPainter(
+                          shots: widget.shots,
+                          preview: widget.previewShip,
+                          previewValid: widget.previewValid,
+                          gridColor: widget.glowColor,
+                          cellColor: widget.cellColor,
+                          gridLineColor: widget.gridLineColor,
+                          destroyedShips: widget.destroyedShips,
+                        ),
                       ),
                     ),
-                    AnimatedBuilder(
-                      animation: _fxCtrl,
-                      builder: (context, _) => CustomPaint(
-                        size: Size.square(size),
-                        painter: _FxGridPainter(fx: _fx, tapFx: _tapFx),
+                    RepaintBoundary(
+                      child: AnimatedBuilder(
+                        animation: _fxCtrl,
+                        builder: (context, _) => CustomPaint(
+                          size: Size.square(size),
+                          painter: _FxGridPainter(fx: _fx, tapFx: _tapFx),
+                        ),
                       ),
                     ),
                     if (widget.destroyedShips.isNotEmpty)
@@ -341,7 +378,9 @@ class _BattleGridState extends State<BattleGrid>
   }
 
   void Function(DragStartDetails)? _onPanStart(double cell) {
-    if (!widget.enabled || widget.onShipDragEnd == null || widget.ships == null) {
+    if (!widget.enabled ||
+        widget.onShipDragEnd == null ||
+        widget.ships == null) {
       return null;
     }
     return (d) {
@@ -454,11 +493,18 @@ class _BattleGridState extends State<BattleGrid>
       top: centerY - boxSide / 2,
       width: boxSide,
       height: boxSide,
-      child: _ShipWithRotate(
-        ship: ship,
-        skin: widget.skin!,
-        cell: cell,
-        showRotate: widget.onShipTap != null && !ship.isSunk,
+      // PERF: its own layer so a hit landing on ONE ship (changing its
+      // hitCount/sunk state, which repaints its ShipPainter) never forces
+      // every OTHER ship/wreck on this grid to repaint too — see the PERF
+      // note on `BattleGrid.build()` for why a plain (non-boundary)
+      // CustomPaint sibling would otherwise get dragged along for free.
+      child: RepaintBoundary(
+        child: _ShipWithRotate(
+          ship: ship,
+          skin: widget.skin!,
+          cell: cell,
+          showRotate: widget.onShipTap != null && !ship.isSunk,
+        ),
       ),
     );
   }
@@ -480,28 +526,33 @@ class _BattleGridState extends State<BattleGrid>
           top: ship.row * cell + 1,
           width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
           height: ship.horizontal ? cell - 2 : ship.spec.size * cell - 2,
-          child: IgnorePointer(
-            child: _ShipRevealTransition(
-              child: ship.horizontal
-                  ? CustomPaint(
-                      painter: ShipPainter(
-                        spec: ship.spec,
-                        skin: wreckSkin,
-                        sunk: true,
-                        hitCount: ship.spec.size,
-                      ),
-                    )
-                  : RotatedBox(
-                      quarterTurns: 1,
-                      child: CustomPaint(
+          // PERF: own layer, same reasoning as `_animatedShipBox` — a
+          // wreck's own one-shot reveal transition shouldn't force every
+          // OTHER already-settled wreck/ship on this grid to repaint too.
+          child: RepaintBoundary(
+            child: IgnorePointer(
+              child: _ShipRevealTransition(
+                child: ship.horizontal
+                    ? CustomPaint(
                         painter: ShipPainter(
                           spec: ship.spec,
                           skin: wreckSkin,
                           sunk: true,
                           hitCount: ship.spec.size,
                         ),
+                      )
+                    : RotatedBox(
+                        quarterTurns: 1,
+                        child: CustomPaint(
+                          painter: ShipPainter(
+                            spec: ship.spec,
+                            skin: wreckSkin,
+                            sunk: true,
+                            hitCount: ship.spec.size,
+                          ),
+                        ),
                       ),
-                    ),
+              ),
             ),
           ),
         ),
@@ -510,8 +561,9 @@ class _BattleGridState extends State<BattleGrid>
 
   Widget _dragGhost(double cell) {
     final spec = kFleet.firstWhere((s) => s.kind == _dragKind);
-    final horizontal =
-        widget.ships!.firstWhere((s) => s.spec.kind == _dragKind).horizontal;
+    final horizontal = widget.ships!
+        .firstWhere((s) => s.spec.kind == _dragKind)
+        .horizontal;
     // Same left/top/width/height formula as `_shipWidgets` (grid-anchored,
     // `-2` inset) using `_dragPreviewRow`/`_dragPreviewCol` — the exact
     // cell the ship will land on if released right now (see
@@ -817,9 +869,15 @@ class _CrosshairPainter extends CustomPainter {
     // Thin center cross.
     final crossLen = s * 0.11;
     canvas.drawLine(
-        center - Offset(crossLen, 0), center + Offset(crossLen, 0), stroke);
+      center - Offset(crossLen, 0),
+      center + Offset(crossLen, 0),
+      stroke,
+    );
     canvas.drawLine(
-        center - Offset(0, crossLen), center + Offset(0, crossLen), stroke);
+      center - Offset(0, crossLen),
+      center + Offset(0, crossLen),
+      stroke,
+    );
 
     // Small center dot.
     canvas.drawCircle(center, s * 0.028, Paint()..color = Colors.white);
@@ -865,9 +923,15 @@ class _StaticGridPainter extends CustomPainter {
       ..strokeWidth = 1.1;
     for (var i = 1; i < kBoardSize; i++) {
       canvas.drawLine(
-          Offset(i * cell, 0), Offset(i * cell, size.height), linePaint);
+        Offset(i * cell, 0),
+        Offset(i * cell, size.height),
+        linePaint,
+      );
       canvas.drawLine(
-          Offset(0, i * cell), Offset(size.width, i * cell), linePaint);
+        Offset(0, i * cell),
+        Offset(size.width, i * cell),
+        linePaint,
+      );
     }
 
     // ---- Placement highlight: shows exactly which cells a ship will
@@ -913,7 +977,11 @@ class _StaticGridPainter extends CustomPainter {
   void _drawMiss(Canvas canvas, Offset center, double cell) {
     canvas.drawRRect(
       RRect.fromRectAndRadius(
-        Rect.fromCenter(center: center, width: cell * 0.92, height: cell * 0.92),
+        Rect.fromCenter(
+          center: center,
+          width: cell * 0.92,
+          height: cell * 0.92,
+        ),
         Radius.circular(cell * 0.12),
       ),
       Paint()..color = AppColors.steelBlueDark,
@@ -931,7 +999,11 @@ class _StaticGridPainter extends CustomPainter {
   void _drawHit(Canvas canvas, Offset center, double cell) {
     canvas.drawRRect(
       RRect.fromRectAndRadius(
-        Rect.fromCenter(center: center, width: cell * 0.92, height: cell * 0.92),
+        Rect.fromCenter(
+          center: center,
+          width: cell * 0.92,
+          height: cell * 0.92,
+        ),
         Radius.circular(cell * 0.10),
       ),
       Paint()..color = AppColors.outline,
@@ -987,12 +1059,21 @@ class _FxGridPainter extends CustomPainter {
     // "impact → water splash → result marker → hit/sunk feedback" instead
     // of misses getting no impact effect at all.
     fx.forEach((_, effect) {
-      final center = Offset(effect.col * cell + cell / 2, effect.row * cell + cell / 2);
+      final center = Offset(
+        effect.col * cell + cell / 2,
+        effect.row * cell + cell / 2,
+      );
       final prog = effect.progress;
       _drawSplash(canvas, center, cell, prog, rng: effect.rng);
       if (effect.result == ShotResult.hit || effect.result == ShotResult.sunk) {
-        _drawExplosion(canvas, center, cell, prog,
-            big: effect.result == ShotResult.sunk, rng: effect.rng);
+        _drawExplosion(
+          canvas,
+          center,
+          cell,
+          prog,
+          big: effect.result == ShotResult.sunk,
+          rng: effect.rng,
+        );
       }
     });
 
@@ -1011,8 +1092,14 @@ class _FxGridPainter extends CustomPainter {
 
   /// Impact flash: toned-down yellow starburst core + fewer white sparkle
   /// stars flying outward; sinks into the persistent black-square marker.
-  void _drawExplosion(Canvas canvas, Offset center, double cell, double t,
-      {bool big = false, required Random rng}) {
+  void _drawExplosion(
+    Canvas canvas,
+    Offset center,
+    double cell,
+    double t, {
+    bool big = false,
+    required Random rng,
+  }) {
     final scale = big ? 1.2 : 0.7;
     // Yellow starburst (4 rounded rays) — flashes in, then fades.
     final burstAlpha = (1 - t * 1.35).clamp(0.0, 1.0);
@@ -1025,8 +1112,11 @@ class _FxGridPainter extends CustomPainter {
       final len = cell * 0.45 * scale * grow;
       for (var i = 0; i < 4; i++) {
         final ang = i * pi / 2;
-        canvas.drawLine(center,
-            center + Offset(cos(ang) * len, sin(ang) * len), ray);
+        canvas.drawLine(
+          center,
+          center + Offset(cos(ang) * len, sin(ang) * len),
+          ray,
+        );
       }
       canvas.drawCircle(
         center,
@@ -1043,7 +1133,8 @@ class _FxGridPainter extends CustomPainter {
     final sparkAlpha = (1 - t).clamp(0.0, 1.0);
     for (var i = 0; i < (big ? 4 : 2); i++) {
       final ang = rng.nextDouble() * 2 * pi;
-      final dist = cell * scale * (0.25 + 0.75 * t) * (0.6 + rng.nextDouble() * 0.5);
+      final dist =
+          cell * scale * (0.25 + 0.75 * t) * (0.6 + rng.nextDouble() * 0.5);
       final p = center + Offset(cos(ang) * dist, sin(ang) * dist);
       final sr = cell * 0.08 * (1 - t * 0.6);
       final sp = Paint()
@@ -1073,8 +1164,13 @@ class _FxGridPainter extends CustomPainter {
   /// a clear MISS vs HIT/SUNK distinction. Pure vector draws (no images,
   /// no new particle system) — same cost class as `_drawExplosion` below,
   /// which this game already runs per-shot without issue.
-  void _drawSplash(Canvas canvas, Offset center, double cell, double t,
-      {required Random rng}) {
+  void _drawSplash(
+    Canvas canvas,
+    Offset center,
+    double cell,
+    double t, {
+    required Random rng,
+  }) {
     final local = (t / 0.55).clamp(0.0, 1.0);
     if (local >= 1.0) return;
     final fade = 1 - local;

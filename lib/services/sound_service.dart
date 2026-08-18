@@ -44,11 +44,12 @@ import 'package:flutter/services.dart';
 ///    it leaked forever. That's the "excessive audio player creation /
 ///    resource exhaustion" and "one-shot player cleanup" failure modes
 ///    called out in review. Fixed by routing every gameplay effect —
-///    including those four — through the same bounded [_ManagedPool]:
-///    a small warm pool of reusable players per effect that only grows
-///    (briefly, capped) under genuine simultaneous load and shrinks back
-///    down afterward, with a timeout-based safety net so a stuck player
-///    can never be lost for good.
+///    including those four — through the same [_ManagedPool]: a FIXED-SIZE
+///    pool of reusable players per effect, every one of them created ONCE
+///    up front and never again during gameplay (see the REGRESSION FIX
+///    note on [_ManagedPool] for why on-demand growth was tried and made
+///    things worse on real phones), with a timeout-based safety net so a
+///    stuck player can never be lost for good.
 class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
@@ -73,42 +74,34 @@ class SoundService {
     'count_go': 'sfx/count_go.wav',
   };
 
-  /// Warm (min) / cap (max) player counts per effect. Sized to how many
-  /// times an effect can realistically overlap itself in this game — e.g.
-  /// `cannon_fire`/`hit`/`miss` can stack a little (both sides' cannons,
-  /// quick taps) so they get a bit more headroom than one-off cues like
-  /// `victory`. These are hard caps: even under a pathological burst, a
-  /// single effect can never spin up more than `max` native players, and
-  /// the pool shrinks back down to something reasonable once the burst
-  /// passes (see [_ManagedPool]).
-  ///
-  /// BUGFIX (audio still cutting off mid/late match on real phones): a
-  /// HIT grants an immediate extra shot (see battle_screen.dart), so a
-  /// lucky/skilled streak fires `cannonFire()` + `hit()` back-to-back
-  /// several times in a row — not a "pathological burst", just normal
-  /// good play, and MORE likely the longer a match runs and the more of
-  /// the board is uncovered. The old caps (max 4) meant a streak of only
-  /// 3-4 quick hits could already exhaust `hit`'s/`cannon_fire`'s pool,
-  /// forcing [_ManagedPool.play]'s "every player busy" fallback: STOP the
-  /// oldest still-playing copy of that same effect to reuse its player —
-  /// a deliberate, audible cut-off, exactly the reported symptom. Raised
-  /// so a realistic hit streak has real headroom before that fallback
-  /// ever has to trigger.
-  static const Map<String, (int min, int max)> _poolSizes = {
-    'cannon_fire': (2, 7),
-    'hit': (2, 7),
-    'miss': (2, 6),
-    'sunk': (1, 3),
-    'victory': (1, 2),
-    'defeat': (1, 2),
-    'place': (1, 3),
-    'click': (1, 3),
-    'denied': (1, 2),
-    'whir': (1, 2),
-    'turn_pass': (1, 2),
-    'cannon_ready': (1, 2),
-    'count_beep': (1, 2),
-    'count_go': (1, 2),
+  /// FIXED player count per effect — see the REGRESSION FIX note on
+  /// [_ManagedPool] for why this is a single fixed size rather than a
+  /// min/max range that grows on demand: growth-on-demand is exactly what
+  /// caused a real-device-only regression (lag + audio glitches after a
+  /// handful of shots) when a previous pass raised the max end of that
+  /// range trying to fix a DIFFERENT bug (cut-off audio). Sized to how
+  /// many times an effect can realistically overlap itself in this game —
+  /// `cannon_fire`/`hit`/`miss` are the ones fired on every single shot,
+  /// and a HIT grants an immediate extra shot, so a hit streak can chain
+  /// several of each back-to-back — while one-off cues like `victory`
+  /// only ever need one or two. Every player counted here is created ONCE
+  /// up front (see [_ManagedPool.warmUp]) — nothing is ever created during
+  /// actual gameplay.
+  static const Map<String, int> _poolSizes = {
+    'cannon_fire': 5,
+    'hit': 5,
+    'miss': 5,
+    'sunk': 2,
+    'victory': 1,
+    'defeat': 1,
+    'place': 2,
+    'click': 2,
+    'denied': 1,
+    'whir': 1,
+    'turn_pass': 1,
+    'cannon_ready': 1,
+    'count_beep': 1,
+    'count_go': 1,
   };
 
   /// Effects that get a tiny random pitch/rate wobble each play so rapid
@@ -157,14 +150,13 @@ class SoundService {
 
   Future<void> _buildPools() async {
     for (final entry in _files.entries) {
-      final sizes = _poolSizes[entry.key];
-      if (sizes == null) continue; // shouldn't happen — every key is sized
+      final size = _poolSizes[entry.key];
+      if (size == null) continue; // shouldn't happen — every key is sized
       final pool = _pools.putIfAbsent(
         entry.key,
         () => _ManagedPool(
           asset: entry.value,
-          minPlayers: sizes.$1,
-          maxPlayers: sizes.$2,
+          size: size,
           audioContext: _sfxAudioContext,
         ),
       );
@@ -405,40 +397,59 @@ class SoundService {
   }
 }
 
-/// A bounded, self-healing pool of [AudioPlayer]s all loaded with the same
-/// short sound effect — the "reliable audio-management strategy" this
-/// service needed for gameplay SFX.
+/// A FIXED-SIZE, fully pre-warmed pool of [AudioPlayer]s all loaded with
+/// the same short sound effect — the "reliable audio-management strategy"
+/// this service needed for gameplay SFX.
 ///
-/// Design (deliberately conservative — see the class doc on
-/// [SoundService] for the two bugs this replaces):
-///  * [minPlayers] are created up front and kept warm/idle between plays.
-///  * `play()` NEVER touches a player that's currently mid-clip — it only
-///    ever hands out a player from the idle pool, or creates a fresh one
-///    if every pooled player is busy (up to [maxPlayers] concurrently).
-///    This is what guarantees overlapping sounds never cut each other off.
-///  * A player is returned to the idle pool the instant its clip finishes
-///    (`onPlayerComplete`). If the pool has grown past [maxPlayers] to
-///    absorb a burst, the extra player is released instead of kept, so the
-///    pool naturally shrinks back down afterward.
+/// REGRESSION FIX (real phones got WORSE — lag + audio glitching after
+/// only 5-7 shots — after a previous pass raised these pools' dynamic
+/// growth caps to fix cut-off audio): that diagnosis had it backwards.
+/// The earlier design created just [size] `AudioPlayer`s up front and let
+/// `play()` create MORE, lazily, up to a higher cap, whenever a burst
+/// exceeded the warm supply. Each new player isn't free even though the
+/// underlying decoded sample is shared — `_create()` is FOUR sequential
+/// awaited platform-channel round trips
+/// (`setAudioContext`/`setSource`/`setPlayerMode`/`setReleaseMode`) to
+/// build the native wrapper object. Raising the cap didn't add headroom
+/// for free — it made the pool reach for that expensive, mid-gameplay
+/// player-creation path far MORE readily (a normal hit streak — HIT grants
+/// an immediate extra shot — fires `cannonFire()`/`hit()` several times in
+/// a row), and it grew the SHARED native SoundPool's own concurrent-stream
+/// bookkeeping right along with it. On a real phone's platform thread that
+/// shows up as exactly what got reported: janky frames and glitched/silent
+/// audio, worse the more shots had already fired, i.e. "after 5-7 shots" —
+/// right around where the pool had to start growing past its old, safer
+/// ceiling for the first time.
+///
+/// Fixed by removing dynamic growth entirely: every player this pool will
+/// ever use is created ONCE, up front (during [warmUp], off the gameplay
+/// hot path — see [SoundService.init]), and `play()` never calls
+/// `_create()` again. When every one of the fixed [size] players is
+/// genuinely busy at once (rare — [size] is chosen for this game's actual
+/// overlap, not a worst case), it falls back to reusing the
+/// longest-running one instead of allocating a new native object mid-shot.
+/// That reuse can occasionally cut off an already-playing copy of the
+/// SAME effect in a truly extreme burst, which is a far smaller price than
+/// stalling the platform thread (and destabilizing the one SHARED native
+/// SoundPool every effect draws from) by creating players during active
+/// play.
+///
+///  * A player is returned to idle the instant its clip finishes
+///    (`onPlayerComplete`) — always back to idle, never disposed, since
+///    the pool never holds more than [size] players in the first place.
 ///  * A timeout-based safety net force-returns a player even if
 ///    `onPlayerComplete` never fires (e.g. an interruption the platform
 ///    plugin fails to report) — this is what prevents a player from ever
 ///    becoming permanently stuck/unusable.
-///  * Only in the genuinely pathological case of [maxPlayers] simultaneous
-///    copies of the SAME effect already playing does this fall back to
-///    reusing the longest-running one (awaiting its `stop()` first, so it
-///    can never race a still-in-flight play call).
 class _ManagedPool {
   _ManagedPool({
     required this.asset,
-    required this.minPlayers,
-    required this.maxPlayers,
+    required this.size,
     required this.audioContext,
   });
 
   final String asset;
-  final int minPlayers;
-  final int maxPlayers;
+  final int size;
   final AudioContext audioContext;
 
   final List<AudioPlayer> _idle = [];
@@ -446,12 +457,17 @@ class _ManagedPool {
 
   static const _safetyTimeout = Duration(seconds: 6);
 
+  /// Creates every player this pool will ever hold. Called once from
+  /// [SoundService.init] (fire-and-forget, well before any gameplay
+  /// input) and again by [rebuild] after the app resumes from the
+  /// background — never from the gameplay hot path in [play].
   Future<void> warmUp() async {
     if (_idle.isNotEmpty || _busy.isNotEmpty) return; // already built
-    for (var i = 0; i < minPlayers; i++) {
+    for (var i = 0; i < size; i++) {
       try {
         _idle.add(await _create());
-      } catch (_) {/* best effort — play() will lazily create on demand */}
+      } catch (_) {/* best effort — a missing slot just means slightly
+                      less overlap headroom for this one effect */}
     }
   }
 
@@ -469,10 +485,8 @@ class _ManagedPool {
     try {
       if (_idle.isNotEmpty) {
         player = _idle.removeLast();
-      } else if (_busy.length < maxPlayers) {
-        player = await _create();
-      } else {
-        // Every pooled player (up to the hard cap) is genuinely busy at
+      } else if (_busy.isNotEmpty) {
+        // Every one of this pool's fixed players is genuinely busy at
         // once — reuse the oldest, but AWAIT its stop before replaying it
         // so this can never race that still-in-flight playback. Detach it
         // from its OLD checkout directly (just unsubscribing/cancelling
@@ -483,12 +497,22 @@ class _ManagedPool {
         // both `_idle` and `_busy` at once, which a concurrent play() call
         // could then also check out. That's exactly the "reuse while
         // still playing" race this whole pool exists to prevent.
+        //
+        // Deliberately NOT `_create()`-ing a fresh player here even
+        // though one used to be an option — see the class doc: doing
+        // that mid-gameplay is exactly what caused the real-device
+        // regression this pool now avoids.
         final oldest = _busy.keys.first;
         _busy.remove(oldest)?.call();
         try {
           await oldest.stop();
         } catch (_) {}
         player = oldest;
+      } else {
+        // Only reachable if warmUp() never managed to create a single
+        // player for this effect (e.g. the asset failed to load) — best
+        // effort, since there's nothing pooled to fall back to.
+        player = await _create();
       }
     } catch (e) {
       if (kDebugMode) {
@@ -500,22 +524,15 @@ class _ManagedPool {
     late final StreamSubscription<void> sub;
     late final Timer safety;
     var released = false;
-    Future<void> release() async {
+    void release() {
       if (released) return;
       released = true;
       safety.cancel();
-      await sub.cancel();
+      sub.cancel();
       _busy.remove(player);
-      if (_idle.length < maxPlayers) {
-        _idle.add(player);
-      } else {
-        // Pool already has enough idle players resident — this one was
-        // only created to absorb a burst, so let it go instead of
-        // growing the pool permanently.
-        try {
-          await player.dispose();
-        } catch (_) {}
-      }
+      // Always back to idle — this pool never exceeds `size` players, so
+      // there's never a "grew past capacity, let this one go" case.
+      _idle.add(player);
     }
 
     sub = player.onPlayerComplete.listen((_) => release());
@@ -542,7 +559,7 @@ class _ManagedPool {
       if (kDebugMode) {
         debugPrint('SoundService: play failed for $asset ($e)');
       }
-      await release();
+      release();
     }
   }
 
