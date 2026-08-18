@@ -274,6 +274,16 @@ class AnimatedShip extends StatelessWidget {
   final double? width;
   final double? height;
 
+  /// Renders the destroyed/wrecked version of this ship (charred hull,
+  /// smoke wisps, hit-damage craters — see [ShipPainter]) instead of its
+  /// normal live appearance. Used by the remaining-ships preview so a sunk
+  /// ship gets an actual destroyed model rather than a generic "X" overlay.
+  final bool sunk;
+
+  /// Number of damage craters to draw (only visible once [sunk] is true,
+  /// or on a still-live ship that's been partially hit).
+  final int hitCount;
+
   const AnimatedShip({
     super.key,
     required this.spec,
@@ -282,12 +292,20 @@ class AnimatedShip extends StatelessWidget {
     this.vertical = false,
     this.width,
     this.height,
+    this.sunk = false,
+    this.hitCount = 0,
   });
 
   @override
   Widget build(BuildContext context) {
     // wavePhase 0.5 is the painter's neutral/no-bob position.
-    final painter = ShipPainter(spec: spec, skin: skin, wavePhase: 0.5);
+    final painter = ShipPainter(
+      spec: spec,
+      skin: skin,
+      wavePhase: 0.5,
+      sunk: sunk,
+      hitCount: hitCount,
+    );
     final child = CustomPaint(
       painter: painter,
       size: Size(width ?? size, height ?? size * 0.55),

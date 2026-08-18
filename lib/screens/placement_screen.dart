@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -14,8 +15,20 @@ import '../widgets/ship_painter.dart';
 import 'battle_screen.dart';
 
 /// Red / blue flat skins matching the 1:1 gameplay video.
-const _p1PlaceSkin = ShipSkin('p1v', 'P1', AppColors.shipRed, AppColors.shipRedDark, 0);
-const _p2PlaceSkin = ShipSkin('p2v', 'P2', AppColors.shipBlue, AppColors.shipBlueDark, 0);
+const _p1PlaceSkin = ShipSkin(
+  'p1v',
+  'P1',
+  AppColors.shipRed,
+  AppColors.shipRedDark,
+  0,
+);
+const _p2PlaceSkin = ShipSkin(
+  'p2v',
+  'P2',
+  AppColors.shipBlue,
+  AppColors.shipBlueDark,
+  0,
+);
 
 /// "Deploy your ships" — reference-style placement:
 /// drag ships from the top dock onto the grid (or tap an empty cell),
@@ -130,7 +143,12 @@ class _PlacementScreenState extends State<PlacementScreen> {
   /// unoccupied — used for the live drag highlight so a ship being
   /// repositioned doesn't flag itself as a collision.
   bool _canPlaceIgnoring(
-      ShipKind ignore, ShipSpec spec, int row, int col, bool horizontal) {
+    ShipKind ignore,
+    ShipSpec spec,
+    int row,
+    int col,
+    bool horizontal,
+  ) {
     if (horizontal) {
       if (col + spec.size > kBoardSize) return false;
     } else {
@@ -162,8 +180,12 @@ class _PlacementScreenState extends State<PlacementScreen> {
       r = kBoardSize - spec.size;
     }
     setState(() {
-      _previewShip =
-          PlacedShip(spec: spec, row: r, col: c, horizontal: horizontal);
+      _previewShip = PlacedShip(
+        spec: spec,
+        row: r,
+        col: c,
+        horizontal: horizontal,
+      );
       _previewValid = _canPlaceIgnoring(kind, spec, r, c, horizontal);
     });
   }
@@ -250,8 +272,9 @@ class _PlacementScreenState extends State<PlacementScreen> {
     late StreamSubscription sub;
     sub = controller.network.messages.listen((msg) {
       if (msg['type'] == 'board') {
-        final enemyBoard =
-            Board.fromJson(Map<String, dynamic>.from(msg['b'] as Map));
+        final enemyBoard = Board.fromJson(
+          Map<String, dynamic>.from(msg['b'] as Map),
+        );
         sub.cancel();
         if (mounted) Navigator.of(context, rootNavigator: true).pop();
         controller.attachNetwork();
@@ -281,8 +304,49 @@ class _PlacementScreenState extends State<PlacementScreen> {
   }
 
   void _goBattle() {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const BattleScreen()),
+    Navigator.of(
+      context,
+    ).pushReplacement(MaterialPageRoute(builder: (_) => const BattleScreen()));
+  }
+
+  /// Page transition used to enter Player 2's (already 180°-rotated —
+  /// see `build()`) placement screen: a short perspective "turn" — starting
+  /// edge-on and swinging down to face-on with a fade — instead of the
+  /// plain slide/fade a default MaterialPageRoute would use. Purely a
+  /// paint-time transition (`Transform` around the incoming page), so it
+  /// doesn't affect hit-testing at all; the destination screen only
+  /// becomes interactive once the transition has settled, same as any
+  /// other page transition.
+  Route<void> _flipToPlayer2Route() {
+    return PageRouteBuilder<void>(
+      transitionDuration: const Duration(milliseconds: 620),
+      reverseTransitionDuration: const Duration(milliseconds: 620),
+      pageBuilder: (context, animation, secondaryAnimation) =>
+          const PlacementScreen(isPlayer2: true),
+      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeInOutCubic,
+        );
+        return AnimatedBuilder(
+          animation: curved,
+          child: child,
+          builder: (context, child) {
+            final t = curved.value;
+            final angle = (1 - t) * (math.pi / 2);
+            return Opacity(
+              opacity: t.clamp(0.0, 1.0),
+              child: Transform(
+                alignment: Alignment.center,
+                transform: Matrix4.identity()
+                  ..setEntry(3, 2, 0.0012)
+                  ..rotateY(angle),
+                child: child,
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -300,8 +364,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
   /// estimate from the screen width, which is close enough for that one
   /// frame and self-corrects on the next rebuild.
   double _cellSize(BuildContext context) {
-    final gridBox =
-        _gridKey.currentContext?.findRenderObject() as RenderBox?;
+    final gridBox = _gridKey.currentContext?.findRenderObject() as RenderBox?;
     if (gridBox != null && gridBox.hasSize) {
       return gridBox.size.width / kBoardSize;
     }
@@ -324,11 +387,13 @@ class _PlacementScreenState extends State<PlacementScreen> {
         subtitle: 'Player 2 — deploy your fleet in secret!',
         buttonLabel: 'OK',
         onReady: () {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(
-              builder: (_) => const PlacementScreen(isPlayer2: true),
-            ),
-          );
+          // REDESIGN (Player 2 perspective): once the device is handed
+          // over, the incoming Player 2 placement screen (already
+          // rendered 180°-rotated via the RotatedBox above) flips into
+          // view with a short perspective turn instead of just popping in
+          // — "Player 1 placement → handoff screen → rotate/flip
+          // animation → Player 2 placement" per the redesign brief.
+          Navigator.of(context).pushReplacement(_flipToPlayer2Route());
         },
       );
     }
@@ -337,206 +402,247 @@ class _PlacementScreenState extends State<PlacementScreen> {
       body: Container(
         color: AppColors.coralVideo,
         child: SafeArea(
-          child: Column(
-            children: [
-              // ---------- Navy header ----------
-              Container(
-                width: double.infinity,
-                color: AppColors.navy,
-                padding: const EdgeInsets.fromLTRB(14, 14, 14, 22),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        GestureDetector(
+          // REDESIGN (Player 2 rotated perspective): rather than rotating
+          // individual pieces, the ENTIRE placement interface — header,
+          // dock tray, grid, hint — is wrapped in one RotatedBox for
+          // Player 2, exactly the same technique battle_screen.dart
+          // already uses to flip P2's half of the battle screen 180° so
+          // the players can sit across from each other. `RotatedBox` (not
+          // a cosmetic `Transform`) is what makes this safe: it applies a
+          // REAL layout+paint+hit-test transform, so every existing tap/
+          // drag coordinate calculation in this screen and in BattleGrid
+          // (which all read raw local/global offsets via
+          // `RenderBox.globalToLocal`) keeps working completely unchanged
+          // — the rotation is transparently accounted for by the render
+          // tree, not something the interaction code needs to know about.
+          // `quarterTurns: 0` for Player 1 is a no-op passthrough.
+          child: RotatedBox(
+            quarterTurns: widget.isPlayer2 ? 2 : 0,
+            child: Column(
+              children: [
+                // ---------- Navy header ----------
+                Container(
+                  width: double.infinity,
+                  color: AppColors.navy,
+                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 22),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          GestureDetector(
+                            onTap: () {
+                              SoundService.instance.click();
+                              Navigator.pop(context);
+                            },
+                            child: const Icon(
+                              Icons.arrow_back,
+                              color: AppColors.cream,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'Deploy your ships',
+                              style: AppText.title(size: 24),
+                            ),
+                          ),
+                          _ExitButton(onTap: () => Navigator.pop(context)),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '$playerLabel — drag to move and tap to rotate, or try random placement',
+                        textAlign: TextAlign.center,
+                        style: AppText.body(
+                          size: 12,
+                          color: AppColors.cream.withValues(alpha: 0.75),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          NeonButton(
+                            label: 'RANDOM',
+                            icon: Icons.shuffle,
+                            color: AppColors.blue,
+                            compact: true,
+                            onPressed: _randomizing ? null : _randomize,
+                          ),
+                          const SizedBox(width: 12),
+                          NeonButton(
+                            label: _allPlaced
+                                ? 'SAVE'
+                                : 'SAVE  ${_board.ships.length}/5',
+                            icon: Icons.bolt,
+                            color: _allPlaced
+                                ? AppColors.seafoam
+                                : AppColors.inkSoft,
+                            onPressed: (_allPlaced && !_randomizing)
+                                ? _save
+                                : null,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+
+                // ---------- Dock tray (draggable ship icons) ----------
+                Container(
+                  height: _dockH,
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
+                  decoration: const BoxDecoration(
+                    color: AppColors.coralLight,
+                    border: Border(
+                      bottom: BorderSide(color: AppColors.outline, width: 3),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      for (final spec in kFleet)
+                        _DockShip(
+                          spec: spec,
+                          skin: skin,
+                          cell: cellSize,
+                          placed: _board.shipOfKind(spec.kind) != null,
+                          selected: _selected == spec.kind,
+                          rotated: widget.isPlayer2,
                           onTap: () {
                             SoundService.instance.click();
-                            Navigator.pop(context);
+                            setState(
+                              () => _selected = _selected == spec.kind
+                                  ? null
+                                  : spec.kind,
+                            );
                           },
-                          child: const Icon(Icons.arrow_back,
-                              color: AppColors.cream),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            'Deploy your ships',
-                            style: AppText.title(size: 24),
-                          ),
-                        ),
-                        _ExitButton(onTap: () => Navigator.pop(context)),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '$playerLabel — drag to move and tap to rotate, or try random placement',
-                      textAlign: TextAlign.center,
-                      style: AppText.body(
-                          size: 12, color: AppColors.cream.withValues(alpha: 0.75)),
-                    ),
-                    const SizedBox(height: 14),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        NeonButton(
-                          label: 'RANDOM',
-                          icon: Icons.shuffle,
-                          color: AppColors.blue,
-                          compact: true,
-                          onPressed: _randomizing ? null : _randomize,
-                        ),
-                        const SizedBox(width: 12),
-                        NeonButton(
-                          label: _allPlaced
-                              ? 'SAVE'
-                              : 'SAVE  ${_board.ships.length}/5',
-                          icon: Icons.bolt,
-                          color: _allPlaced ? AppColors.seafoam : AppColors.inkSoft,
-                          onPressed:
-                              (_allPlaced && !_randomizing) ? _save : null,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-              // ---------- Dock tray (draggable ship icons) ----------
-              Container(
-                height: _dockH,
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                decoration: const BoxDecoration(
-                  color: AppColors.coralLight,
-                  border: Border(
-                    bottom: BorderSide(color: AppColors.outline, width: 3),
+                    ],
                   ),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                     for (final spec in kFleet)
-                       _DockShip(
-                         spec: spec,
-                         skin: skin,
-                         cell: cellSize,
-                         placed: _board.shipOfKind(spec.kind) != null,
-                         selected: _selected == spec.kind,
-                         onTap: () {
-                           SoundService.instance.click();
-                           setState(() => _selected =
-                               _selected == spec.kind ? null : spec.kind);
-                         },
-                       ),
-                  ],
-                ),
-              ),
 
-              // ---------- Grid (drop target) ----------
-              // No side padding and no size cap: the grid fills all the
-              // room the Expanded region gives it (still a square, via
-              // BattleGrid's own AspectRatio), rather than the old
-              // 16px-padded, 440px-capped box.
-              Expanded(
-                child: Center(
-                  child: DragTarget<({ShipKind kind, bool horizontal})>(
-                    onWillAcceptWithDetails: (_) => true,
-                    onMove: (details) {
-                      final spec =
-                          kFleet.firstWhere((s) => s.kind == details.data.kind);
-                      final gridBox = _gridKey.currentContext
-                          ?.findRenderObject() as RenderBox?;
-                      if (gridBox == null) return;
-                      final local = gridBox.globalToLocal(details.offset);
-                      final cell = gridBox.size.width / kBoardSize;
-                      var c = (local.dx / cell).floor();
-                      var r = (local.dy / cell).floor();
-                      final h = details.data.horizontal;
-                      if (h && c + spec.size > kBoardSize) {
-                        c = kBoardSize - spec.size;
-                      }
-                      if (!h && r + spec.size > kBoardSize) {
-                        r = kBoardSize - spec.size;
-                      }
-                      r = r.clamp(0, kBoardSize - 1);
-                      c = c.clamp(0, kBoardSize - 1);
-                      setState(() {
-                        _previewShip =
-                            PlacedShip(spec: spec, row: r, col: c, horizontal: h);
-                        _previewValid = _board.canPlace(spec, r, c, h);
-                      });
-                    },
-                    onLeave: (_) => setState(() => _previewShip = null),
-                    onAcceptWithDetails: (details) {
-                      final spec =
-                          kFleet.firstWhere((s) => s.kind == details.data.kind);
-                      final gridBox = _gridKey.currentContext
-                          ?.findRenderObject() as RenderBox?;
-                      if (gridBox == null) return;
-                      final local = gridBox.globalToLocal(details.offset);
-                      final cell = gridBox.size.width / kBoardSize;
-                      var c = (local.dx / cell).floor();
-                      var r = (local.dy / cell).floor();
-                      final h = details.data.horizontal;
-                      if (h && c + spec.size > kBoardSize) {
-                        c = kBoardSize - spec.size;
-                      }
-                      if (!h && r + spec.size > kBoardSize) {
-                        r = kBoardSize - spec.size;
-                      }
-                      r = r.clamp(0, kBoardSize - 1);
-                      c = c.clamp(0, kBoardSize - 1);
-                      if (_board.canPlace(spec, r, c, h)) {
-                        _board.place(spec, r, c, h);
-                        SoundService.instance.place();
+                // ---------- Grid (drop target) ----------
+                // No side padding and no size cap: the grid fills all the
+                // room the Expanded region gives it (still a square, via
+                // BattleGrid's own AspectRatio), rather than the old
+                // 16px-padded, 440px-capped box.
+                Expanded(
+                  child: Center(
+                    child: DragTarget<({ShipKind kind, bool horizontal})>(
+                      onWillAcceptWithDetails: (_) => true,
+                      onMove: (details) {
+                        final spec = kFleet.firstWhere(
+                          (s) => s.kind == details.data.kind,
+                        );
+                        final gridBox =
+                            _gridKey.currentContext?.findRenderObject()
+                                as RenderBox?;
+                        if (gridBox == null) return;
+                        final local = gridBox.globalToLocal(details.offset);
+                        final cell = gridBox.size.width / kBoardSize;
+                        var c = (local.dx / cell).floor();
+                        var r = (local.dy / cell).floor();
+                        final h = details.data.horizontal;
+                        if (h && c + spec.size > kBoardSize) {
+                          c = kBoardSize - spec.size;
+                        }
+                        if (!h && r + spec.size > kBoardSize) {
+                          r = kBoardSize - spec.size;
+                        }
+                        r = r.clamp(0, kBoardSize - 1);
+                        c = c.clamp(0, kBoardSize - 1);
                         setState(() {
-                          _selected = null;
-                          _previewShip = null;
+                          _previewShip = PlacedShip(
+                            spec: spec,
+                            row: r,
+                            col: c,
+                            horizontal: h,
+                          );
+                          _previewValid = _board.canPlace(spec, r, c, h);
                         });
-                      } else {
-                        SoundService.instance.denied();
-                        setState(() => _previewShip = null);
-                      }
-                    },
-                    builder: (context, candidates, rejected) {
-                      return Container(
-                        key: _gridKey,
-                        child: BattleGrid(
-                          shots: List.generate(kBoardSize,
-                              (_) => List.filled(kBoardSize, 0)),
-                          ships: _board.ships,
-                          skin: skin,
-                          cellColor: AppColors.steelBlue,
-                          glowColor: AppColors.steelBlueDark,
-                          previewShip: _previewShip,
-                          previewValid: _previewValid,
-                          // Locked while a random shuffle is dealing ships
-                          // out (`_randomizing`) so a tap/drag can't land
-                          // mid-animation and fight the in-flight reshuffle.
-                          onTapCell: _randomizing ? null : _onGridTap,
-                          onShipTap: _randomizing ? null : _rotateShip,
-                          onShipDragEnd: _randomizing ? null : _moveShip,
-                          onShipDragUpdate: _onShipDragPreview,
-                        ),
-                      );
-                    },
+                      },
+                      onLeave: (_) => setState(() => _previewShip = null),
+                      onAcceptWithDetails: (details) {
+                        final spec = kFleet.firstWhere(
+                          (s) => s.kind == details.data.kind,
+                        );
+                        final gridBox =
+                            _gridKey.currentContext?.findRenderObject()
+                                as RenderBox?;
+                        if (gridBox == null) return;
+                        final local = gridBox.globalToLocal(details.offset);
+                        final cell = gridBox.size.width / kBoardSize;
+                        var c = (local.dx / cell).floor();
+                        var r = (local.dy / cell).floor();
+                        final h = details.data.horizontal;
+                        if (h && c + spec.size > kBoardSize) {
+                          c = kBoardSize - spec.size;
+                        }
+                        if (!h && r + spec.size > kBoardSize) {
+                          r = kBoardSize - spec.size;
+                        }
+                        r = r.clamp(0, kBoardSize - 1);
+                        c = c.clamp(0, kBoardSize - 1);
+                        if (_board.canPlace(spec, r, c, h)) {
+                          _board.place(spec, r, c, h);
+                          SoundService.instance.place();
+                          setState(() {
+                            _selected = null;
+                            _previewShip = null;
+                          });
+                        } else {
+                          SoundService.instance.denied();
+                          setState(() => _previewShip = null);
+                        }
+                      },
+                      builder: (context, candidates, rejected) {
+                        return Container(
+                          key: _gridKey,
+                          child: BattleGrid(
+                            shots: List.generate(
+                              kBoardSize,
+                              (_) => List.filled(kBoardSize, 0),
+                            ),
+                            ships: _board.ships,
+                            skin: skin,
+                            cellColor: AppColors.steelBlue,
+                            glowColor: AppColors.steelBlueDark,
+                            previewShip: _previewShip,
+                            previewValid: _previewValid,
+                            // Locked while a random shuffle is dealing ships
+                            // out (`_randomizing`) so a tap/drag can't land
+                            // mid-animation and fight the in-flight reshuffle.
+                            onTapCell: _randomizing ? null : _onGridTap,
+                            onShipTap: _randomizing ? null : _rotateShip,
+                            onShipDragEnd: _randomizing ? null : _moveShip,
+                            onShipDragUpdate: _onShipDragPreview,
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ),
-              ),
 
-              // ---------- Hint ----------
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                child: Text(
-                  _selectedSpec != null
-                      ? 'TAP THE GRID TO PLACE: ${_selectedSpec!.name.toUpperCase()}'
-                      : _allPlaced
-                          ? 'FLEET READY — HIT SAVE TO ENTER BATTLE!'
-                          : 'TAP A SHIP ABOVE, OR RANDOM TO AUTO-DEPLOY',
-                  textAlign: TextAlign.center,
-                  style: AppText.label(size: 11, color: AppColors.navy),
+                // ---------- Hint ----------
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                  child: Text(
+                    _selectedSpec != null
+                        ? 'TAP THE GRID TO PLACE: ${_selectedSpec!.name.toUpperCase()}'
+                        : _allPlaced
+                        ? 'FLEET READY — HIT SAVE TO ENTER BATTLE!'
+                        : 'TAP A SHIP ABOVE, OR RANDOM TO AUTO-DEPLOY',
+                    textAlign: TextAlign.center,
+                    style: AppText.label(size: 11, color: AppColors.navy),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -555,6 +661,17 @@ class _DockShip extends StatelessWidget {
   final double cell;
   final VoidCallback onTap;
 
+  /// True for Player 2's (180°-rotated) placement screen. The dock icon
+  /// and drop-target logic don't need to know about this — `RotatedBox`
+  /// already handles them transparently (see `build()` on
+  /// `_PlacementScreenState`) — but `Draggable.feedback` is the one
+  /// exception: it's rendered into the app's root `Overlay`, which sits
+  /// OUTSIDE that RotatedBox, so without this the drag ghost would show
+  /// up right-side-up while dragged across an upside-down board. This
+  /// only spins the ghost's own artwork; the drop math still reads the
+  /// raw pointer offset exactly as before.
+  final bool rotated;
+
   const _DockShip({
     required this.spec,
     required this.skin,
@@ -562,6 +679,7 @@ class _DockShip extends StatelessWidget {
     required this.selected,
     required this.cell,
     required this.onTap,
+    this.rotated = false,
   });
 
   @override
@@ -627,11 +745,14 @@ class _DockShip extends StatelessWidget {
         color: Colors.transparent,
         child: Opacity(
           opacity: 0.85,
-          child: AnimatedShip(
-            spec: spec,
-            skin: skin,
-            width: cell * spec.size,
-            height: cell,
+          child: Transform.rotate(
+            angle: rotated ? math.pi : 0,
+            child: AnimatedShip(
+              spec: spec,
+              skin: skin,
+              width: cell * spec.size,
+              height: cell,
+            ),
           ),
         ),
       ),
@@ -712,13 +833,18 @@ class HandoffScreen extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text(title,
-                      style: AppText.title(size: 30), textAlign: TextAlign.center),
+                  Text(
+                    title,
+                    style: AppText.title(size: 30),
+                    textAlign: TextAlign.center,
+                  ),
                   const SizedBox(height: 16),
                   Text(
                     subtitle,
                     style: AppText.body(
-                        size: 16, color: AppColors.cream.withValues(alpha: 0.85)),
+                      size: 16,
+                      color: AppColors.cream.withValues(alpha: 0.85),
+                    ),
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 40),

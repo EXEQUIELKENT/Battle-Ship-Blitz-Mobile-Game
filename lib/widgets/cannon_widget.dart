@@ -37,6 +37,15 @@ class CannonWidget extends StatefulWidget {
     this.readyTrigger,
   });
 
+  /// Distance from the cannon's center to its muzzle tip, as a fraction of
+  /// [size], at rest (no recoil). Single source of truth shared with
+  /// `CannonPainter` (which draws the barrel out to this distance) and
+  /// battle_screen.dart's `_cannonMouth` (which spawns the cannonball from
+  /// this same point) — see the redesign note on [CannonPainter] for why
+  /// the old, much shorter value would otherwise leave the ball visibly
+  /// detached from the new, longer barrel's actual tip.
+  static const double muzzleFraction = 0.62;
+
   @override
   State<CannonWidget> createState() => _CannonWidgetState();
 }
@@ -307,32 +316,38 @@ class CannonPainter extends CustomPainter {
       arcPaint,
     );
 
-    // Barrel dome (dark cylinder). Nudged toward the ring's center as
-    // `recoil` rises — a subtle "the barrel just jerked backward into its
-    // housing" retraction, on top of the whole-cannon kickback translate
-    // and squash applied by the widget — then eases back out as recoil
-    // decays, so firing reads as a real mechanical kick rather than just
-    // a size pulse.
-    final domeR = outerR * 0.58;
-    final domeCenter = center - Offset(0, domeR * (0.14 - recoil * 0.05));
-    final domePaint = Paint()
+    // ----- Naval cannon barrel -----
+    // REDESIGN: the old cannon was a short, stubby round dome with a
+    // recessed "mouth" sitting almost entirely INSIDE the mount ring — it
+    // read as an icon, not a naval gun. This draws an actual elongated,
+    // tapered barrel (wide rear chamber → narrower muzzle) protruding out
+    // past the ring, with reinforcement bands and trunnion pins for a
+    // heavier, more mechanical silhouette. `recoil` pulls the WHOLE barrel
+    // assembly straight back down into the mount (rather than just
+    // shrinking/fading it), so a shot reads as a real kick and the barrel
+    // never visually detaches from its base. `muzzleCenter` is the single
+    // source of truth for where the muzzle flash, smoke, and (via
+    // `CannonWidget.muzzleFraction`, read externally by
+    // battle_screen.dart's `_cannonMouth`) the cannonball itself spawn
+    // from, so all three always agree on where the barrel tip actually is.
+    final domeR = outerR * 0.58; // kept as the breech/chamber's own radius
+    final barrelLen = size.width * CannonWidget.muzzleFraction;
+    final recoilPull = barrelLen * 0.16 * recoil;
+    final breechCenter = center + Offset(0, domeR * 0.10 + recoilPull * 0.35);
+    final muzzleCenter = center - Offset(0, barrelLen - recoilPull);
+
+    // Rear chamber (breech): a rounded knob where the barrel meets the
+    // mount — heavier than the barrel itself, like a real naval gun's
+    // breech block.
+    final breechPaint = Paint()
       ..shader = uiGradient(
-        domeCenter,
+        breechCenter,
         domeR,
         const [Color(0xFF64717E), Color(0xFF394552), Color(0xFF1B222A)],
       );
-    canvas.drawCircle(domeCenter, domeR, domePaint);
-    // Inset shadow ring at the dome's base for a touch of depth.
+    canvas.drawCircle(breechCenter, domeR, breechPaint);
     canvas.drawCircle(
-      domeCenter,
-      domeR * 0.92,
-      Paint()
-        ..color = Colors.black.withValues(alpha: 0.18)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = domeR * 0.10,
-    );
-    canvas.drawCircle(
-      domeCenter,
+      breechCenter,
       domeR,
       Paint()
         ..color = AppColors.outline
@@ -340,10 +355,73 @@ class CannonPainter extends CustomPainter {
         ..strokeWidth = 3,
     );
 
-    // Barrel mouth (darker inset circle near the top), with a thin
-    // metallic highlight crescent on its upper rim.
-    final mouthR = domeR * 0.52;
-    final mouthCenter = center - Offset(0, domeR * (0.52 - recoil * 0.10));
+    // Trunnion pins flanking the breech — the pivot mounts a real naval
+    // gun barrel sits on.
+    final trunnion = Paint()..color = AppColors.outline.withValues(alpha: 0.75);
+    canvas.drawCircle(breechCenter + Offset(-domeR * 0.92, domeR * 0.05),
+        domeR * 0.22, trunnion);
+    canvas.drawCircle(breechCenter + Offset(domeR * 0.92, domeR * 0.05),
+        domeR * 0.22, trunnion);
+
+    // Tapered barrel body: wide at the breech, narrower at the muzzle —
+    // the shape that actually reads as an elongated naval cannon rather
+    // than a round dome.
+    final breechHalfW = domeR * 0.60;
+    final muzzleHalfW = domeR * 0.34;
+    final barrelPath = Path()
+      ..moveTo(breechCenter.dx - breechHalfW, breechCenter.dy)
+      ..lineTo(muzzleCenter.dx - muzzleHalfW, muzzleCenter.dy)
+      ..lineTo(muzzleCenter.dx + muzzleHalfW, muzzleCenter.dy)
+      ..lineTo(breechCenter.dx + breechHalfW, breechCenter.dy)
+      ..close();
+    canvas.drawPath(
+      barrelPath,
+      Paint()
+        ..shader = uiGradient(
+          Offset.lerp(breechCenter, muzzleCenter, 0.3)!,
+          barrelLen * 0.6,
+          const [Color(0xFF6E7C8B), Color(0xFF3B4856), Color(0xFF1B222A)],
+        ),
+    );
+    canvas.drawPath(
+      barrelPath,
+      Paint()
+        ..color = AppColors.outline
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.6
+        ..strokeJoin = StrokeJoin.round,
+    );
+
+    // Reinforcement bands around the barrel — small mechanical detail
+    // breaking up the plain taper, like a real gun's cast collars.
+    final bandPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.30)
+      ..style = PaintingStyle.stroke;
+    for (final f in const [0.38, 0.70]) {
+      final bp = Offset.lerp(breechCenter, muzzleCenter, f)!;
+      final bw = breechHalfW + (muzzleHalfW - breechHalfW) * f;
+      bandPaint.strokeWidth = bw * 0.38;
+      canvas.drawLine(
+          bp - Offset(bw * 0.82, 0), bp + Offset(bw * 0.82, 0), bandPaint);
+    }
+
+    // Barrel highlight streak — a soft curved gloss along the upper-left
+    // edge of the barrel, closer to a polished-metal specular highlight.
+    canvas.drawLine(
+      Offset.lerp(breechCenter, muzzleCenter, 0.08)! -
+          Offset(breechHalfW * 0.45, 0),
+      Offset.lerp(breechCenter, muzzleCenter, 0.92)! -
+          Offset(muzzleHalfW * 0.45, 0),
+      Paint()
+        ..color = Colors.white.withValues(alpha: ready ? 0.24 : 0.11)
+        ..strokeWidth = domeR * 0.14
+        ..strokeCap = StrokeCap.round,
+    );
+
+    // Muzzle opening at the barrel's tip, with a thin metallic highlight
+    // crescent on its upper rim.
+    final mouthCenter = muzzleCenter;
+    final mouthR = muzzleHalfW * 0.92;
     canvas.drawCircle(mouthCenter, mouthR, Paint()..color = AppColors.outline);
     canvas.drawArc(
       Rect.fromCircle(center: mouthCenter, radius: mouthR * 0.92),
@@ -357,27 +435,9 @@ class CannonPainter extends CustomPainter {
         ..strokeCap = StrokeCap.round,
     );
     canvas.drawCircle(
-      mouthCenter - Offset(0, mouthR * 0.18),
-      mouthR * 0.72,
+      mouthCenter - Offset(0, mouthR * 0.12),
+      mouthR * 0.68,
       Paint()..color = const Color(0xFF0E151C),
-    );
-
-    // Barrel highlight streak — a soft curved gloss instead of a flat
-    // rounded rect, closer to a polished-metal specular highlight.
-    canvas.drawArc(
-      Rect.fromCenter(
-        center: center + Offset(-domeR * 0.18, domeR * 0.06),
-        width: domeR * 0.42,
-        height: domeR * 1.15,
-      ),
-      math.pi * 0.75,
-      math.pi * 0.5,
-      false,
-      Paint()
-        ..color = Colors.white.withValues(alpha: ready ? 0.22 : 0.10)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = domeR * 0.16
-        ..strokeCap = StrokeCap.round,
     );
 
     // Muzzle flash while recoiling: a soft smoke puff behind a bright

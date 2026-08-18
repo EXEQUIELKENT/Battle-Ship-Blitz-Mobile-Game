@@ -73,7 +73,6 @@ class _BattleScreenState extends State<BattleScreen>
   bool _showProjectile = false;
   List<int>? _pendingImpact; // cell waiting for the ball to land
   bool _pendingByP1 = true; // who fired the ball in flight
-  ShotResult? _pendingResult; // outcome of the ball in flight
 
   /// Screen-space geometry of each half, refreshed every layout pass.
   final Map<bool, _HalfGeom> _geom = {}; // key: isTopHalf
@@ -178,7 +177,7 @@ class _BattleScreenState extends State<BattleScreen>
     )..addStatusListener((s) {
         if (s == AnimationStatus.completed && mounted) {
           setState(() => _showProjectile = false);
-          _resolveImpact();
+          _tryResolveImpact();
         }
       });
 
@@ -232,7 +231,7 @@ class _BattleScreenState extends State<BattleScreen>
         if (_projCtrl.isAnimating) {
           // Another ball is already mid-flight, so this event's impact is
           // shown immediately with no travel animation of its own — play
-          // its sound right now too, since `_resolveImpact` (which will
+          // its sound right now too, since `_tryResolveImpact` (which will
           // fire later) is resolving a DIFFERENT, earlier pending shot.
           if (e.impactAt == null) {
             e.impactAt = DateTime.now();
@@ -244,6 +243,12 @@ class _BattleScreenState extends State<BattleScreen>
             } else if (e.result == ShotResult.hit) {
               _shake(_shakeHitMagnitude);
             }
+            // This event just became visible without ever going through
+            // _tryResolveImpact (it had no travel animation of its own),
+            // so it also needs its own chance to end the match if it was
+            // the deciding shot — see the bugfix note on
+            // GameController.hasPendingFinish.
+            controller.resolvePendingFinishFor(e);
           }
         } else if (!_delayedOpponentEvents.contains(e)) {
           _delayedOpponentEvents.add(e);
@@ -251,6 +256,17 @@ class _BattleScreenState extends State<BattleScreen>
         }
       }
     }
+    // BUGFIX (hotspot/online own-shot race): in hotspot/online mode,
+    // firing launches the projectile immediately off a placeholder result
+    // (the real one only arrives later over the network — see
+    // `GameController.fireAt`), so the ball can finish its fixed-duration
+    // flight before the true result message lands. `_tryResolveImpact`
+    // already handles "ball landed but the matching event doesn't exist
+    // yet" by simply waiting; this call is what wakes it back up the
+    // instant that event actually arrives, from wherever in the event
+    // list it landed. It's a safe no-op whenever nothing is pending or the
+    // ball is still visibly in flight.
+    _tryResolveImpact();
   }
 
   /// Advances to the result screen — now the ONLY way there once the
@@ -296,7 +312,6 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() {
       _pendingByP1 = false;
       _pendingImpact = [e.row, e.col];
-      _pendingResult = e.result;
       _projFrom = from;
       _projTo = to;
       _projCell = bottom.cell;
@@ -307,30 +322,49 @@ class _BattleScreenState extends State<BattleScreen>
     _projCtrl.forward(from: 0);
   }
 
-  void _resolveImpact() {
+  /// Resolves the currently pending shot (`_pendingImpact`/`_pendingByP1`)
+  /// against `controller.events` — but ONLY once both (a) the projectile
+  /// has visibly finished traveling (`_showProjectile == false`) and (b)
+  /// the true result is actually known (a matching, not-yet-resolved
+  /// `CombatEvent` exists). For a purely local shot both become true at
+  /// the same instant the flight animation completes. For the local
+  /// player's own shot in hotspot/online mode the true result arrives
+  /// asynchronously over the network and can land slightly before OR
+  /// after the ball's fixed-duration flight finishes — so this is safe to
+  /// call from either trigger (`_projCtrl`'s completion listener, or
+  /// `_onUpdate` whenever a new event arrives) and only ever resolves
+  /// once, whichever condition is satisfied last. If the ball has landed
+  /// but the event doesn't exist yet, it simply leaves `_pendingImpact`
+  /// set and returns — the next call (from `_onUpdate`, the instant the
+  /// real result arrives) finishes the job.
+  void _tryResolveImpact() {
+    if (_showProjectile) return; // ball still visibly traveling
     final cell = _pendingImpact;
     final byP1 = _pendingByP1;
-    final result = _pendingResult;
-    _pendingImpact = null;
-    _pendingResult = null;
     if (cell == null) return;
     final controller = context.read<GameController>();
+    CombatEvent? found;
     for (final e in controller.events.reversed) {
       if (e.row == cell[0] &&
           e.col == cell[1] &&
           e.byPlayer == byP1 &&
           e.impactAt == null) {
-        e.impactAt = DateTime.now();
-        _impactResolutions++;
+        found = e;
         break;
       }
     }
+    if (found == null) return; // true result not in yet — wait for it
+
+    _pendingImpact = null;
+    found.impactAt = DateTime.now();
+    _impactResolutions++;
     controller.touch();
+    final result = found.result;
     // Hit/sunk/miss sound, right as the ball actually lands — synced to
     // the same moment as the shake below and the hit/miss/wreckage reveal
     // (see `sunkShips` in `_buildHalf`), instead of firing back at tap
     // time before the ball has visually gone anywhere.
-    if (result != null) _playImpactSound(result);
+    _playImpactSound(result);
     // Screen shake, right as the ball actually lands — never on a miss
     // (there's nothing to "hit"). Sinking a ship shakes harder than a
     // plain hit so a killing blow reads as more impactful.
@@ -339,6 +373,11 @@ class _BattleScreenState extends State<BattleScreen>
     } else if (result == ShotResult.hit) {
       _shake(_shakeHitMagnitude);
     }
+    // BUGFIX (end-game timing): the match is only actually allowed to end
+    // here, now that this shot's impact has been visually applied — see
+    // GameController.hasPendingFinish / resolvePendingFinishFor. A no-op
+    // unless `found` happens to be the exact shot that decided the match.
+    controller.resolvePendingFinishFor(found);
     // 1:1 video rule: a HIT lets the same player keep firing; only a MISS
     // passes the turn to the other player (local AND vs AI — same rule).
     // The handoff is seamless (no popup): the active flag flips, the
@@ -411,16 +450,21 @@ class _BattleScreenState extends State<BattleScreen>
       SoundService.instance.denied();
       return;
     }
-    _launchBall(controller, byP1: byP1, r: r, c: c, res: res);
+    _launchBall(controller, byP1: byP1, r: r, c: c);
   }
 
-  /// Shared ball-launch used by the player's cannon tap.
+  /// Shared ball-launch used by the player's cannon tap. Deliberately does
+  /// NOT take the shot's result: in hotspot/online mode the true result of
+  /// the LOCAL player's own shot isn't known yet at launch time (it comes
+  /// back from the peer asynchronously — see `GameController.fireAt`), so
+  /// resolving what actually happened is left entirely to
+  /// `_tryResolveImpact`, which looks it up from `controller.events` once
+  /// it's actually known instead of trusting a guess made at tap time.
   void _launchBall(
     GameController controller, {
     required bool byP1,
     required int r,
     required int c,
-    required ShotResult res,
   }) {
     final top = _geom[true];
     final bottom = _geom[false];
@@ -437,7 +481,6 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() {
       _pendingByP1 = byP1;
       _pendingImpact = [r, c];
-      _pendingResult = res;
       _projFrom = from;
       _projTo = to;
       _projCell = targetGeom.cell;
@@ -468,10 +511,14 @@ class _BattleScreenState extends State<BattleScreen>
 
   /// Absolute screen position of a half's cannon MOUTH, accounting for the
   /// 180° rotation of the top half, given the cannon's slide amount [t].
+  /// Uses `CannonWidget.muzzleFraction` — the SAME constant the redesigned,
+  /// longer barrel is actually drawn out to — so the cannonball always
+  /// visibly launches from the real muzzle tip instead of a stale offset
+  /// left over from the old, much shorter cannon.
   Offset _cannonMouth(_HalfGeom g, double t) {
     final c = _cannonCenterLocal(g, t);
     final lx = c.dx;
-    final ly = c.dy - g.cannonSize * 0.25;
+    final ly = c.dy - g.cannonSize * CannonWidget.muzzleFraction;
     if (g.rotated) {
       return Offset(g.halfW - lx, g.halfTopY + (g.halfH - ly));
     }
@@ -713,6 +760,34 @@ class _BattleScreenState extends State<BattleScreen>
     }
   }
 
+  /// Names of ships on the [halfIsP1] board whose SINKING SHOT has actually
+  /// landed — i.e. the same "visually confirmed, not just logically
+  /// decided" gate used everywhere else a sunk ship's wreck is revealed.
+  /// Shared by the battle grid's own wreck reveal (`_buildHalf`) and the
+  /// middle-band remaining-ships preview (`_buildMiddleBand`/`_statusRow`)
+  /// so a ship's status-row icon and its on-grid wreck flip to "destroyed"
+  /// at exactly the same moment, for both players and in every mode
+  /// (vsAI/local/hotspot/online) — all of them funnel through the same
+  /// `GameController.events` + `impactAt` pipeline this reads from.
+  ///
+  /// The model marks a ship sunk (`PlacedShip.isSunk`) the instant the shot
+  /// is REGISTERED (tap time / AI decision time / network-result time),
+  /// well before the cannonball has actually flown across the screen —
+  /// reading that flag straight would flip the preview to "destroyed"
+  /// ahead of the ball's flight animation, sunk sound and screen-shake.
+  /// Gating on `events` (which only contains impact-LANDED shots — see
+  /// `_refreshDerivedCache`) keeps the preview in lockstep with those
+  /// instead, and since `events` only ever grows within a match, a name
+  /// once added here can never disappear again on a later rebuild.
+  Set<String> _revealedSunkNames(bool halfIsP1) {
+    final events = _eventsCache[halfIsP1] ?? const [];
+    return {
+      for (final e in events)
+        if (e.result == ShotResult.sunk && e.sunkShipName != null)
+          e.sunkShipName!,
+    };
+  }
+
   /// One player's half of the table: their own grid + their own cannon.
   Widget _buildHalf(
     GameController controller,
@@ -785,21 +860,10 @@ class _BattleScreenState extends State<BattleScreen>
     // Ships that have been fully sunk on THIS half's own board get
     // revealed on the grid in their destroyed form — common knowledge to
     // both players once a ship goes down, regardless of the "empty grid"
-    // rule that otherwise hides ship positions.
-    //
-    // Gated on the SAME `events` (impact-landed) list as the hit/miss
-    // markers above rather than reading `board.ships`' sunk flag directly.
-    // The model marks a ship sunk the instant the shot is registered (tap
-    // time), which is well before the cannonball has actually flown across
-    // the screen — reading that flag straight would make the wreckage pop
-    // onto the grid immediately on tap, ahead of its own flight animation,
-    // sound and screen-shake, all of which wait for the ball to land. This
-    // keeps the reveal in lockstep with those instead.
-    final revealedSunkNames = {
-      for (final e in events)
-        if (e.result == ShotResult.sunk && e.sunkShipName != null)
-          e.sunkShipName,
-    };
+    // rule that otherwise hides ship positions. Same gating (and the same
+    // helper) drives the destroyed-ship preview in the middle status band
+    // — see `_revealedSunkNames`.
+    final revealedSunkNames = _revealedSunkNames(halfIsP1);
     final sunkShips = [
       for (final s in board.ships)
         if (s.isSunk && revealedSunkNames.contains(s.spec.name)) s
@@ -1029,7 +1093,8 @@ class _BattleScreenState extends State<BattleScreen>
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(topBoard,
                       faded: topIsP1Fleet == activeIsP1,
-                      isP1Fleet: topIsP1Fleet),
+                      isP1Fleet: topIsP1Fleet,
+                      revealedSunkNames: _revealedSunkNames(topIsP1Fleet)),
                 ),
               ),
               Expanded(
@@ -1038,7 +1103,8 @@ class _BattleScreenState extends State<BattleScreen>
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(bottomBoard,
                       faded: bottomIsP1Fleet == activeIsP1,
-                      isP1Fleet: bottomIsP1Fleet),
+                      isP1Fleet: bottomIsP1Fleet,
+                      revealedSunkNames: _revealedSunkNames(bottomIsP1Fleet)),
                 ),
               ),
             ],
@@ -1069,7 +1135,9 @@ class _BattleScreenState extends State<BattleScreen>
       ShipSkin('p2', 'P2', AppColors.shipBlue, AppColors.shipBlueDark, 0);
 
   Widget _statusRow(Board board,
-      {required bool faded, required bool isP1Fleet}) {
+      {required bool faded,
+      required bool isP1Fleet,
+      required Set<String> revealedSunkNames}) {
     final skin = isP1Fleet ? _p1StatusSkin : _p2StatusSkin;
     // Per-cell pixel unit for the fleet row: each icon is drawn at
     // `unit * spec.size` wide with a constant beam (height), so a
@@ -1083,22 +1151,35 @@ class _BattleScreenState extends State<BattleScreen>
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
         for (final spec in kFleet)
-          Opacity(
-            opacity: faded ? 0.38 : 1.0,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                AnimatedShip(
-                  spec: spec,
-                  skin: skin,
-                  width: unit * spec.size,
-                  height: beam,
-                ),
-                if (board.shipOfKind(spec.kind)?.isSunk ?? false)
-                  const Icon(Icons.close, color: AppColors.hit, size: 22),
-              ],
-            ),
-          ),
+          Builder(builder: (context) {
+            final ship = board.shipOfKind(spec.kind);
+            // REDESIGN (destroyed ship preview): a ship only switches to
+            // its destroyed model once its sinking shot has visually
+            // landed (see `_revealedSunkNames`) — not the instant its last
+            // cell is logically hit, and not on any earlier, non-final
+            // hit either: the preview stays looking exactly like a normal
+            // active ship right up until that moment (hitCount is only
+            // ever passed once destroyed==true), matching "a ship remains
+            // active until all of its cells are destroyed". No X overlay:
+            // the destroyed state IS the ship's own wrecked model (charred
+            // hull, damage craters, smoke — see ShipPainter), so it stays
+            // recognizable as the same ship type instead of being replaced
+            // by a generic icon.
+            final destroyed = ship != null &&
+                ship.isSunk &&
+                revealedSunkNames.contains(spec.name);
+            return Opacity(
+              opacity: faded ? 0.38 : 1.0,
+              child: AnimatedShip(
+                spec: spec,
+                skin: skin,
+                width: unit * spec.size,
+                height: beam,
+                sunk: destroyed,
+                hitCount: destroyed ? spec.size : 0,
+              ),
+            );
+          }),
       ],
     );
   }
@@ -1189,6 +1270,11 @@ class _BattleScreenState extends State<BattleScreen>
                 ],
               ),
             ),
+            // REDESIGN: a faint cast-iron equatorial seam + a soft rim-light
+            // opposite the main highlight — cheap (two strokes, no extra
+            // particles) but enough to read as a forged iron ball rather
+            // than a flat gradient dot.
+            CustomPaint(size: Size(d, d), painter: const _CannonballDetailPainter()),
             // Small specular highlight — the "shine" that sells a hard,
             // polished sphere.
             Positioned(
@@ -1239,6 +1325,44 @@ class _BattleScreenState extends State<BattleScreen>
       ),
     );
   }
+}
+
+/// Adds a faint cast-iron equatorial seam and a soft opposite-side
+/// rim-light to the cannonball — see `_cannonball`. Kept as a separate
+/// tiny painter (rather than folded into the Container/BoxDecoration
+/// sphere) since neither of those effects is expressible as a plain box
+/// decoration. Stateless and const-constructible; `shouldRepaint` is safe
+/// to leave `false` since the ball's shrink-over-flight effect already
+/// forces a repaint via its changing `size`, not via any field here.
+class _CannonballDetailPainter extends CustomPainter {
+  const _CannonballDetailPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final r = size.width / 2;
+    canvas.drawOval(
+      Rect.fromCenter(center: center, width: r * 1.86, height: r * 0.55),
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.16)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(0.6, r * 0.05),
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: r * 0.92),
+      math.pi * 0.15,
+      math.pi * 0.35,
+      false,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.14)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.16
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _CannonballDetailPainter oldDelegate) => false;
 }
 
 /// Screen-space geometry of one half (used for cannonball trajectories).

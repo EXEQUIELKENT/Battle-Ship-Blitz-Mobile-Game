@@ -56,6 +56,34 @@ class GameController extends ChangeNotifier {
   int rpDelta = 0;
   bool rpAwarded = false;
 
+  // ----- Deferred end-game transition -----
+  // BUGFIX (result screen loading before the winning cannonball lands):
+  // `_checkVictory` used to call `_finish()` synchronously, the instant a
+  // shot was REGISTERED (tap time / AI decision time / network-result
+  // time) — well before BattleScreen had even started that shot's
+  // projectile animation. That flipped `phase` to `finished` immediately,
+  // which battle_screen.dart reads to reveal both full fleets and show the
+  // game-over bar, and played the victory/defeat sound, all before the
+  // cannonball had visibly traveled anywhere. Fixed by splitting "the
+  // match is over" into two steps: `_checkVictory` now only ARMS a pending
+  // finish tied to the exact CombatEvent that decided it; the actual
+  // `_finish()` (phase flip, sound, RP) only runs once BattleScreen calls
+  // [resolvePendingFinishFor] with that same event — i.e. the instant its
+  // projectile has visually landed and its hit/sunk marker has been
+  // applied. Tying this to the specific event object (not just "some
+  // impact resolved") keeps it correct even if another shot's impact
+  // resolves around the same time (e.g. hotspot/online's own-shot result
+  // arriving asynchronously while a different event is mid-flight).
+  CombatEvent? _pendingFinishEvent;
+  bool _pendingP1Win = false;
+  String _pendingReason = '';
+
+  /// True once a shot has been registered that will end the match, but its
+  /// projectile hasn't been confirmed to have visually landed yet. Exposed
+  /// mainly for tests/diagnostics — UI code should just fire shots and let
+  /// [resolvePendingFinishFor] do the right thing once each impact lands.
+  bool get hasPendingFinish => _pendingFinishEvent != null;
+
   final List<CombatEvent> events = [];
   /// Battle log (oldest-first order via add/removeAt(0) for O(1) appends).
   final List<String> combatLog = [];
@@ -113,6 +141,9 @@ class GameController extends ChangeNotifier {
     events.clear();
     combatLog.clear();
     _aiQueue.clear();
+    _pendingFinishEvent = null;
+    _pendingP1Win = false;
+    _pendingReason = '';
 
     for (var r = 0; r < kBoardSize; r++) {
       for (var c = 0; c < kBoardSize; c++) {
@@ -270,18 +301,48 @@ class GameController extends ChangeNotifier {
 
   void _checkVictory() {
     if (!battling) return;
+    if (_pendingFinishEvent != null) return; // already decided
 
     if (boards[1].allSunk) {
-      _finish(
+      _armFinish(
         p1Win: true,
         reason: 'All enemy ships destroyed!',
       );
     } else if (boards[0].allSunk) {
-      _finish(
+      _armFinish(
         p1Win: false,
         reason: 'Your fleet was destroyed!',
       );
     }
+  }
+
+  /// Records that the match is decided, WITHOUT ending it yet — see the
+  /// bugfix note above [hasPendingFinish]. `events.last` is the exact shot
+  /// [_registerShot] just added right before calling `_checkVictory`, so
+  /// this ties the pending finish to precisely the event whose visual
+  /// impact must land before the match is allowed to actually end.
+  void _armFinish({required bool p1Win, required String reason}) {
+    _pendingFinishEvent = events.last;
+    _pendingP1Win = p1Win;
+    _pendingReason = reason;
+  }
+
+  /// Called by the battle screen the instant a shot's impact has been
+  /// visually resolved (projectile landed, hit/sunk marker applied). If
+  /// [event] is the shot that decided the match, THIS is where the match
+  /// actually ends — phase flips to finished, RP is awarded, and the
+  /// victory/defeat sound plays. Any other event (the match isn't over, or
+  /// this isn't the deciding shot) is a no-op, so it's always safe to call
+  /// this after resolving any impact. Idempotent: once armed, only the
+  /// first matching call does anything (`_pendingFinishEvent` is cleared
+  /// immediately), so duplicate/late-arriving state updates can never
+  /// trigger the transition twice.
+  void resolvePendingFinishFor(CombatEvent event) {
+    if (!identical(_pendingFinishEvent, event)) return;
+    final p1Win = _pendingP1Win;
+    final reason = _pendingReason;
+    _pendingFinishEvent = null;
+    _finish(p1Win: p1Win, reason: reason);
   }
 
   void surrender() {
@@ -550,6 +611,9 @@ class GameController extends ChangeNotifier {
     suddenTimeout = false;
     _aiThinkAccumulator = 0;
     _aiShotPending = false;
+    _pendingFinishEvent = null;
+    _pendingP1Win = false;
+    _pendingReason = '';
     notifyListeners();
   }
 

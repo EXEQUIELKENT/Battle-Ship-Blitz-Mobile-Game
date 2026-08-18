@@ -8,27 +8,47 @@ import 'package:flutter/services.dart';
 /// Real sound effects via the audioplayers plugin.
 ///
 /// Short synthesized WAV assets live in `assets/sfx/` (see
-/// `tool/gen_sounds.dart`). A small pool of players per effect lets
-/// overlapping effects (fire + hit + splash) play simultaneously on
-/// Android & Web.
+/// `tool/gen_sounds.dart`). A bounded pool of [AudioPlayer]s per effect
+/// (see [_ManagedPool]) lets overlapping effects (fire + hit + splash) play
+/// simultaneously on Android & Web without ever cutting each other off.
 ///
-/// BUGFIX (sound effects sometimes disappearing): the old code called
-/// `player.stop()` and then IMMEDIATELY `player.play(...)` without
-/// awaiting the stop. On Flutter Web this races the underlying HTML
-/// `<audio>` element — a `play()` issued while a `pause()`/reset from the
-/// previous `stop()` is still in flight throws (browsers report this as
-/// "play() request was interrupted"), and the old code's blanket
-/// `catch (_) {}` swallowed that silently, so the sound just never played.
-/// It also only kept a pool of 3 players per effect, so any 4th
-/// near-simultaneous trigger of the SAME sound (e.g. several quick misses)
-/// forced a busy player to be interrupted, which is exactly when that race
-/// was likeliest to bite. Fixed by (1) preferring an already-idle player
-/// instead of interrupting a busy one, (2) properly awaiting `stop()`
-/// before replaying a still-busy player, (3) falling back to a disposable
-/// one-off player if every pooled player is busy or a play attempt throws,
-/// and (4) logging failures in debug builds instead of eating them
-/// silently, so a regression here is visible again instead of just
-/// "sometimes the sound doesn't happen".
+/// ROOT-CAUSE FIX (audio disappearing mid-match / cut off before finishing):
+/// two compounding bugs were found here.
+///
+/// 1. **Audio-focus self-interruption.** `audioplayers`' Android backend
+///    defaults every single `AudioPlayer` to request EXCLUSIVE audio focus
+///    (`AudioManager.AUDIOFOCUS_GAIN`) the instant it starts playing. Since
+///    this app plays many short, deliberately-OVERLAPPING effects (cannon
+///    fire immediately followed by an impact sound, several rapid shots),
+///    every new sound's own focus request silently steals focus from
+///    whichever sibling player — from THIS SAME APP — was already
+///    mid-clip, which native-pauses it. That pause happens entirely on the
+///    native side; the Dart-side `AudioPlayer.state` is never told, so it
+///    keeps reporting `playing` while the clip has actually gone dead —
+///    exactly "cut off before the clip finishes", and exactly why it gets
+///    worse as a match goes on (more overlapping shots quietly leave more
+///    zombie paused players behind). Fixed by giving every player in this
+///    service an explicit, non-exclusive [_sfxAudioContext]
+///    (`AndroidAudioFocus.none` / iOS `mixWithOthers`) so our own effects
+///    never fight each other — or themselves — for the OS audio focus
+///    stack. See `audioplayers_android`'s `FocusManager`/`WrappedPlayer` if
+///    this ever needs re-diagnosing.
+///
+/// 2. **Unbounded player creation.** `cannonFire()`, `hit()`, `miss()` and
+///    `sunk()` — the four sounds fired on literally every shot — used to
+///    spin up a brand-new disposable `AudioPlayer` on EVERY call via a
+///    one-shot helper, never reusing one. A long match with many
+///    consecutive shots means many dozens of native player objects created
+///    over time; if a single one of them ever fails to fire its
+///    `onPlayerComplete` event (which the interruption above made likely),
+///    it leaked forever. That's the "excessive audio player creation /
+///    resource exhaustion" and "one-shot player cleanup" failure modes
+///    called out in review. Fixed by routing every gameplay effect —
+///    including those four — through the same bounded [_ManagedPool]:
+///    a small warm pool of reusable players per effect that only grows
+///    (briefly, capped) under genuine simultaneous load and shrinks back
+///    down afterward, with a timeout-based safety net so a stuck player
+///    can never be lost for good.
 class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
@@ -53,47 +73,59 @@ class SoundService {
     'count_go': 'sfx/count_go.wav',
   };
 
-  /// Effects actually played through the pooled `_play()` path (see the
-  /// methods below — victory/defeat/place/denied/whir/turnPass/
-  /// cannonReady). Everything else (cannon_fire, hit, miss, sunk, click,
-  /// count_beep, count_go) is fired via `_playOneShot`, which spins up
-  /// its own disposable player and never touches the pool.
-  ///
-  /// BUGFIX (slow startup / music needing a tap to start): `init()` used
-  /// to build a pool for EVERY entry in `_files`, including the
-  /// one-shot-only effects above, with some of them (cannon_fire, hit,
-  /// miss, click) given an inflated pool of 4-5 players each. That meant
-  /// ~49 `AudioPlayer`s were created and awaited one-by-one before
-  /// `runApp()` even ran, needlessly stretching cold start — and the
-  /// longer that takes, the more likely it is that the menu music's
-  /// autoplay attempt (fired on the home screen's very first frame)
-  /// lands well outside any residual browser "user activation" window,
-  /// making it look like music "only starts after you tap something".
-  /// Only building pools for the effects that actually use them cuts
-  /// that down to ~21 players and removes the dead pool entirely for the
-  /// rest.
-  static const _pooledEffects = {
-    'victory',
-    'defeat',
-    'place',
-    'denied',
-    'whir',
-    'turn_pass',
-    'cannon_ready',
+  /// Warm (min) / cap (max) player counts per effect. Sized to how many
+  /// times an effect can realistically overlap itself in this game — e.g.
+  /// `cannon_fire`/`hit`/`miss` can stack a little (both sides' cannons,
+  /// quick taps) so they get a bit more headroom than one-off cues like
+  /// `victory`. These are hard caps: even under a pathological burst, a
+  /// single effect can never spin up more than `max` native players, and
+  /// the pool shrinks back down to something reasonable once the burst
+  /// passes (see [_ManagedPool]).
+  static const Map<String, (int min, int max)> _poolSizes = {
+    'cannon_fire': (2, 4),
+    'hit': (2, 4),
+    'miss': (2, 4),
+    'sunk': (1, 3),
+    'victory': (1, 2),
+    'defeat': (1, 2),
+    'place': (1, 3),
+    'click': (1, 3),
+    'denied': (1, 2),
+    'whir': (1, 2),
+    'turn_pass': (1, 2),
+    'cannon_ready': (1, 2),
+    'count_beep': (1, 2),
+    'count_go': (1, 2),
   };
-  static const _defaultPoolSize = 3;
 
   /// Effects that get a tiny random pitch/rate wobble each play so rapid
   /// repeats (several misses in a row, etc.) don't sound like a stuck
   /// robot repeating the exact same clip.
   static const _variedPitch = {'cannon_fire', 'hit', 'miss', 'click'};
 
-  final Map<String, List<AudioPlayer>> _pool = {};
-  final Map<String, int> _cursor = {};
+  /// Non-exclusive audio context shared by every player this service
+  /// creates (pooled effects AND menu music). `AndroidAudioFocus.none`
+  /// means we never ask Android's `AudioManager` for focus at all — so our
+  /// own overlapping sounds can never steal focus from (and silently
+  /// native-pause) each other. `mixWithOthers` on iOS is the equivalent:
+  /// this app's audio plays alongside whatever else is already playing
+  /// instead of trying to take over the session. See the class doc above.
+  static final AudioContext _sfxAudioContext = AudioContext(
+    android: const AudioContextAndroid(
+      contentType: AndroidContentType.sonification,
+      usageType: AndroidUsageType.game,
+      audioFocus: AndroidAudioFocus.none,
+    ),
+    iOS: AudioContextIOS(
+      category: AVAudioSessionCategory.playback,
+      options: const {AVAudioSessionOptions.mixWithOthers},
+    ),
+  );
+
+  final Map<String, _ManagedPool> _pools = {};
 
   static const _menuMusicAsset = 'sfx/menu_music.wav';
   AudioPlayer? _menuMusicPlayer;
-  final Set<AudioPlayer> _oneShots = <AudioPlayer>{};
 
   /// Whether menu music is *supposed* to be playing right now (set by
   /// [startMenuMusic], cleared by [stopMenuMusic]) — independent of
@@ -101,44 +133,29 @@ class SoundService {
   /// [notifyUserGesture] to know whether it should retry.
   bool _menuMusicWanted = false;
 
-  /// Pre-create a round-robin player pool per effect that actually uses
-  /// the pool (see `_pooledEffects`). Safe to call fire-and-forget from
-  /// main().
-  Future<void> init() => _rebuildPool();
+  /// Pre-create every effect's warm player pool. Safe to call
+  /// fire-and-forget from main().
+  Future<void> init() async {
+    try {
+      await AudioPlayer.global.setAudioContext(_sfxAudioContext);
+    } catch (_) {/* best effort — per-player context below still applies */}
+    await _buildPools();
+  }
 
-  bool _rebuildingPool = false;
-
-  /// (Re)builds the pooled `AudioPlayer`s from scratch: disposes whatever
-  /// is currently in `_pool` (a no-op the first time, since it's empty)
-  /// and creates fresh players with their source/mode/release-mode set
-  /// up again. Shared by [init] and [onAppResumed] — see the bugfix note
-  /// on [onAppResumed] for why rebuilding on resume matters.
-  Future<void> _rebuildPool() async {
-    for (final players in _pool.values) {
-      for (final p in players) {
-        try {
-          await p.dispose();
-        } catch (_) {/* already gone/invalid — fine */}
-      }
-    }
-    _pool.clear();
-    _cursor.clear();
-
+  Future<void> _buildPools() async {
     for (final entry in _files.entries) {
-      if (!_pooledEffects.contains(entry.key)) continue;
-      final size = _defaultPoolSize;
-      final players = <AudioPlayer>[];
-      for (var i = 0; i < size; i++) {
-        final p = AudioPlayer();
-        try {
-          await p.setSource(AssetSource(entry.value));
-          await p.setPlayerMode(PlayerMode.lowLatency);
-          await p.setReleaseMode(ReleaseMode.stop);
-        } catch (_) {/* cosmetic */}
-        players.add(p);
-      }
-      _pool[entry.key] = players;
-      _cursor[entry.key] = 0;
+      final sizes = _poolSizes[entry.key];
+      if (sizes == null) continue; // shouldn't happen — every key is sized
+      final pool = _pools.putIfAbsent(
+        entry.key,
+        () => _ManagedPool(
+          asset: entry.value,
+          minPlayers: sizes.$1,
+          maxPlayers: sizes.$2,
+          audioContext: _sfxAudioContext,
+        ),
+      );
+      await pool.warmUp();
     }
   }
 
@@ -151,20 +168,22 @@ class SoundService {
   /// pooled players to free resources; iOS deactivates the shared
   /// AVAudioSession in the same situations. Either way the Dart-side
   /// `AudioPlayer` objects survive and still report a normal idle/
-  /// completed state, so `_play()` happily keeps picking them — but their
+  /// completed state, so a pool happily keeps handing them out — but their
   /// underlying native sample is gone, so `play()` returns successfully
-  /// and produces no sound at all for the rest of the match, which is
-  /// exactly the "audio disappears mid-game" symptom. Rebuilding the pool
-  /// (reloading every asset into brand-new native players) the instant the
-  /// app comes back to the foreground restores real audio immediately
-  /// instead of leaving it dead until a full app restart. Menu music is
-  /// nudged back to life the same way, since its player can be silently
-  /// killed the same way (e.g. returning to the app from the home screen).
+  /// and produces no sound at all for the rest of the match. Rebuilding
+  /// every pool (reloading every asset into brand-new native players) the
+  /// instant the app comes back to the foreground restores real audio
+  /// immediately instead of leaving it dead until a full app restart.
+  /// Menu music is nudged back to life the same way, since its player can
+  /// be silently killed the same way (e.g. returning to the app from the
+  /// home screen).
   Future<void> onAppResumed() async {
     if (_rebuildingPool) return;
     _rebuildingPool = true;
     try {
-      await _rebuildPool();
+      for (final pool in _pools.values) {
+        await pool.rebuild();
+      }
       if (_menuMusicWanted) {
         await _attemptMenuMusicPlay();
         _scheduleMenuMusicAutoRetry();
@@ -174,82 +193,25 @@ class SoundService {
     }
   }
 
+  bool _rebuildingPool = false;
+
   /// Companion to [onAppResumed]: just stops the menu-music auto-retry
   /// burst (if one happens to be running) so it doesn't spin pointlessly
   /// while backgrounded. There's nothing else to proactively tear down —
-  /// one-shot players clean themselves up on completion regardless of
-  /// lifecycle state, and [onAppResumed] fully rebuilds the pool anyway.
+  /// pooled players clean themselves up on completion regardless of
+  /// lifecycle state, and [onAppResumed] fully rebuilds every pool anyway.
   void onAppPaused() {
     _menuMusicRetryTimer?.cancel();
   }
 
-  Future<void> _play(String key) async {
+  Future<void> _play(String key, {double volume = 1.0}) async {
     if (!enabled) return;
-    final players = _pool[key];
-    final asset = _files[key];
-    if (players == null || players.isEmpty || asset == null) return;
-
+    final pool = _pools[key];
+    if (pool == null) return;
     final rate = _variedPitch.contains(key)
         ? 0.94 + _rng.nextDouble() * 0.12 // ~±6% pitch/speed wobble
         : 1.0;
-
-    // Prefer a player that's already idle — avoids interrupting (and
-    // racing) a player that's mid-playback at all.
-    AudioPlayer? target;
-    for (final p in players) {
-      if (p.state != PlayerState.playing) {
-        target = p;
-        break;
-      }
-    }
-
-    if (target != null) {
-      await _fire(target, asset, rate);
-      return;
-    }
-
-    // Every pooled player is busy: round-robin-steal one, but AWAIT the
-    // stop before replaying it so we don't race the previous playback.
-    final i = _cursor[key]! % players.length;
-    _cursor[key] = i + 1;
-    final p = players[i];
-    try {
-      await p.stop();
-    } catch (_) {
-      // Ignore — we'll still attempt to play below.
-    }
-    final ok = await _fire(p, asset, rate);
-    if (!ok) {
-      // Last resort: a disposable one-shot player, so a single stuck
-      // pooled player can never fully silence an effect.
-      await _fireOneShot(asset, rate);
-    }
-  }
-
-  Future<bool> _fire(AudioPlayer p, String asset, double rate) async {
-    try {
-      await p.setPlaybackRate(rate);
-      await p.play(AssetSource(asset));
-      return true;
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('SoundService: play failed for $asset ($e)');
-      }
-      return false;
-    }
-  }
-
-  Future<void> _fireOneShot(String asset, double rate) async {
-    try {
-      final p = AudioPlayer();
-      await p.setReleaseMode(ReleaseMode.release);
-      await p.setPlaybackRate(rate);
-      await p.play(AssetSource(asset));
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('SoundService: one-shot fallback failed for $asset ($e)');
-      }
-    }
+    await pool.play(volume: volume, rate: rate);
   }
 
   Timer? _menuMusicRetryTimer;
@@ -269,7 +231,7 @@ class SoundService {
   ///    the instant one happens — the earliest a browser will allow it.
   /// 2. On native Android/iOS there is no such policy — nothing there
   ///    *requires* a gesture — but `main()` fires `SoundService.init()`
-  ///    unawaited at the same moment this runs, spinning up ~21 pooled
+  ///    unawaited at the same moment this runs, spinning up pooled
   ///    `AudioPlayer`s for sound effects concurrently with this looping
   ///    track's own first `play()` call. That contention can make the
   ///    very first attempt silently land on a not-yet-ready platform
@@ -304,6 +266,7 @@ class SoundService {
     final player = existing ?? AudioPlayer();
     _menuMusicPlayer = player;
     try {
+      await player.setAudioContext(_sfxAudioContext);
       await player.setReleaseMode(ReleaseMode.loop);
       await player.setVolume(0.82);
       await player.play(AssetSource(_menuMusicAsset), volume: 0.82);
@@ -366,22 +329,22 @@ class SoundService {
 
   void cannonFire() {
     HapticFeedback.mediumImpact();
-    _playOneShot('cannon_fire', volume: 1.0);
+    _play('cannon_fire');
   }
 
   void hit() {
     HapticFeedback.heavyImpact();
-    _playOneShot('hit', volume: 1.0);
+    _play('hit');
   }
 
   void miss() {
     HapticFeedback.lightImpact();
-    _playOneShot('miss', volume: 1.0);
+    _play('miss');
   }
 
   void sunk() {
     HapticFeedback.heavyImpact();
-    _playOneShot('sunk', volume: 1.0);
+    _play('sunk');
   }
 
   void victory() {
@@ -395,39 +358,10 @@ class SoundService {
 
   void place() => _play('place');
 
-  /// UI click uses a dedicated one-shot player instead of the pooled
-  /// low-latency players. This makes menu clicks reliable on Flutter Web
-  /// even when the shared effect pool is still initializing.
-  void click() => _playOneShot('click', volume: 0.9);
-
-  Future<void> _playOneShot(String key, {double volume = 1.0}) async {
-    final asset = _files[key];
-    if (!enabled || asset == null) return;
-
-    final player = AudioPlayer();
-    _oneShots.add(player);
-    var released = false;
-    Future<void> cleanup() async {
-      if (released) return;
-      released = true;
-      _oneShots.remove(player);
-      try { await player.dispose(); } catch (_) {}
-    }
-
-    try {
-      await player.setReleaseMode(ReleaseMode.release);
-      player.onPlayerComplete.first.then((_) => cleanup());
-      await player.play(
-        AssetSource(asset),
-        volume: volume.clamp(0.0, 1.0),
-      );
-    } catch (e) {
-      await cleanup();
-      if (kDebugMode) {
-        debugPrint('SoundService: one-shot sound failed for $asset ($e)');
-      }
-    }
-  }
+  /// UI click. Same pooled path as everything else now — no longer needs
+  /// a special case to stay reliable while the pools are still warming up,
+  /// since `_play` just no-ops safely if a pool isn't built yet.
+  void click() => _play('click', volume: 0.9);
 
   void denied() => _play('denied');
 
@@ -444,23 +378,176 @@ class SoundService {
   void cannonReady() => _play('cannon_ready');
 
   /// Countdown warning beep (plays each tick: 3..2..1).
-  void countBeep() => _playOneShot('count_beep', volume: 1.0);
+  void countBeep() => _play('count_beep');
 
   /// Higher "GO!" chime after the final countdown tick.
-  void countGo() => _playOneShot('count_go', volume: 1.0);
+  void countGo() => _play('count_go');
 
   Future<void> dispose() async {
     await stopMenuMusic();
-    for (final players in _pool.values) {
-      for (final player in players) {
-        try { await player.dispose(); } catch (_) {}
+    for (final pool in _pools.values) {
+      await pool.dispose();
+    }
+    _pools.clear();
+  }
+}
+
+/// A bounded, self-healing pool of [AudioPlayer]s all loaded with the same
+/// short sound effect — the "reliable audio-management strategy" this
+/// service needed for gameplay SFX.
+///
+/// Design (deliberately conservative — see the class doc on
+/// [SoundService] for the two bugs this replaces):
+///  * [minPlayers] are created up front and kept warm/idle between plays.
+///  * `play()` NEVER touches a player that's currently mid-clip — it only
+///    ever hands out a player from the idle pool, or creates a fresh one
+///    if every pooled player is busy (up to [maxPlayers] concurrently).
+///    This is what guarantees overlapping sounds never cut each other off.
+///  * A player is returned to the idle pool the instant its clip finishes
+///    (`onPlayerComplete`). If the pool has grown past [maxPlayers] to
+///    absorb a burst, the extra player is released instead of kept, so the
+///    pool naturally shrinks back down afterward.
+///  * A timeout-based safety net force-returns a player even if
+///    `onPlayerComplete` never fires (e.g. an interruption the platform
+///    plugin fails to report) — this is what prevents a player from ever
+///    becoming permanently stuck/unusable.
+///  * Only in the genuinely pathological case of [maxPlayers] simultaneous
+///    copies of the SAME effect already playing does this fall back to
+///    reusing the longest-running one (awaiting its `stop()` first, so it
+///    can never race a still-in-flight play call).
+class _ManagedPool {
+  _ManagedPool({
+    required this.asset,
+    required this.minPlayers,
+    required this.maxPlayers,
+    required this.audioContext,
+  });
+
+  final String asset;
+  final int minPlayers;
+  final int maxPlayers;
+  final AudioContext audioContext;
+
+  final List<AudioPlayer> _idle = [];
+  final Map<AudioPlayer, void Function()> _busy = {};
+
+  static const _safetyTimeout = Duration(seconds: 6);
+
+  Future<void> warmUp() async {
+    if (_idle.isNotEmpty || _busy.isNotEmpty) return; // already built
+    for (var i = 0; i < minPlayers; i++) {
+      try {
+        _idle.add(await _create());
+      } catch (_) {/* best effort — play() will lazily create on demand */}
+    }
+  }
+
+  Future<AudioPlayer> _create() async {
+    final p = AudioPlayer();
+    await p.setAudioContext(audioContext);
+    await p.setSource(AssetSource(asset));
+    await p.setPlayerMode(PlayerMode.lowLatency);
+    await p.setReleaseMode(ReleaseMode.stop);
+    return p;
+  }
+
+  Future<void> play({double volume = 1.0, double rate = 1.0}) async {
+    AudioPlayer player;
+    try {
+      if (_idle.isNotEmpty) {
+        player = _idle.removeLast();
+      } else if (_busy.length < maxPlayers) {
+        player = await _create();
+      } else {
+        // Every pooled player (up to the hard cap) is genuinely busy at
+        // once — reuse the oldest, but AWAIT its stop before replaying it
+        // so this can never race that still-in-flight playback. Detach it
+        // from its OLD checkout directly (just unsubscribing/cancelling
+        // that checkout's own listeners) rather than through that
+        // checkout's normal completion path, which would incorrectly hand
+        // it straight back to the idle pool at the same moment we're
+        // about to reuse it right here — i.e. a player briefly sitting in
+        // both `_idle` and `_busy` at once, which a concurrent play() call
+        // could then also check out. That's exactly the "reuse while
+        // still playing" race this whole pool exists to prevent.
+        final oldest = _busy.keys.first;
+        _busy.remove(oldest)?.call();
+        try {
+          await oldest.stop();
+        } catch (_) {}
+        player = oldest;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('SoundService: could not obtain a player for $asset ($e)');
+      }
+      return;
+    }
+
+    late final StreamSubscription<void> sub;
+    late final Timer safety;
+    var released = false;
+    Future<void> release() async {
+      if (released) return;
+      released = true;
+      safety.cancel();
+      await sub.cancel();
+      _busy.remove(player);
+      if (_idle.length < maxPlayers) {
+        _idle.add(player);
+      } else {
+        // Pool already has enough idle players resident — this one was
+        // only created to absorb a burst, so let it go instead of
+        // growing the pool permanently.
+        try {
+          await player.dispose();
+        } catch (_) {}
       }
     }
-    _pool.clear();
-    _cursor.clear();
-    for (final p in List<AudioPlayer>.from(_oneShots)) {
-      try { await p.dispose(); } catch (_) {}
+
+    sub = player.onPlayerComplete.listen((_) => release());
+    safety = Timer(_safetyTimeout, release);
+    // The busy-map entry only cancels this checkout's OWN listeners — see
+    // the steal-path comment above for why it must not also perform
+    // `release`'s idle-return side effect.
+    _busy[player] = () {
+      safety.cancel();
+      sub.cancel();
+    };
+
+    try {
+      await player.setVolume(volume.clamp(0.0, 1.0));
+      // Resuming (rather than re-calling play(source)) reuses the already
+      // -prepared native player instead of tearing it down and reloading
+      // the asset on every single play — this is the low-latency path.
+      await player.resume();
+      // Playback rate can only be applied to the underlying native stream
+      // once it has actually started (see SoundPool's per-stream setRate),
+      // so this is set AFTER resume(), not before.
+      if (rate != 1.0) await player.setPlaybackRate(rate);
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('SoundService: play failed for $asset ($e)');
+      }
+      await release();
     }
-    _oneShots.clear();
+  }
+
+  Future<void> dispose() async {
+    for (final p in [..._idle, ..._busy.keys]) {
+      try {
+        await p.dispose();
+      } catch (_) {}
+    }
+    _idle.clear();
+    _busy.clear();
+  }
+
+  /// Tears down and recreates every player in this pool — see the bugfix
+  /// note on [SoundService.onAppResumed] for why that's necessary after
+  /// the app returns from the background.
+  Future<void> rebuild() async {
+    await dispose();
+    await warmUp();
   }
 }

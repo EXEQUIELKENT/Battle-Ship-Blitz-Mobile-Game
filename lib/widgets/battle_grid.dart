@@ -248,7 +248,6 @@ class _BattleGridState extends State<BattleGrid>
                           tapFx: _tapFx,
                           preview: widget.previewShip,
                           previewValid: widget.previewValid,
-                          aimCell: widget.aimCell,
                           gridColor: widget.glowColor,
                           cellColor: widget.cellColor,
                           gridLineColor: widget.gridLineColor,
@@ -260,6 +259,17 @@ class _BattleGridState extends State<BattleGrid>
                       if (widget.ships != null && widget.skin != null)
                         ..._shipWidgets(cell),
                       if (_dragging && _dragKind != null) _dragGhost(cell),
+                      // REDESIGN: the targeting reticle is now a real
+                      // widget (see `_Crosshair`) instead of something
+                      // hand-drawn instantly inside the grid's painter —
+                      // that's what lets it smoothly animate its position/
+                      // scale/opacity via AnimatedPositioned/Scale/Opacity
+                      // instead of just popping onto whatever cell
+                      // [aimCell] points at. Always present (not gated
+                      // behind `aimCell != null`) so it can animate OUT
+                      // cleanly too; it's fully invisible/inert whenever
+                      // there's nothing to aim at.
+                      _Crosshair(cell: cell, target: widget.aimCell),
                     ],
                   ),
                 ),
@@ -357,38 +367,68 @@ class _BattleGridState extends State<BattleGrid>
     };
   }
 
+  /// BUGFIX (ship morphs/stretches on rotation instead of rotating): this
+  /// used to size the `AnimatedPositioned` box directly to the ship's own
+  /// N×1 / 1×N footprint, so an orientation change linearly interpolated
+  /// `width`/`height` straight from one aspect ratio to the other — the
+  /// ship visibly stretched and squashed through every ratio in between.
+  /// Worse, the ship's ARTWORK itself was rendered as a plain `CustomPaint`
+  /// when horizontal but wrapped in a discrete `RotatedBox` when vertical —
+  /// two structurally different widgets, so Flutter couldn't animate
+  /// between them at all; the art just popped to its new orientation
+  /// mid-morph.
+  ///
+  /// Fixed by giving each ship a fixed-size SQUARE positioned box (sized to
+  /// the ship's own long axis, so it comfortably contains the ship in
+  /// either orientation) that only ever animates POSITION — never size —
+  /// and rendering the ship's artwork at a constant natural size inside it,
+  /// spun a physical quarter turn with `AnimatedRotation` when vertical
+  /// (see `_ShipWithRotate`). That's what makes an orientation change read
+  /// as an actual rotation instead of a resize.
   List<Widget> _shipWidgets(double cell) {
     final ships = widget.ships!;
     return [
       for (final ship in ships)
-        if (ship.spec.kind != _dragKind)
-          // AnimatedPositioned (rather than a plain Positioned) so that
-          // whenever a ship's row/col changes in the underlying board
-          // state — e.g. the placement screen's RANDOM button rewriting
-          // every ship's position in one setState — it's matched by its
-          // stable `ValueKey(ship.spec.kind)` to the SAME element and
-          // eases from its old spot to the new one instead of teleporting
-          // there instantly. A brand-new ship (no prior element for that
-          // key) still just appears at its target with no animation, so
-          // normal drag-and-drop placement is unaffected.
-          AnimatedPositioned(
-            key: ValueKey(ship.spec.kind),
-            duration: const Duration(milliseconds: 420),
-            curve: Curves.easeInOutCubic,
-            left: ship.col * cell + 1,
-            top: ship.row * cell + 1,
-            width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
-            height: ship.horizontal ? cell - 2 : ship.spec.size * cell - 2,
-            child: _ShipWithRotate(
-              ship: ship,
-              skin: widget.skin!,
-              cell: cell,
-              // Fixed neutral phase: ships are static now (no bobbing).
-              t: 0.5,
-              showRotate: widget.onShipTap != null && !ship.isSunk,
-            ),
-          ),
+        if (ship.spec.kind != _dragKind) _animatedShipBox(ship, cell),
     ];
+  }
+
+  Widget _animatedShipBox(PlacedShip ship, double cell) {
+    final long = ship.spec.size * cell;
+    final short = cell;
+    final w = ship.horizontal ? long : short;
+    final h = ship.horizontal ? short : long;
+    final centerX = ship.col * cell + w / 2;
+    final centerY = ship.row * cell + h / 2;
+    final boxSide = long - 2; // same 2px inset the old per-orientation box used
+
+    // AnimatedPositioned (rather than a plain Positioned) so that whenever
+    // a ship's row/col/orientation changes in the underlying board state —
+    // a drag, a rotation, or the placement screen's RANDOM button
+    // rewriting every ship's position in one setState — it's matched by
+    // its stable `ValueKey(ship.spec.kind)` to the SAME element and eases
+    // from its old spot to the new one instead of teleporting there
+    // instantly. A brand-new ship (no prior element for that key) still
+    // just appears at its target with no animation, so normal
+    // drag-and-drop placement is unaffected. The box itself is always
+    // square (see the bugfix note above `_shipWidgets`) — only its CENTER
+    // moves; the ship's actual footprint change is handled entirely by the
+    // rotation inside `_ShipWithRotate`.
+    return AnimatedPositioned(
+      key: ValueKey(ship.spec.kind),
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeInOutCubic,
+      left: centerX - boxSide / 2,
+      top: centerY - boxSide / 2,
+      width: boxSide,
+      height: boxSide,
+      child: _ShipWithRotate(
+        ship: ship,
+        skin: widget.skin!,
+        cell: cell,
+        showRotate: widget.onShipTap != null && !ship.isSunk,
+      ),
+    );
   }
 
   /// Reveals a fully-sunk ship on the grid in its destroyed form. Rendered
@@ -530,52 +570,77 @@ class _ShipRevealTransitionState extends State<_ShipRevealTransition>
 
 /// A ship drawn on the grid, with cartoon rotate arrows beneath it
 /// (placement mode only).
+///
+/// Always lays out its artwork at a fixed, constant `long × short` size —
+/// the ship's NATURAL horizontal footprint — centered in whatever box its
+/// parent (`_animatedShipBox`) gives it, and spins the whole assembly a
+/// physical quarter turn with [AnimatedRotation] when the ship is
+/// vertical. That's a real rotation (fixed content, just spun in place)
+/// rather than a resize, so it never stretches/squashes, and the rotate
+/// arrows — laid out as part of the SAME rotating assembly, at the
+/// artwork's natural corners — swing around with the ship for free instead
+/// of needing their own per-orientation position logic.
 class _ShipWithRotate extends StatelessWidget {
   final PlacedShip ship;
   final ShipSkin skin;
   final double cell;
-  final double t;
   final bool showRotate;
 
   const _ShipWithRotate({
     required this.ship,
     required this.skin,
     required this.cell,
-    required this.t,
     required this.showRotate,
   });
 
+  static const _rotateDuration = Duration(milliseconds: 420);
+
   @override
   Widget build(BuildContext context) {
+    final long = ship.spec.size * cell - 2;
+    final short = cell - 2;
     final painter = ShipPainter(
       spec: ship.spec,
       skin: skin,
-      wavePhase: t,
       sunk: ship.isSunk,
       hitCount: ship.hitIndices.length,
     );
-    final body = ship.horizontal
-        ? CustomPaint(painter: painter)
-        : RotatedBox(quarterTurns: 1, child: CustomPaint(painter: painter));
 
-    if (!showRotate) return body;
+    Widget assembly = SizedBox(
+      width: long,
+      height: short,
+      child: CustomPaint(painter: painter, size: Size(long, short)),
+    );
 
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Positioned.fill(child: body),
-        // Rotate arrows hugging the ship (like the reference UI)
-        Positioned(
-          left: -cell * 0.22,
-          top: ship.horizontal ? -cell * 0.22 : cell,
-          child: const _RotateArrow(Icons.rotate_left),
-        ),
-        Positioned(
-          right: -cell * 0.22,
-          bottom: ship.horizontal ? -cell * 0.22 : cell,
-          child: const _RotateArrow(Icons.rotate_right),
-        ),
-      ],
+    if (showRotate) {
+      assembly = Stack(
+        clipBehavior: Clip.none,
+        children: [
+          assembly,
+          // Rotate arrows hugging the ship's natural (pre-rotation) top-left
+          // / bottom-right corners — rotating with it below instead of
+          // needing their own orientation-conditioned offsets.
+          Positioned(
+            left: -cell * 0.22,
+            top: -cell * 0.22,
+            child: const _RotateArrow(Icons.rotate_left),
+          ),
+          Positioned(
+            right: -cell * 0.22,
+            bottom: -cell * 0.22,
+            child: const _RotateArrow(Icons.rotate_right),
+          ),
+        ],
+      );
+    }
+
+    return Center(
+      child: AnimatedRotation(
+        turns: ship.horizontal ? 0.0 : 0.25,
+        duration: _rotateDuration,
+        curve: Curves.easeInOutCubic,
+        child: assembly,
+      ),
     );
   }
 }
@@ -595,13 +660,149 @@ class _RotateArrow extends StatelessWidget {
   }
 }
 
+/// REDESIGN: white naval targeting reticle — four corner brackets, a thin
+/// center cross and a small center dot, with a soft glow — locked onto the
+/// cell a cannonball is currently flying toward. Replaces the old
+/// painter-drawn ring (which was mostly `AppColors.hit` red, not white, and
+/// simply popped into place with no transition of its own).
+///
+/// Always mounted (never conditionally built), so it can animate OUT
+/// cleanly: [target] going from a cell back to `null` just scales/fades
+/// the SAME element down at its last-known position instead of yanking a
+/// whole widget out of the tree with no exit transition.
+class _Crosshair extends StatefulWidget {
+  final double cell;
+  final List<int>? target;
+
+  const _Crosshair({required this.cell, required this.target});
+
+  @override
+  State<_Crosshair> createState() => _CrosshairState();
+}
+
+class _CrosshairState extends State<_Crosshair> {
+  List<int> _lastTarget = const [0, 0];
+
+  @override
+  void initState() {
+    super.initState();
+    final t = widget.target;
+    if (t != null) _lastTarget = t;
+  }
+
+  @override
+  void didUpdateWidget(covariant _Crosshair oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final t = widget.target;
+    if (t != null) _lastTarget = t;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cell = widget.cell;
+    final visible = widget.target != null;
+    final r = visible ? widget.target![0] : _lastTarget[0];
+    final c = visible ? widget.target![1] : _lastTarget[1];
+    final size = cell * 0.8;
+    // BUGFIX: `AnimatedPositioned` (like `Positioned`) is a
+    // ParentDataWidget for `Stack` — its render-tree PARENT must be the
+    // Stack itself, with nothing else that creates its own RenderObject
+    // in between. `_Crosshair` (a StatelessWidget-like State build) is
+    // transparent so that's fine, but `IgnorePointer` is NOT transparent —
+    // it has its own RenderObject. Wrapping `AnimatedPositioned` INSIDE
+    // `IgnorePointer` (the original version of this code) put
+    // RenderIgnorePointer between the Stack and the Positioned data,
+    // which crashes with "type 'ParentData' is not a subtype of type
+    // 'StackParentData'" the moment it mounts. AnimatedPositioned must be
+    // the OUTERMOST widget returned here; IgnorePointer belongs nested
+    // inside its `child`, where it's just an ordinary descendant.
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      left: c * cell + cell / 2 - size / 2,
+      top: r * cell + cell / 2 - size / 2,
+      width: size,
+      height: size,
+      child: IgnorePointer(
+        child: AnimatedScale(
+          scale: visible ? 1.0 : 0.55,
+          duration: const Duration(milliseconds: 180),
+          curve: visible ? Curves.easeOutBack : Curves.easeIn,
+          child: AnimatedOpacity(
+            opacity: visible ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 150),
+            // The enclosing AnimatedPositioned already fixes this to a
+            // `size × size` tight box, so CustomPaint just fills it.
+            child: const CustomPaint(painter: _CrosshairPainter()),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CrosshairPainter extends CustomPainter {
+  const _CrosshairPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.30;
+    final inset = s * 0.13; // gap between the center and each bracket corner
+    final d = s / 2 - inset;
+
+    final glow = Paint()
+      ..color = Colors.white.withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.10
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.4);
+    final stroke = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down); // top-left
+    bracket(center + Offset(d, -d), left, down); // top-right
+    bracket(center + Offset(-d, d), right, up); // bottom-left
+    bracket(center + Offset(d, d), left, up); // bottom-right
+
+    // Thin center cross.
+    final crossLen = s * 0.11;
+    canvas.drawLine(
+        center - Offset(crossLen, 0), center + Offset(crossLen, 0), stroke);
+    canvas.drawLine(
+        center - Offset(0, crossLen), center + Offset(0, crossLen), stroke);
+
+    // Small center dot.
+    canvas.drawCircle(center, s * 0.028, Paint()..color = Colors.white);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CrosshairPainter oldDelegate) => false;
+}
+
 class _GridPainter extends CustomPainter {
   final List<List<int>> shots;
   final Map<int, CellFx> fx;
   final Map<int, DateTime> tapFx;
   final PlacedShip? preview;
   final bool previewValid;
-  final List<int>? aimCell;
   final Color gridColor;
   final Color cellColor;
   final Color gridLineColor;
@@ -613,7 +814,6 @@ class _GridPainter extends CustomPainter {
     this.tapFx = const {},
     this.preview,
     this.previewValid = true,
-    this.aimCell,
     required this.gridColor,
     this.cellColor = AppColors.steelBlue,
     this.gridLineColor = AppColors.steelBlueLight,
@@ -675,14 +875,19 @@ class _GridPainter extends CustomPainter {
     }
 
     // ---- Transient effects ----
+    // REDESIGN: every impact — hit, miss, or sunk — gets a water splash
+    // first (the cannonball always lands "in the water" of the grid cell
+    // regardless of outcome), with hit/sunk shots additionally layering
+    // the explosion burst on top. That's what gives the sequence
+    // "impact → water splash → result marker → hit/sunk feedback" instead
+    // of misses getting no impact effect at all.
     fx.forEach((_, effect) {
       final center = Offset(effect.col * cell + cell / 2, effect.row * cell + cell / 2);
       final prog = effect.progress;
+      _drawSplash(canvas, center, cell, prog, rng: effect.rng);
       if (effect.result == ShotResult.hit || effect.result == ShotResult.sunk) {
         _drawExplosion(canvas, center, cell, prog,
             big: effect.result == ShotResult.sunk, rng: effect.rng);
-      } else if (effect.result == ShotResult.miss) {
-        _drawSplash(canvas, center, cell, prog);
       }
     });
 
@@ -697,17 +902,6 @@ class _GridPainter extends CustomPainter {
       final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
       _drawTapRipple(canvas, center, cell, t.clamp(0.0, 1.0));
     });
-
-    // ---- Firing crosshair: locks onto the targeted cell the instant a
-    // shot is fired and stays put — the caller clears [aimCell] the
-    // moment the cannonball actually impacts, so the reticle disappears
-    // exactly when the shot hits the grid instead of on a fixed timer. ----
-    if (aimCell != null) {
-      final r = aimCell![0];
-      final c = aimCell![1];
-      final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
-      _drawCrosshair(canvas, center, cell);
-    }
   }
 
   /// Miss marker (video): slightly darker cell + tiny grey ✕.
@@ -810,10 +1004,54 @@ class _GridPainter extends CustomPainter {
     }
   }
 
-  /// Miss splash: no animation particles — left empty so only the
-  /// persistent miss marker (grey X) remains on the grid.
-  void _drawSplash(Canvas canvas, Offset center, double cell, double t) {
-    // Intentionally empty: no particle burst on miss cells.
+  /// Water splash: the base impact effect for EVERY landed shot (hit, miss
+  /// or sunk) — the cannonball always hits "the water" of the grid cell
+  /// regardless of outcome. Deliberately brief (fully faded by ~55% of the
+  /// fx lifetime — see [CellFx.progress]) so it reads as a quick, punchy
+  /// splash rather than lingering; hit/sunk shots layer the yellow
+  /// explosion burst on top afterward (see the `fx.forEach` call site) for
+  /// a clear MISS vs HIT/SUNK distinction. Pure vector draws (no images,
+  /// no new particle system) — same cost class as `_drawExplosion` below,
+  /// which this game already runs per-shot without issue.
+  void _drawSplash(Canvas canvas, Offset center, double cell, double t,
+      {required Random rng}) {
+    final local = (t / 0.55).clamp(0.0, 1.0);
+    if (local >= 1.0) return;
+    final fade = 1 - local;
+    final grow = Curves.easeOut.transform(local);
+
+    // Expanding ripple ring.
+    canvas.drawCircle(
+      center,
+      cell * (0.12 + 0.46 * grow),
+      Paint()
+        ..color = Colors.white.withValues(alpha: fade * 0.55)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = cell * 0.045 * fade,
+    );
+
+    // Small water droplets flung outward and briefly upward before the
+    // splash settles — an arc shape (sin curve) rather than a straight
+    // radial fling, so they read as droplets falling back rather than
+    // just dots sliding outward.
+    for (var i = 0; i < 6; i++) {
+      final ang = (i / 6) * 2 * pi + rng.nextDouble() * 0.35;
+      final dist = cell * 0.42 * grow;
+      final lift = -cell * 0.30 * sin(local * pi);
+      final p = center + Offset(cos(ang) * dist, sin(ang) * dist * 0.6 + lift);
+      canvas.drawCircle(
+        p,
+        cell * 0.05 * fade,
+        Paint()..color = Colors.white.withValues(alpha: fade * 0.8),
+      );
+    }
+
+    // Central white flash right at the impact point.
+    canvas.drawCircle(
+      center,
+      cell * 0.20 * (1 - local * 0.5),
+      Paint()..color = Colors.white.withValues(alpha: fade * 0.45),
+    );
   }
 
   /// Quick expanding-ring "tap registered" pulse — replaces the old
@@ -836,30 +1074,6 @@ class _GridPainter extends CustomPainter {
     );
   }
 
-  /// Targeting reticle: a ring with four outward tick marks and a center
-  /// dot, locked onto the cell a cannonball is currently flying toward.
-  void _drawCrosshair(Canvas canvas, Offset center, double cell) {
-    final ringPaint = Paint()
-      ..color = AppColors.hit
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = cell * 0.06;
-    final tickPaint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = cell * 0.06
-      ..strokeCap = StrokeCap.round;
-    final ringR = cell * 0.30;
-    canvas.drawCircle(center, ringR, ringPaint);
-    const dirs = [Offset(0, -1), Offset(1, 0), Offset(0, 1), Offset(-1, 0)];
-    final tickGap = cell * 0.08;
-    final tickLen = cell * 0.16;
-    for (final d in dirs) {
-      final start = center + d * (ringR + tickGap);
-      final end = center + d * (ringR + tickGap + tickLen);
-      canvas.drawLine(start, end, tickPaint);
-    }
-    canvas.drawCircle(center, cell * 0.035, Paint()..color = AppColors.hit);
-  }
-
   @override
   bool shouldRepaint(_GridPainter oldDelegate) {
     // While anything transient is animating, its visual progress is driven
@@ -874,8 +1088,6 @@ class _GridPainter extends CustomPainter {
         oldDelegate.previewValid != previewValid ||
         oldDelegate.cellColor != cellColor ||
         oldDelegate.gridColor != gridColor ||
-        oldDelegate.aimCell?[0] != aimCell?[0] ||
-        oldDelegate.aimCell?[1] != aimCell?[1] ||
         !identical(oldDelegate.destroyedShips, destroyedShips);
   }
 }
