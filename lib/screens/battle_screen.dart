@@ -139,6 +139,13 @@ class _BattleScreenState extends State<BattleScreen>
   final Map<bool, List<List<int>>> _shotsCache = {};
   final Map<bool, List<CombatEventLike>> _eventsCache = {};
 
+  /// Ships whose SINKING shot has visually landed, per half — see the PERF
+  /// notes in `_refreshDerivedCache`. Both are cached (rather than rebuilt
+  /// per `build()`) so their identity stays stable between real state
+  /// changes, which is what lets the grid painters skip repainting.
+  final Map<bool, Set<String>> _sunkNamesCache = {};
+  final Map<bool, List<PlacedShip>> _destroyedShipsCache = {};
+
   /// Bumped every time a [CombatEvent.impactAt] is actually set (a ball
   /// visually lands) — see `_resolveImpact` and the overlapping-shot
   /// branch in `_onUpdate`. `controller.revision` does NOT change when
@@ -748,14 +755,42 @@ class _BattleScreenState extends State<BattleScreen>
       }
       final evCache = _eventsCache.putIfAbsent(halfIsP1, () => []);
       evCache.clear();
+      // PERF: the revealed-sunk-names set is built HERE, once per real
+      // state change, rather than by re-scanning every event on every
+      // build — it used to be recomputed 4× per rebuild (both halves +
+      // both fleet status rows), and that scan grows with every shot
+      // fired in the match.
+      final sunkNames = <String>{};
       for (final e in controller.events) {
         if (e.byPlayer == halfIsP1 || e.impactAt == null) continue;
         final hit = e.result == ShotResult.hit || e.result == ShotResult.sunk;
         cache[e.row][e.col] = hit ? 2 : 1;
         evCache.add(CombatEventLike(e.row, e.col, e.result,
             sunkShipName: e.sunkShipName));
+        if (e.result == ShotResult.sunk && e.sunkShipName != null) {
+          sunkNames.add(e.sunkShipName!);
+        }
       }
       _shotsCache[halfIsP1] = List.of(cache);
+      _sunkNamesCache[halfIsP1] = sunkNames;
+
+      // PERF (this is the big one): `_StaticGridPainter.shouldRepaint`
+      // compares `destroyedShips` by IDENTITY. This list used to be built
+      // as a fresh literal inside `_buildHalf` on every single build, so
+      // that identity check was ALWAYS true — meaning both grids fully
+      // repainted, redrawing every accumulated hit/miss mark, on every
+      // rebuild (which the 100ms cooldown tick was triggering 10× a
+      // second). Cost therefore scaled directly with how many marks had
+      // piled up, which is exactly the reported "fine early, bad mid/late
+      // match" behavior. Building it here — in the cache pass that only
+      // runs when the board state genuinely changed — gives it a stable
+      // identity between real events, so the static layer now repaints
+      // only when the board actually changes.
+      final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
+      _destroyedShipsCache[halfIsP1] = [
+        for (final s in board.ships)
+          if (s.isSunk && sunkNames.contains(s.spec.name)) s
+      ];
     }
   }
 
@@ -778,14 +813,8 @@ class _BattleScreenState extends State<BattleScreen>
   /// `_refreshDerivedCache`) keeps the preview in lockstep with those
   /// instead, and since `events` only ever grows within a match, a name
   /// once added here can never disappear again on a later rebuild.
-  Set<String> _revealedSunkNames(bool halfIsP1) {
-    final events = _eventsCache[halfIsP1] ?? const [];
-    return {
-      for (final e in events)
-        if (e.result == ShotResult.sunk && e.sunkShipName != null)
-          e.sunkShipName!,
-    };
-  }
+  Set<String> _revealedSunkNames(bool halfIsP1) =>
+      _sunkNamesCache[halfIsP1] ?? const <String>{};
 
   /// One player's half of the table: their own grid + their own cannon.
   Widget _buildHalf(
@@ -797,8 +826,9 @@ class _BattleScreenState extends State<BattleScreen>
     required double halfTopY,
     required bool bottomIsP1,
   }) {
-    final cooldown =
-        halfIsP1 ? controller.cooldownFraction1 : controller.cooldownFraction2;
+    // NB: the cooldown fraction is deliberately NOT read here — it's read
+    // inside the cannon's own `ValueListenableBuilder` below, so that a
+    // cooldown change repaints only the cannon instead of this whole half.
     final cannonStream = halfIsP1 ? _cannon1Fire : _cannon2Fire;
     final readyStream = halfIsP1 ? _cannon1Ready : _cannon2Ready;
     final accent = halfIsP1 ? AppColors.hit : AppColors.blue;
@@ -862,11 +892,11 @@ class _BattleScreenState extends State<BattleScreen>
     // rule that otherwise hides ship positions. Same gating (and the same
     // helper) drives the destroyed-ship preview in the middle status band
     // — see `_revealedSunkNames`.
-    final revealedSunkNames = _revealedSunkNames(halfIsP1);
-    final sunkShips = [
-      for (final s in board.ships)
-        if (s.isSunk && revealedSunkNames.contains(s.spec.name)) s
-    ];
+    // Cached (stable identity between real state changes) — see the PERF
+    // note in `_refreshDerivedCache`. Do NOT rebuild this list here: the
+    // grid painter compares it by identity, so a fresh list every build
+    // silently forces a full repaint of every mark on the board.
+    final sunkShips = _destroyedShipsCache[halfIsP1] ?? const <PlacedShip>[];
 
     return LayoutBuilder(
       builder: (context, box) {
@@ -1035,19 +1065,31 @@ class _BattleScreenState extends State<BattleScreen>
                       child: AnimatedOpacity(
                         duration: const Duration(milliseconds: 250),
                         opacity: gameOver ? 0 : 1,
-                        child: CannonWidget(
-                          skin: profile.cannonSkin,
-                          cooldownFraction: cooldown,
-                          enabled: controller.battling && !_countingDown,
-                        size: cannonSize,
-                        fireTrigger: cannonStream.stream,
-                        readyTrigger: readyStream.stream,
-                        accentOverride: accent,
-                        // Firing now happens with a single tap on the enemy
-                        // grid cell (see gridFirable / onTapCell above); the
-                        // cannon itself just reacts (recoil + muzzle flash)
-                        // as a "shot fired" indicator.
-                          onFire: null,
+                        // PERF: the cooldown RING is the only thing on this
+                        // screen that needs a 10Hz refresh, so it's the only
+                        // thing subscribed to the 100ms tick now (see
+                        // `GameController.cooldownTick`). Previously that
+                        // tick called `notifyListeners()`, rebuilding — and
+                        // repainting — the entire board 10× a second just to
+                        // advance these two arcs.
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: controller.cooldownTick,
+                          builder: (context, _, __) => CannonWidget(
+                            skin: profile.cannonSkin,
+                            cooldownFraction: halfIsP1
+                                ? controller.cooldownFraction1
+                                : controller.cooldownFraction2,
+                            enabled: controller.battling && !_countingDown,
+                            size: cannonSize,
+                            fireTrigger: cannonStream.stream,
+                            readyTrigger: readyStream.stream,
+                            accentOverride: accent,
+                            // Firing now happens with a single tap on the
+                            // enemy grid cell (see gridFirable / onTapCell
+                            // above); the cannon itself just reacts (recoil
+                            // + muzzle flash) as a "shot fired" indicator.
+                            onFire: null,
+                          ),
                         ),
                       ),
                     ),

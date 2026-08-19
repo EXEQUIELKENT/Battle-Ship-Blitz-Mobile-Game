@@ -956,25 +956,56 @@ class _StaticGridPainter extends CustomPainter {
     }
 
     // ---- Shot markers (video style) ----
+    // PERF: allocate each marker Paint ONCE per repaint instead of once
+    // per marked cell. The old code built 2-3 `Paint()` objects inside
+    // `_drawHit`/`_drawMiss` for every single mark on the board, so a
+    // late-game grid churned through ~250 short-lived Paints per repaint
+    // — pure GC pressure that grew as the match went on, on exactly the
+    // devices least able to absorb it.
+    final missCellPaint = Paint()..color = AppColors.steelBlueDark;
+    final missMarkPaint = Paint()
+      ..color = AppColors.cellGrey
+      ..strokeWidth = cell * 0.085
+      ..strokeCap = StrokeCap.round;
+    final hitCellPaint = Paint()..color = AppColors.outline;
+    final hitDiamondPaint = Paint()..color = AppColors.burst;
+
+    // PERF: flatten the destroyed-ship footprints into one cell-key set
+    // up front, instead of re-scanning every destroyed ship (and every
+    // cell of each) for every hit marker drawn.
+    final destroyedCells = <int>{};
+    for (final ship in destroyedShips) {
+      for (final cp in ship.cells) {
+        destroyedCells.add(cp[0] * kBoardSize + cp[1]);
+      }
+    }
+
     for (var r = 0; r < kBoardSize; r++) {
+      final rowShots = shots[r];
       for (var c = 0; c < kBoardSize; c++) {
-        final v = shots[r][c];
+        final v = rowShots[c];
         if (v == 0) continue;
         // Hide hit markers for cells covered by a destroyed ship — the
         // destroyed ship graphic replaces all individual hit cells.
-        if (v == 2 && _isCellInDestroyedShip(r, c)) continue;
+        if (v == 2 && destroyedCells.contains(r * kBoardSize + c)) continue;
         final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
         if (v == 2) {
-          _drawHit(canvas, center, cell);
+          _drawHit(canvas, center, cell, hitCellPaint, hitDiamondPaint);
         } else {
-          _drawMiss(canvas, center, cell);
+          _drawMiss(canvas, center, cell, missCellPaint, missMarkPaint);
         }
       }
     }
   }
 
   /// Miss marker (video): slightly darker cell + tiny grey ✕.
-  void _drawMiss(Canvas canvas, Offset center, double cell) {
+  void _drawMiss(
+    Canvas canvas,
+    Offset center,
+    double cell,
+    Paint cellPaint,
+    Paint markPaint,
+  ) {
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromCenter(
@@ -984,19 +1015,21 @@ class _StaticGridPainter extends CustomPainter {
         ),
         Radius.circular(cell * 0.12),
       ),
-      Paint()..color = AppColors.steelBlueDark,
+      cellPaint,
     );
     final s = cell * 0.15;
-    final mark = Paint()
-      ..color = AppColors.cellGrey
-      ..strokeWidth = cell * 0.085
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(center - Offset(s, s), center + Offset(s, s), mark);
-    canvas.drawLine(center + Offset(-s, s), center + Offset(s, -s), mark);
+    canvas.drawLine(center - Offset(s, s), center + Offset(s, s), markPaint);
+    canvas.drawLine(center + Offset(-s, s), center + Offset(s, -s), markPaint);
   }
 
   /// Hit marker (video): black square cell + small yellow diamond inside.
-  void _drawHit(Canvas canvas, Offset center, double cell) {
+  void _drawHit(
+    Canvas canvas,
+    Offset center,
+    double cell,
+    Paint cellPaint,
+    Paint diamondPaint,
+  ) {
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromCenter(
@@ -1006,7 +1039,7 @@ class _StaticGridPainter extends CustomPainter {
         ),
         Radius.circular(cell * 0.10),
       ),
-      Paint()..color = AppColors.outline,
+      cellPaint,
     );
     final d = cell * 0.20;
     final diamond = Path()
@@ -1015,15 +1048,7 @@ class _StaticGridPainter extends CustomPainter {
       ..lineTo(center.dx, center.dy + d)
       ..lineTo(center.dx - d, center.dy)
       ..close();
-    canvas.drawPath(diamond, Paint()..color = AppColors.burst);
-  }
-
-  /// Returns true if the given cell is part of any destroyed ship.
-  bool _isCellInDestroyedShip(int r, int c) {
-    for (final ship in destroyedShips) {
-      if (ship.containsCell(r, c)) return true;
-    }
-    return false;
+    canvas.drawPath(diamond, diamondPaint);
   }
 
   @override

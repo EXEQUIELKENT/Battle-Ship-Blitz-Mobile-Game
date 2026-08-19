@@ -114,6 +114,22 @@ class GameController extends ChangeNotifier {
       ? 1
       : (1 - cooldown2 / cooldownMax2).clamp(0.0, 1.0);
 
+  /// PERF (mobile jank that got worse the longer a match ran): bumped on
+  /// every 100ms tick so the cannons' cooldown RINGS can animate smoothly
+  /// — WITHOUT going through `notifyListeners()`.
+  ///
+  /// `_onTick` used to call `notifyListeners()` unconditionally, 10× a
+  /// second, purely so those two rings could advance. That rebuilt the
+  /// ENTIRE battle screen 10×/sec (both grids, every ship/wreck widget,
+  /// both fleet status rows), and — because a couple of the values handed
+  /// down to the grid painters were freshly-allocated lists each build —
+  /// it also forced both grids to fully REPAINT every accumulated
+  /// hit/miss mark 10×/sec. That's why the game degraded specifically as
+  /// marks piled up. Only the cannon subtrees actually need a 10Hz
+  /// update, so they now listen to this instead, and `notifyListeners()`
+  /// fires only when something structural really changed (see `_onTick`).
+  final ValueNotifier<int> cooldownTick = ValueNotifier<int>(0);
+
   int get mySunk => boards[1].sunkCount;
   int get enemySunk => boards[0].sunkCount;
 
@@ -391,6 +407,19 @@ class GameController extends ChangeNotifier {
   void _onTick(Timer _) {
     if (!battling) return;
 
+    // Snapshot everything the UI's STRUCTURE (as opposed to the cannons'
+    // cooldown rings) actually depends on, so we can tell a purely
+    // cosmetic cooldown advance apart from a real state change. See the
+    // doc on [cooldownTick] for why this matters so much on mobile.
+    final beforeRevision = revision;
+    final beforePhase = phase;
+    final beforeAiTurn = aiTurnToFire;
+    // Readiness — i.e. "can this side fire right now" — gates grid taps
+    // and the ready-pulse, so a cooldown REACHING zero is structural even
+    // though the countdown getting there is not.
+    final beforeReady1 = cooldown1 <= 0;
+    final beforeReady2 = cooldown2 <= 0;
+
     if (cooldown1 > 0) {
       cooldown1 = max(0, cooldown1 - 0.1);
     }
@@ -402,7 +431,19 @@ class GameController extends ChangeNotifier {
       _aiThink();
     }
 
-    notifyListeners();
+    // Always advance the rings (cheap: only the two cannon subtrees
+    // listen to this).
+    cooldownTick.value++;
+
+    // ...but only rebuild the whole screen when something beyond the
+    // ring's sweep actually changed.
+    if (revision != beforeRevision ||
+        phase != beforePhase ||
+        aiTurnToFire != beforeAiTurn ||
+        (cooldown1 <= 0) != beforeReady1 ||
+        (cooldown2 <= 0) != beforeReady2) {
+      notifyListeners();
+    }
   }
 
   double _aiThinkAccumulator = 0;
@@ -629,6 +670,7 @@ class GameController extends ChangeNotifier {
   @override
   void dispose() {
     _teardown();
+    cooldownTick.dispose();
     super.dispose();
   }
 }

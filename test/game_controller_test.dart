@@ -115,4 +115,69 @@ void main() {
       expect(controller.phase, BattlePhase.battling);
     });
   });
+
+  /// Regression coverage for the mobile-performance fix (see the doc on
+  /// `GameController.cooldownTick`). The 100ms battle ticker used to call
+  /// `notifyListeners()` unconditionally, which rebuilt the entire battle
+  /// screen — and, via freshly-allocated painter inputs, fully REPAINTED
+  /// both grids' accumulated hit/miss marks — 10× a second. That made
+  /// frame cost scale with how far into the match you were, which is
+  /// exactly the "fine early, unplayable late" behavior reported on real
+  /// phones. The ring now advances via `cooldownTick`, and
+  /// `notifyListeners()` is reserved for genuinely structural changes.
+  group('GameController tick does not spam listeners', () {
+    test('a plain cooldown countdown advances the ring but does NOT '
+        'notify listeners', () async {
+      final controller = await newController();
+      // Local mode keeps the AI out of the picture so the only thing the
+      // ticker does is decrement cooldowns.
+      controller.mode = GameMode.local;
+      final enemyBoard = Board()..place(kFleet.first, 0, 0, true);
+      controller.beginBattle(enemyBoard: enemyBoard);
+
+      // A long cooldown so it can't reach zero (a structural change) mid-test.
+      controller.cooldownMax1 = 60;
+      controller.cooldown1 = 60;
+
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+      final ringBefore = controller.cooldownTick.value;
+
+      // Let several 100ms ticks elapse.
+      await Future<void>.delayed(const Duration(milliseconds: 450));
+
+      expect(controller.cooldownTick.value, greaterThan(ringBefore),
+          reason: 'the cooldown ring must still animate every tick');
+      expect(notifications, 0,
+          reason: 'a purely cosmetic cooldown advance must not rebuild '
+              'the whole battle screen');
+
+      controller.dispose();
+    });
+
+    test('a cooldown REACHING zero still notifies (so the UI never goes '
+        'stale)', () async {
+      final controller = await newController();
+      controller.mode = GameMode.local;
+      final enemyBoard = Board()..place(kFleet.first, 0, 0, true);
+      controller.beginBattle(enemyBoard: enemyBoard);
+
+      // Small enough to hit zero within a couple of ticks — readiness
+      // gates grid taps, so that transition MUST still reach the UI.
+      controller.cooldownMax1 = 1;
+      controller.cooldown1 = 0.15;
+
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+
+      await Future<void>.delayed(const Duration(milliseconds: 450));
+
+      expect(controller.cooldown1, 0);
+      expect(notifications, greaterThan(0),
+          reason: 'becoming ready to fire again is a structural change and '
+              'must still rebuild the screen');
+
+      controller.dispose();
+    });
+  });
 }
