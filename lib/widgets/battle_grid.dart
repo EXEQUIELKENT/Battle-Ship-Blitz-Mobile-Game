@@ -79,6 +79,13 @@ class BattleGrid extends StatefulWidget {
   /// live under the player's finger, not just at drop time.
   final void Function(ShipKind kind, int row, int col)? onShipDragUpdate;
 
+  /// Which ships may be dragged or rotated right now. `null` means "all of
+  /// them", which is what deployment wants. MANOEUVRE mode passes the
+  /// still-undamaged hulls, so a ship that has taken a hit neither offers
+  /// a rotate handle nor responds to a drag — the rule is visible in the
+  /// controls rather than only enforced after the fact.
+  final Set<ShipKind>? movableShips;
+
   const BattleGrid({
     super.key,
     required this.shots,
@@ -97,6 +104,7 @@ class BattleGrid extends StatefulWidget {
     this.onShipDragEnd,
     this.onShipTap,
     this.onShipDragUpdate,
+    this.movableShips,
   });
 
   @override
@@ -354,21 +362,32 @@ class _BattleGridState extends State<BattleGrid>
     );
   }
 
+  /// Whether this ship is currently draggable/rotatable — see
+  /// [BattleGrid.movableShips].
+  bool _movable(PlacedShip s) =>
+      widget.movableShips == null || widget.movableShips!.contains(s.spec.kind);
+
   void Function(TapUpDetails)? _onTap(double cell) {
-    if (!widget.enabled) return null;
+    // `enabled` gates FIRING at this grid. Rotating your own ships is a
+    // separate permission: in MANOEUVRE mode you reposition ships on your
+    // own board, and your own board is never one you can fire at — so
+    // gating both on the same flag would make the fleet untouchable.
+    final canRotate = widget.onShipTap != null && widget.ships != null;
+    if (!widget.enabled && !canRotate) return null;
     return (d) {
       final c = (d.localPosition.dx / cell).floor();
       final r = (d.localPosition.dy / cell).floor();
       if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) return;
-      // In placement mode, tapping a ship rotates it.
-      if (widget.onShipTap != null && widget.ships != null) {
+      // Tapping one of your own ships rotates it (deployment, MANOEUVRE).
+      if (canRotate) {
         for (final s in widget.ships!) {
-          if (s.containsCell(r, c)) {
+          if (s.containsCell(r, c) && _movable(s)) {
             widget.onShipTap!(s.spec.kind);
             return;
           }
         }
       }
+      if (!widget.enabled) return;
       if (widget.onTapCell != null) _pulseTap(r, c);
       widget.onTapCell?.call(r, c);
     };
@@ -382,16 +401,15 @@ class _BattleGridState extends State<BattleGrid>
   }
 
   void Function(DragStartDetails)? _onPanStart(double cell) {
-    if (!widget.enabled ||
-        widget.onShipDragEnd == null ||
-        widget.ships == null) {
+    // Deliberately NOT gated on `enabled` — see `_onTap`.
+    if (widget.onShipDragEnd == null || widget.ships == null) {
       return null;
     }
     return (d) {
       final c = (d.localPosition.dx / cell).floor();
       final r = (d.localPosition.dy / cell).floor();
       for (final s in widget.ships!) {
-        if (s.containsCell(r, c)) {
+        if (s.containsCell(r, c) && _movable(s)) {
           setState(() {
             _dragKind = s.spec.kind;
             _dragging = true;
@@ -513,7 +531,8 @@ class _BattleGridState extends State<BattleGrid>
         ship: ship,
         skin: widget.skin!,
         cell: cell,
-        showRotate: widget.onShipTap != null && !ship.isSunk,
+        showRotate:
+            widget.onShipTap != null && !ship.isSunk && _movable(ship),
       ),
     );
   }

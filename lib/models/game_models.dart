@@ -89,6 +89,10 @@ class PlacedShip {
         'r': row,
         'c': col,
         'h': horizontal,
+        // Damage travels with the ship so a mid-match board can be
+        // restored exactly — see `Board.toJson`. Omitted from the initial
+        // placement exchange only in the sense that it is empty there.
+        'x': hitIndices.toList(),
       };
 
   static PlacedShip fromJson(Map<String, dynamic> json) => PlacedShip(
@@ -96,6 +100,7 @@ class PlacedShip {
         row: json['r'] as int,
         col: json['c'] as int,
         horizontal: json['h'] as bool,
+        hitIndices: (json['x'] as List?)?.map((e) => e as int).toSet(),
       );
 }
 
@@ -154,6 +159,57 @@ class Board {
 
   bool alreadyShot(int r, int c) => _shots.contains('$r,$c');
 
+  // ------------------------------------------------- MANOEUVRE MODE ---
+
+  /// Whether this hull is still free to move. A single hit pins a ship
+  /// where it is for the rest of the match — you only get to run while
+  /// the enemy still has no idea where you are.
+  bool canRelocate(PlacedShip ship) => ship.hitIndices.isEmpty;
+
+  /// Whether [ship] could legally sit at (row, col, horizontal): fully
+  /// on-grid, clear of every OTHER ship, and — the rule specific to this
+  /// mode — clear of every cell the enemy has already fired at. Water
+  /// that has been shot at is public knowledge, so a ship can never be
+  /// tucked into it to make a known miss retroactively wrong.
+  bool canRelocateTo(PlacedShip ship, int row, int col, bool horizontal) {
+    if (!canRelocate(ship)) return false;
+    final size = ship.spec.size;
+    if (horizontal) {
+      if (col < 0 || row < 0 || row >= kBoardSize || col + size > kBoardSize) {
+        return false;
+      }
+    } else {
+      if (col < 0 || row < 0 || col >= kBoardSize || row + size > kBoardSize) {
+        return false;
+      }
+    }
+    for (var i = 0; i < size; i++) {
+      final r = horizontal ? row : row + i;
+      final c = horizontal ? col + i : col;
+      if (alreadyShot(r, c)) return false;
+      final occupant = shipAt(r, c);
+      if (occupant != null && occupant.spec.kind != ship.spec.kind) return false;
+    }
+    return true;
+  }
+
+  /// Moves an undamaged ship. Returns false and changes nothing if the
+  /// destination is illegal, so callers can use the return value directly
+  /// as "did this manoeuvre happen".
+  bool relocate(ShipKind kind, int row, int col, bool horizontal) {
+    final ship = shipOfKind(kind);
+    if (ship == null) return false;
+    if (!canRelocateTo(ship, row, col, horizontal)) return false;
+    ships.remove(ship);
+    ships.add(PlacedShip(
+      spec: ship.spec,
+      row: row,
+      col: col,
+      horizontal: horizontal,
+    ));
+    return true;
+  }
+
   /// Receives an incoming shot. Returns the outcome and (if sunk) the ship.
   (ShotResult, PlacedShip?) receiveShot(int r, int c) {
     if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) {
@@ -182,15 +238,31 @@ class Board {
     return b;
   }
 
-  Map<String, dynamic> toJson() => {'ships': ships.map((s) => s.toJson()).toList()};
+  /// Serializes the whole board — layout, damage AND the set of cells
+  /// already fired at. The last two only matter for the mid-match resume
+  /// snapshot a reconnecting player is restored from (see
+  /// `GameController.restoreFromSnapshot`); at placement time both are
+  /// empty, so the fleet exchange is unaffected.
+  Map<String, dynamic> toJson() => {
+        'ships': ships.map((s) => s.toJson()).toList(),
+        'shots': _shots.toList(),
+      };
 
   static Board fromJson(Map<String, dynamic> json) {
     final b = Board();
     for (final s in (json['ships'] as List)) {
       b.ships.add(PlacedShip.fromJson(Map<String, dynamic>.from(s as Map)));
     }
+    for (final k in (json['shots'] as List? ?? const [])) {
+      b._shots.add(k as String);
+    }
     return b;
   }
+
+  /// Marks a cell as already fired at without resolving a shot against it.
+  /// Used when rebuilding a board from a resume snapshot, where the
+  /// outcome of every past shot is already known.
+  void markShot(int r, int c) => _shots.add('$r,$c');
 
   /// Randomly places the whole fleet.
   static Board random({Random? rng}) {
@@ -249,17 +321,26 @@ enum LanBattleMode {
   /// and the active player's cannon slides out to the middle of their own
   /// grid as the "your turn" indicator.
   turns,
+
+  /// Turn-based, plus a fleet that can still manoeuvre: between shots you
+  /// may drag your own ships to new water. Only ships that are still
+  /// completely undamaged can move (one hit and that hull is pinned for
+  /// the rest of the match), and they can never be moved onto a cell the
+  /// enemy has already fired at — you cannot un-discover water.
+  rearrange,
 }
 
 extension LanBattleModeX on LanBattleMode {
   String get label => switch (this) {
         LanBattleMode.chaos => 'CHAOS',
         LanBattleMode.turns => 'TURN BASED',
+        LanBattleMode.rearrange => 'MANOEUVRE',
       };
 
   String get tagline => switch (this) {
         LanBattleMode.chaos => 'Fire at will — no turns',
         LanBattleMode.turns => 'Take turns — hit to keep firing',
+        LanBattleMode.rearrange => 'Take turns — and keep moving',
       };
 
   String get blurb => switch (this) {
@@ -270,7 +351,15 @@ extension LanBattleModeX on LanBattleMode {
         LanBattleMode.turns =>
           'One shot at a time. Land a hit and you fire again; miss and the '
               'guns pass to your opponent.',
+        LanBattleMode.rearrange =>
+          'Turn-based, but your fleet can run. Between shots, drag any '
+              'ship that is still undamaged to fresh water — a hull that '
+              'has been hit is pinned, and nowhere already fired on is safe '
+              'to hide.',
       };
+
+  /// True for the modes that alternate turns (everything but chaos).
+  bool get hasTurns => this != LanBattleMode.chaos;
 }
 
 /// Difficulty of the AI captain.

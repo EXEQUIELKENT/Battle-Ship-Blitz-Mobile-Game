@@ -25,7 +25,17 @@ class RoomInfo {
   final String host;
   final String playerName;
 
-  const RoomInfo({required this.code, required this.host, required this.playerName});
+  /// True when this beacon is a match ALREADY IN PROGRESS holding a seat
+  /// open for the player who dropped out of it. Joining it resumes that
+  /// match where it left off rather than starting a new one.
+  final bool resumable;
+
+  const RoomInfo({
+    required this.code,
+    required this.host,
+    required this.playerName,
+    this.resumable = false,
+  });
 }
 
 /// Low-level line-based JSON protocol over a socket.
@@ -34,8 +44,16 @@ class _Protocol {
   final _in = StreamController<Map<String, dynamic>>.broadcast();
   StreamSubscription? _sub;
   String _buffer = '';
+  bool _closed = false;
 
-  _Protocol(this.socket) {
+  /// Fired exactly once when this connection goes away for ANY reason —
+  /// the peer closing it, the app being killed, or the network dropping.
+  /// This is what lets a match tell "my opponent walked off" apart from
+  /// "my opponent is thinking", and so what the reconnect grace window
+  /// hangs off (see [NetworkService._onPeerDisconnected]).
+  final void Function()? onClosed;
+
+  _Protocol(this.socket, {this.onClosed}) {
     _sub = socket
         .cast<List<int>>()
         .transform(utf8.decoder)
@@ -64,11 +82,14 @@ class _Protocol {
   Stream<Map<String, dynamic>> get messages => _in.stream;
 
   Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
     try {
       await _sub?.cancel();
       await socket.close();
     } catch (_) {}
     if (!_in.isClosed) await _in.close();
+    onClosed?.call();
   }
 }
 
@@ -84,6 +105,57 @@ class NetworkService extends ChangeNotifier {
   String localIp = '';
   String peerName = 'Opponent';
   List<RoomInfo> foundRooms = [];
+
+  /// The opponent's equipped loadout, exchanged in the handshake so each
+  /// player's own purchased ship skin, cannon and battlefield theme render
+  /// on BOTH devices. Ids only — the catalog is compiled into the app, so
+  /// there is nothing else to send.
+  String peerShipSkinId = 'steel';
+  String peerCannonSkinId = 'mk1';
+  String peerThemeId = 'classic';
+
+  // ------------------------------------------- MATCH LIFECYCLE / DROPS ---
+
+  /// How long a dropped player has to get back into the match before the
+  /// seat is given up for good.
+  static const int kReconnectGraceSeconds = 60;
+
+  /// True once the fleets are exchanged and a battle is actually running.
+  /// Until then a dropped connection is just a failed lobby attempt; after
+  /// it, a drop opens the reconnect window below.
+  bool inMatch = false;
+
+  /// The peer's connection has gone away mid-match and we are holding the
+  /// match open for them.
+  bool peerLost = false;
+  int graceSecondsLeft = 0;
+  Timer? _graceTimer;
+
+  /// The peer is not coming back: either the grace window expired, or they
+  /// explicitly left from the result screen.
+  bool peerGone = false;
+
+  /// The peer tapped REMATCH / left after the match ended.
+  bool myRematch = false;
+  bool peerRematch = false;
+  bool peerLeftMatch = false;
+  bool get bothRematch => myRematch && peerRematch;
+
+  /// A mid-match state snapshot sent by the surviving player, retained the
+  /// moment it arrives for the same reason the fleet exchange is (see
+  /// [_peerBoardMsg]) — the screen that consumes it is usually not built
+  /// yet when it lands.
+  Map<String, dynamic>? _resumeMsg;
+  Map<String, dynamic>? takeResume() {
+    final m = _resumeMsg;
+    _resumeMsg = null;
+    return m;
+  }
+
+  /// True when this device joined a room that was holding a seat open for
+  /// it, so the lobby should wait for a resume snapshot instead of walking
+  /// through mode-vote and placement again.
+  bool joiningResumable = false;
 
   ServerSocket? _server;
   RawDatagramSocket? _udp;
@@ -146,43 +218,15 @@ class NetworkService extends ChangeNotifier {
     await stop();
     mode = NetMode.hotspot;
     _isHost = true;
+    _selfName = playerName;
     try {
-      _server = await ServerSocket.bind(InternetAddress.anyIPv4, kGamePort);
+      await _ensureServer();
       localIp = await _localIp();
       roomCode = _newCode();
-
-      // UDP beacon so joiners can auto-discover us.
-      _udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 45679);
-      _udp!.broadcastEnabled = true;
-      _beaconTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        final payload = jsonEncode({
-          'magic': _magic,
-          'code': roomCode,
-          'host': localIp,
-          'name': playerName,
-        });
-        _udp?.send(utf8.encode(payload), InternetAddress('255.255.255.255'), 45679);
-      });
+      await _startBeacon(resumable: false);
 
       statusMessage = 'Waiting for opponent…';
       notifyListeners();
-
-      _server!.listen((socket) async {
-        // First client wins the seat.
-        if (_proto != null) {
-          socket.destroy();
-          return;
-        }
-        try {
-          socket.setOption(SocketOption.tcpNoDelay, true);
-        } catch (_) {}
-        _proto = _Protocol(socket);
-        _beaconTimer?.cancel();
-        _proto!.messages.listen(_handleIncoming);
-        // Wait for hello
-        statusMessage = 'Opponent connecting…';
-        notifyListeners();
-      });
       return roomCode;
     } catch (e) {
       statusMessage = 'Could not host: $e';
@@ -190,6 +234,63 @@ class NetworkService extends ChangeNotifier {
       await stop();
       return null;
     }
+  }
+
+  /// Binds the TCP listener if it isn't already up, and wires it to
+  /// [_acceptSocket]. Shared by the initial host and by whichever player
+  /// is left holding a match open for a dropped opponent — the survivor
+  /// takes over listening even if they were originally the joiner, which
+  /// is what lets a dropped HOST scan and walk back into their own match.
+  Future<void> _ensureServer() async {
+    if (_server != null) return;
+    _server = await ServerSocket.bind(InternetAddress.anyIPv4, kGamePort);
+    _server!.listen(_acceptSocket);
+  }
+
+  void _acceptSocket(Socket socket) {
+    // One seat, first come first served.
+    if (_proto != null) {
+      socket.destroy();
+      return;
+    }
+    try {
+      socket.setOption(SocketOption.tcpNoDelay, true);
+    } catch (_) {}
+    _proto = _Protocol(socket, onClosed: _onPeerDisconnected);
+    _stopBeacon();
+    _proto!.messages.listen(_handleIncoming);
+    statusMessage = 'Opponent connecting…';
+    notifyListeners();
+  }
+
+  /// Broadcasts this room on the LAN once a second so joiners can find it
+  /// with SCAN FOR GAMES. [resumable] marks the beacon as a match already
+  /// in progress with a seat held open.
+  Future<void> _startBeacon({required bool resumable}) async {
+    _stopBeacon();
+    if (localIp.isEmpty) localIp = await _localIp();
+    _udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 45679);
+    _udp!.broadcastEnabled = true;
+    _beaconTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final payload = jsonEncode({
+        'magic': _magic,
+        'code': roomCode,
+        'host': localIp,
+        'name': _selfName,
+        if (resumable) 'resume': 1,
+      });
+      _udp?.send(
+          utf8.encode(payload), InternetAddress('255.255.255.255'), 45679);
+    });
+  }
+
+  void _stopBeacon() {
+    _beaconTimer?.cancel();
+    _beaconTimer = null;
+    try {
+      _udp?.close();
+    } catch (_) {}
+    _udp = null;
   }
 
   // ---------------------------------------------------------------- JOIN ---
@@ -214,6 +315,7 @@ class NetworkService extends ChangeNotifier {
               code: msg['code'] as String,
               host: msg['host'] as String,
               playerName: msg['name'] as String? ?? 'Captain',
+              resumable: msg['resume'] == 1,
             );
             if (!foundRooms.any((r) => r.host == room.host)) {
               foundRooms = [...foundRooms, room];
@@ -244,12 +346,17 @@ class NetworkService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Joins a hotspot room by host IP.
-  Future<bool> joinHotspot(String host, {required String playerName}) async {
+  /// Joins a hotspot room by host IP. [resuming] should be true when the
+  /// beacon advertised a match in progress (see [RoomInfo.resumable]) — the
+  /// lobby then waits for a state snapshot instead of starting a new match.
+  Future<bool> joinHotspot(String host,
+      {required String playerName, bool resuming = false}) async {
     if (!_networkAvailable) return false;
     await stop();
     mode = NetMode.hotspot;
     _isHost = false;
+    _selfName = playerName;
+    joiningResumable = resuming;
     statusMessage = 'Connecting to $host…';
     notifyListeners();
     try {
@@ -258,16 +365,30 @@ class NetworkService extends ChangeNotifier {
       try {
         socket.setOption(SocketOption.tcpNoDelay, true);
       } catch (_) {}
-      _proto = _Protocol(socket);
+      _proto = _Protocol(socket, onClosed: _onPeerDisconnected);
       _proto!.messages.listen(_handleIncoming);
-      _proto!.send({'type': 'hello', 'name': playerName});
+      _proto!.send(_helloPayload(rejoin: resuming));
       return true;
     } catch (e) {
       statusMessage = 'Connection failed: ${_friendlyError(e)}';
+      joiningResumable = false;
       notifyListeners();
       return false;
     }
   }
+
+  /// This device's introduction: who we are and what we have equipped. The
+  /// loadout rides along with the greeting so the opponent can render our
+  /// ships, cannon and battlefield exactly as we chose them.
+  Map<String, dynamic> _helloPayload({bool rejoin = false}) => {
+        'type': 'hello',
+        'name': _selfName,
+        'ship': _selfShipSkinId,
+        'cannon': _selfCannonSkinId,
+        'theme': _selfThemeId,
+        'room': roomCode,
+        if (rejoin) 'rejoin': 1,
+      };
 
   /// Convert a raw socket error into a friendly hint.
   String _friendlyError(Object e) {
@@ -366,10 +487,31 @@ class NetworkService extends ChangeNotifier {
   void _handleIncoming(Map<String, dynamic> msg) {
     if (msg['type'] == 'hello') {
       peerName = (msg['name'] as String?) ?? 'Opponent';
+      peerShipSkinId = (msg['ship'] as String?) ?? 'steel';
+      peerCannonSkinId = (msg['cannon'] as String?) ?? 'mk1';
+      peerThemeId = (msg['theme'] as String?) ?? 'classic';
       connected = true;
       statusMessage = 'Connected to $peerName!';
-      if (_isHost) {
-        _proto?.send({'type': 'hello', 'name': _selfName});
+      // Whoever is currently listening answers the greeting. During a
+      // reconnect that can be the original JOINER (the survivor takes over
+      // the socket), so this deliberately keys off "did we accept this
+      // connection", not off the fixed match role.
+      // Both sides learn the room code, so whichever of them ends up
+      // holding the match open for a dropped opponent re-advertises it
+      // under the SAME code the other player already knows.
+      final theirRoom = msg['room'] as String?;
+      if (roomCode.isEmpty && theirRoom != null && theirRoom.isNotEmpty) {
+        roomCode = theirRoom;
+      }
+      if (_server != null) _proto?.send(_helloPayload());
+
+      final rejoining = (msg['rejoin'] == 1 || peerLost) && !peerGone;
+      if (rejoining && inMatch) {
+        // They made it back inside the window. Close the grace period and
+        // ask whoever owns the game state to hand over a snapshot — see
+        // `GameController._onNetMessage`.
+        _endGrace(gone: false);
+        _messageCtrl.add(const {'type': 'resume_request'});
       }
       notifyListeners();
     }
@@ -377,9 +519,103 @@ class NetworkService extends ChangeNotifier {
     if (msg['type'] == 'board') {
       _peerBoardMsg = msg;
     }
+    if (msg['type'] == 'resume') {
+      _resumeMsg = msg;
+      inMatch = true;
+      joiningResumable = false;
+      notifyListeners();
+    }
+    if (msg['type'] == 'rematch') {
+      peerRematch = true;
+      notifyListeners();
+    }
+    if (msg['type'] == 'leave') {
+      peerLeftMatch = true;
+      peerGone = true;
+      notifyListeners();
+    }
     _handleVoteMessage(msg);
     _messageCtrl.add(msg);
   }
+
+  // ------------------------------------------ DROP / RECONNECT WINDOW ---
+
+  /// The socket went away. Outside a match that is just a failed lobby
+  /// attempt; inside one it opens a [kReconnectGraceSeconds] window during
+  /// which the match is held open and re-advertised on the LAN, so the
+  /// player who dropped can find it again under SCAN FOR GAMES and walk
+  /// back into exactly the position they left.
+  void _onPeerDisconnected() {
+    _proto = null;
+    connected = false;
+    if (!inMatch || peerGone) {
+      notifyListeners();
+      return;
+    }
+    peerLost = true;
+    graceSecondsLeft = kReconnectGraceSeconds;
+    // Hold the seat open: re-listen and re-advertise. The survivor does
+    // this whichever side they were, so a dropped host can rejoin too.
+    unawaited(_reopenForReturn());
+    _graceTimer?.cancel();
+    _graceTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      graceSecondsLeft--;
+      if (graceSecondsLeft <= 0) {
+        _endGrace(gone: true);
+      }
+      notifyListeners();
+    });
+    notifyListeners();
+  }
+
+  Future<void> _reopenForReturn() async {
+    try {
+      if (roomCode.isEmpty) roomCode = _newCode();
+      await _ensureServer();
+      await _startBeacon(resumable: true);
+    } catch (_) {
+      // Port already in use by something else — the window simply can't
+      // be held open. The grace timer still runs so the UI stays honest.
+    }
+  }
+
+  void _endGrace({required bool gone}) {
+    _graceTimer?.cancel();
+    _graceTimer = null;
+    graceSecondsLeft = 0;
+    peerLost = false;
+    // BUGFIX: this used to only ever SET `peerGone`, never clear it, so a
+    // player who did come back left the survivor still staring at "they
+    // did not return" over a match that had quietly resumed underneath.
+    peerGone = gone;
+    if (gone) {
+      // The seat is given up. Stop advertising AND stop listening: with
+      // the socket still open a late arrival could connect and be handed
+      // a snapshot for a match the survivor has already been told is
+      // over — which is exactly how the two ends ended up disagreeing.
+      // Refusing the connection outright gives them the ordinary "no game
+      // at that address" message instead.
+      _stopBeacon();
+      try {
+        _server?.close();
+      } catch (_) {}
+      _server = null;
+    }
+    notifyListeners();
+  }
+
+  /// Marks the point where a real battle begins, after which a dropped
+  /// connection is worth holding a seat open for.
+  void beginMatch() {
+    inMatch = true;
+    peerGone = false;
+    peerLeftMatch = false;
+    notifyListeners();
+  }
+
+  /// Sends the full mid-match state to a player who just rejoined.
+  void sendResume(Map<String, dynamic> snapshot) =>
+      _proto?.send({'type': 'resume', ...snapshot});
 
   // ------------------------------------------- LAN GAME-MODE VOTE ---
 
@@ -409,6 +645,12 @@ class NetworkService extends ChangeNotifier {
   LanBattleMode? lockedMode;
 
   bool get bothVoted => myVote != null && peerVote != null;
+
+  /// The match can only start once BOTH captains have picked the SAME
+  /// mode. A split vote is not resolved in anybody's favour — it simply
+  /// doesn't start, and the countdown will not run until the two picks
+  /// agree.
+  bool get votesAgree => bothVoted && myVote == peerVote;
 
   /// Casts (or changes) this device's vote. Safe to call repeatedly; a
   /// vote can be changed freely right up until [lockedMode] is set, which
@@ -450,13 +692,31 @@ class NetworkService extends ChangeNotifier {
     }
   }
 
-  /// Starts the lock-in countdown once both players have picked — host
-  /// only, and only once per vote (a later vote CHANGE deliberately does
-  /// not restart it, so the countdown can't be held open indefinitely by
-  /// one player flip-flopping).
+  /// Runs the lock-in countdown while — and only while — the two picks
+  /// AGREE. Host only, since one device has to own the clock.
+  ///
+  /// A split vote never starts a match: the countdown does not begin, and
+  /// if either player changes their pick mid-countdown so the two no
+  /// longer match, the countdown is cancelled outright and picks up again
+  /// from the top once they agree. That is what makes "both players must
+  /// vote the same mode" true rather than advisory — there is no tie to
+  /// break because a tie simply never resolves.
   void _maybeStartVoteCountdown() {
-    if (!_isHost || lockedMode != null || _voteTimer != null) return;
-    if (myVote == null || peerVote == null) return;
+    if (!_isHost || lockedMode != null) return;
+
+    if (!votesAgree) {
+      // Disagreement (or somebody hasn't picked yet) — stand the clock
+      // down and wait.
+      if (_voteTimer != null || voteCountdown != null) {
+        _voteTimer?.cancel();
+        _voteTimer = null;
+        voteCountdown = null;
+        _proto?.send({'type': 'vote_tick', 'n': null});
+      }
+      return;
+    }
+
+    if (_voteTimer != null) return; // already counting on an agreed pick
 
     voteCountdown = kVoteCountdownSeconds;
     _proto?.send({'type': 'vote_tick', 'n': voteCountdown});
@@ -472,22 +732,15 @@ class NetworkService extends ChangeNotifier {
       }
       _voteTimer?.cancel();
       _voteTimer = null;
-      final winner = _votedMode;
+      // Both picks are identical by construction here, so there is
+      // nothing to resolve — but the host still broadcasts the answer so
+      // the two ends can never disagree about what was agreed.
+      final winner = myVote ?? LanBattleMode.turns;
       lockedMode = winner;
       _proto?.send({'type': 'mode_locked', 'm': winner.index});
       notifyListeners();
     });
   }
-
-  /// Resolves the vote to the mode with the most picks.
-  ///
-  /// With exactly two voters the tally is only ever 2–0 (that mode wins
-  /// outright) or 1–1 (a tie, broken in the host's favor) — and both of
-  /// those come out as the host's own pick. Only the host ever calls this,
-  /// and it broadcasts the answer rather than letting each device decide
-  /// for itself: resolving on one device is what guarantees the two ends
-  /// can never end up in different game modes.
-  LanBattleMode get _votedMode => myVote ?? LanBattleMode.turns;
 
   /// Clears all vote state. Called when a match ends/disconnects and
   /// whenever the mode screen is entered fresh, so a previous match's
@@ -503,11 +756,71 @@ class NetworkService extends ChangeNotifier {
   }
 
   String _selfName = 'Captain';
+  String _selfShipSkinId = 'steel';
+  String _selfCannonSkinId = 'mk1';
+  String _selfThemeId = 'classic';
+
   void setSelfName(String name) => _selfName = name;
+
+  /// Restores the fixed match role after a reconnect. Which side you are
+  /// — red host or blue challenger, and therefore who shoots first — is
+  /// decided once for the whole match, but a returning player always
+  /// arrives through [joinHotspot] and so would otherwise come back as
+  /// the joiner regardless of who they actually were. The survivor tells
+  /// them in the resume snapshot; this applies it.
+  void setMatchHost(bool value) {
+    _isHost = value;
+    notifyListeners();
+  }
+
+  /// Records what this player has equipped so it can be sent in the
+  /// handshake. Called from the lobby before hosting or joining.
+  void setSelfLoadout({
+    required String shipSkinId,
+    required String cannonSkinId,
+    required String themeId,
+  }) {
+    _selfShipSkinId = shipSkinId;
+    _selfCannonSkinId = cannonSkinId;
+    _selfThemeId = themeId;
+  }
 
   void sendFire(int r, int c) => _proto?.send({'type': 'fire', 'r': r, 'c': c});
 
   void sendBoard(Board board) => _proto?.send({'type': 'board', 'b': board.toJson()});
+
+  /// MANOEUVRE mode: tells the opponent one of our ships has moved, so
+  /// their copy of our fleet stays in step with ours.
+  void sendMove(ShipKind kind, int r, int c, bool horizontal) => _proto?.send({
+        'type': 'move',
+        'k': kind.index,
+        'r': r,
+        'c': c,
+        'h': horizontal,
+      });
+
+  /// Post-match rematch handshake — the match only restarts when BOTH
+  /// sides have asked for it.
+  void sendRematch() {
+    myRematch = true;
+    _proto?.send({'type': 'rematch'});
+    notifyListeners();
+  }
+
+  /// Leaving for the main menu after a match. Tells the opponent not to
+  /// keep waiting on a rematch that is never coming.
+  void sendLeaveMatch() {
+    _proto?.send({'type': 'leave'});
+    peerGone = true;
+    notifyListeners();
+  }
+
+  void resetRematch() {
+    myRematch = false;
+    peerRematch = false;
+    peerLeftMatch = false;
+    notifyListeners();
+  }
 
   void sendResult(int r, int c, ShotResult result, {String? sunkShip}) {
     _proto?.send({
@@ -522,16 +835,29 @@ class NetworkService extends ChangeNotifier {
   void sendSurrender() => _proto?.send({'type': 'surrender'});
 
   Future<void> stop() async {
-    _beaconTimer?.cancel();
     _scanTimer?.cancel();
     _voteTimer?.cancel();
-    _beaconTimer = null;
+    _graceTimer?.cancel();
     _scanTimer = null;
     _voteTimer = null;
+    _graceTimer = null;
     myVote = null;
     peerVote = null;
     voteCountdown = null;
     lockedMode = null;
+    // Tearing down deliberately: a socket closing here must NOT be
+    // mistaken for the opponent walking out mid-match, so shut the match
+    // window down first.
+    inMatch = false;
+    peerLost = false;
+    peerGone = false;
+    graceSecondsLeft = 0;
+    myRematch = false;
+    peerRematch = false;
+    peerLeftMatch = false;
+    joiningResumable = false;
+    _resumeMsg = null;
+    _stopBeacon();
     try {
       await _proto?.close();
     } catch (_) {}
@@ -540,13 +866,12 @@ class NetworkService extends ChangeNotifier {
       await _server?.close();
     } catch (_) {}
     _server = null;
-    try {
-      _udp?.close();
-    } catch (_) {}
-    _udp = null;
     connected = false;
     isSearching = false;
     foundRooms = [];
+    peerShipSkinId = 'steel';
+    peerCannonSkinId = 'mk1';
+    peerThemeId = 'classic';
     _peerBoardMsg = null; // never carry a fleet into the next match
     mode = NetMode.none;
     notifyListeners();

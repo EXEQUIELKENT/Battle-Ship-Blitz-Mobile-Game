@@ -9,6 +9,7 @@ import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
+import 'battle_screen.dart';
 import 'lan_mode_screen.dart';
 
 /// Hotspot (LAN) + Online matchmaking lobby — cartoon style.
@@ -37,6 +38,13 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       final net = context.read<NetworkService>();
       final profile = context.read<ProfileStore>();
       net.setSelfName(profile.playerName);
+      // Announce what we have equipped so the opponent's device can draw
+      // our ships, cannon and battlefield the way we bought them.
+      net.setSelfLoadout(
+        shipSkinId: profile.shipSkinId,
+        cannonSkinId: profile.cannonSkinId,
+        themeId: profile.gameplayThemeId,
+      );
       final ok = await net.onlineAvailable();
       if (mounted) {
         setState(() {
@@ -94,19 +102,37 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     net.addListener(listener);
   }
 
-  Future<void> _join(String host) async {
+  /// Joins a room. [resuming] is set when the beacon advertised a match
+  /// already in progress with a seat held open for whoever dropped out of
+  /// it — in that case we wait for the surviving player's state snapshot
+  /// and drop straight back into the battle instead of starting fresh.
+  Future<void> _join(String host, {bool resuming = false}) async {
     final net = context.read<NetworkService>();
     final profile = context.read<ProfileStore>();
     setState(() => _connecting = true);
     SoundService.instance.click();
 
-    final ok = await net.joinHotspot(host, playerName: profile.playerName);
+    final ok = await net.joinHotspot(
+      host,
+      playerName: profile.playerName,
+      resuming: resuming,
+    );
     if (ok && mounted) {
-      // Wait for the hello confirmation
+      // Wait for the hello confirmation — or, when rejoining, for the
+      // snapshot that puts the match back together.
       void listener() {
-        if (net.connected) {
+        if (!mounted) return;
+        final snapshot = net.takeResume();
+        if (snapshot != null) {
           net.removeListener(listener);
-          if (!mounted) return;
+          setState(() => _connecting = false);
+          _resumeMatch(snapshot);
+          return;
+        }
+        // `joiningResumable` keeps us from racing off into the new-match
+        // flow while the snapshot is still in flight.
+        if (net.connected && !net.joiningResumable) {
+          net.removeListener(listener);
           setState(() => _connecting = false);
           _enterModeVote(GameMode.hotspot);
         }
@@ -117,6 +143,21 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       setState(() => _connecting = false);
       if (mounted && net.statusMessage.isNotEmpty) _toast(net.statusMessage);
     }
+  }
+
+  /// Rebuilds the interrupted match from the surviving player's snapshot
+  /// and goes straight to the battle, exactly where it left off.
+  void _resumeMatch(Map<String, dynamic> snapshot) {
+    final controller = context.read<GameController>();
+    final net = context.read<NetworkService>();
+    controller.mode = GameMode.hotspot;
+    // Which side we were is part of the match, not of who reconnected —
+    // see NetworkService.setMatchHost.
+    net.setMatchHost(snapshot['youAreHost'] == true);
+    controller.restoreFromSnapshot(snapshot);
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const BattleScreen()),
+    );
   }
 
   Future<void> _joinOnline() async {
@@ -335,20 +376,36 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     ),
                     child: ListTile(
                       dense: true,
-                      leading: const Icon(Icons.directions_boat,
-                          color: AppColors.shipRed),
+                      leading: Icon(
+                        room.resumable
+                            ? Icons.history_toggle_off
+                            : Icons.directions_boat,
+                        color: room.resumable
+                            ? AppColors.ember
+                            : AppColors.shipRed,
+                      ),
                       title: Text(room.playerName,
                           style: AppText.heading(
                               size: 12, color: AppColors.navy)),
-                      subtitle: Text('${room.host} • ${room.code}',
+                      subtitle: Text(
+                          room.resumable
+                              ? 'MATCH IN PROGRESS — YOUR SEAT IS HELD'
+                              : '${room.host} • ${room.code}',
                           style: AppText.label(
-                              size: 9, color: AppColors.inkSoft)),
+                              size: 9,
+                              color: room.resumable
+                                  ? AppColors.ember
+                                  : AppColors.inkSoft)),
                       trailing: NeonButton(
-                        label: 'JOIN',
-                        color: AppColors.green,
+                        label: room.resumable ? 'REJOIN' : 'JOIN',
+                        color: room.resumable
+                            ? AppColors.ember
+                            : AppColors.green,
                         compact: true,
-                        onPressed:
-                            _connecting ? null : () => _join(room.host),
+                        onPressed: _connecting
+                            ? null
+                            : () =>
+                                _join(room.host, resuming: room.resumable),
                       ),
                     ),
                   ),

@@ -5,9 +5,11 @@ import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
 import '../services/game_controller.dart';
+import '../services/network_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
+import 'lan_mode_screen.dart';
 
 /// Victory / defeat screen — cartoon badge, RP reveal, chunky buttons.
 class ResultScreen extends StatefulWidget {
@@ -38,10 +40,31 @@ class _ResultScreenState extends State<ResultScreen>
     for (var i = 0; i < 60; i++) {
       _confetti.add(_Confetti(_rng));
     }
+    _net = context.read<NetworkService>();
+    _net.addListener(_onNet);
+  }
+
+  late final NetworkService _net;
+  bool _rematchStarted = false;
+
+  /// Both captains have asked for a rematch — clear the board and drop
+  /// them back into the pre-match flow to agree on a mode again.
+  void _onNet() {
+    if (!mounted || _rematchStarted) return;
+    if (!_net.bothRematch) return;
+    _rematchStarted = true;
+    final controller = context.read<GameController>();
+    controller.resetForRematch();
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => LanModeScreen(mode: controller.mode),
+      ),
+    );
   }
 
   @override
   void dispose() {
+    _net.removeListener(_onNet);
     _confettiCtrl.dispose();
     _revealCtrl.dispose();
     super.dispose();
@@ -198,35 +221,7 @@ class _ResultScreenState extends State<ResultScreen>
                       const SizedBox(height: 26),
 
                       // ---- Actions ----
-                      Row(
-                        children: [
-                          Expanded(
-                            child: NeonButton(
-                              label: 'REMATCH',
-                              icon: Icons.refresh,
-                              color: AppColors.green,
-                              onPressed: () {
-                                controller.reset();
-                                Navigator.of(context)
-                                    .popUntil((route) => route.isFirst);
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: NeonButton(
-                              label: 'MAIN MENU',
-                              icon: Icons.home,
-                              color: AppColors.blue,
-                              onPressed: () {
-                                controller.reset();
-                                Navigator.of(context)
-                                    .popUntil((route) => route.isFirst);
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
+                      _actions(controller),
                     ],
                   ),
                 ),
@@ -236,6 +231,143 @@ class _ResultScreenState extends State<ResultScreen>
         ),
       ),
     );
+  }
+
+  // ------------------------------------------------------- ACTIONS ---
+
+  /// REMATCH / MAIN MENU.
+  ///
+  /// Away from network play a rematch is just "start over", so it drops
+  /// straight back to the menu. In a LAN match it is a handshake: BOTH
+  /// captains have to ask for it, so tapping REMATCH pledges this device
+  /// and then waits. Leaving instead tells the opponent explicitly, so
+  /// they aren't left staring at a "waiting" spinner for a rematch that
+  /// is never coming.
+  Widget _actions(GameController controller) {
+    final net = context.watch<NetworkService>();
+    final isLan = controller.isNetworkBattle;
+
+    if (!isLan) {
+      return Row(
+        children: [
+          Expanded(
+            child: NeonButton(
+              label: 'REMATCH',
+              icon: Icons.refresh,
+              color: AppColors.green,
+              onPressed: () => _leaveToMenu(controller),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: NeonButton(
+              label: 'MAIN MENU',
+              icon: Icons.home,
+              color: AppColors.blue,
+              onPressed: () => _leaveToMenu(controller),
+            ),
+          ),
+        ],
+      );
+    }
+
+    if (net.peerLeftMatch || net.peerGone) {
+      return Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: cartoonBox(AppColors.navy, radius: 14),
+            child: Row(
+              children: [
+                const Icon(Icons.person_off, color: AppColors.hit, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '${net.peerName.toUpperCase()} LEFT THE MATCH.\n'
+                    'No rematch is coming.',
+                    style: AppText.label(size: 10.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          NeonButton(
+            label: 'MAIN MENU',
+            icon: Icons.home,
+            color: AppColors.blue,
+            onPressed: () => _leaveToMenu(controller),
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      children: [
+        if (net.myRematch || net.peerRematch) ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: cartoonBox(AppColors.navy, radius: 14),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    valueColor: AlwaysStoppedAnimation(
+                        net.myRematch ? AppColors.green : AppColors.gold),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    net.myRematch
+                        ? 'WAITING FOR ${net.peerName.toUpperCase()} '
+                            'TO ACCEPT…'
+                        : '${net.peerName.toUpperCase()} WANTS A REMATCH!',
+                    style: AppText.label(size: 10.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        Row(
+          children: [
+            Expanded(
+              child: NeonButton(
+                label: net.myRematch ? 'READY ✓' : 'REMATCH',
+                icon: Icons.refresh,
+                color: net.myRematch ? AppColors.inkSoft : AppColors.green,
+                onPressed: net.myRematch ? null : net.sendRematch,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: NeonButton(
+                label: 'MAIN MENU',
+                icon: Icons.home,
+                color: AppColors.blue,
+                onPressed: () {
+                  net.sendLeaveMatch();
+                  _leaveToMenu(controller);
+                },
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _leaveToMenu(GameController controller) {
+    controller.reset();
+    controller.network.stop();
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   Widget _summaryPip(String label, String value, Color color) {

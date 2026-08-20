@@ -43,9 +43,33 @@ class GameController extends ChangeNotifier {
   LanBattleMode lanBattleMode = LanBattleMode.turns;
 
   /// True when both fleets fire simultaneously with no turn order.
-  bool get isChaosBattle =>
-      (mode == GameMode.hotspot || mode == GameMode.online) &&
-      lanBattleMode == LanBattleMode.chaos;
+  bool get isChaosBattle => isNetworkBattle && lanBattleMode == LanBattleMode.chaos;
+
+  /// True when ships may be repositioned mid-battle (MANOEUVRE mode).
+  bool get isManoeuvreBattle =>
+      isNetworkBattle && lanBattleMode == LanBattleMode.rearrange;
+
+  bool get isNetworkBattle =>
+      mode == GameMode.hotspot || mode == GameMode.online;
+
+  /// Mirror of the battle screen's "the opponent is the active side" flag.
+  /// The screen owns turn-passing (it has to, since a turn only changes
+  /// once a shell has visibly landed), but the value has to live somewhere
+  /// the controller can read it: a resume snapshot for a reconnecting
+  /// player is worthless if it can't say whose turn it was.
+  bool peerHasTurn = false;
+
+  /// Set when a match ended because the opponent walked out rather than
+  /// because it was played to a finish. Such a match is void: no win, no
+  /// loss, no RP — see [abandonMatch].
+  bool matchAbandoned = false;
+
+  /// True when this battle was rebuilt from a resume snapshot rather than
+  /// started fresh. The battle screen reads it to skip the opening 3-2-1
+  /// countdown: the match is already running on the other device, and
+  /// counting one player in while the other is mid-turn would just lock
+  /// the returning player out of their own guns for a few seconds.
+  bool resumedMidMatch = false;
 
   AIDifficulty difficulty = AIDifficulty.normal;
   BattlePhase phase = BattlePhase.idle;
@@ -155,6 +179,13 @@ class GameController extends ChangeNotifier {
   void beginBattle({Board? enemyBoard}) {
     boards[1] = enemyBoard ?? Board.random(rng: _rng);
     phase = BattlePhase.battling;
+    matchAbandoned = false;
+    resumedMidMatch = false;
+    // The host fires the opening shot in every turn-taking network mode.
+    peerHasTurn = isNetworkBattle &&
+        lanBattleMode.hasTurns &&
+        !network.isHost;
+    if (isNetworkBattle) network.beginMatch();
     revision++;
     cooldownMax1 =
         kCooldownSeconds * profile.cannonSkin.cooldownFactor;
@@ -270,6 +301,233 @@ class GameController extends ChangeNotifier {
       sunk: sunk,
     );
     return result;
+  }
+
+  // ------------------------------------------------ MANOEUVRE MODE ---
+
+  /// Repositions one of the player's OWN ships mid-battle. Returns false
+  /// (changing nothing) when the move is illegal — the hull has already
+  /// taken a hit, the destination overlaps another ship, or it covers a
+  /// cell the enemy has already fired at. See [Board.canRelocateTo].
+  ///
+  /// A successful move is mirrored to the opponent immediately, because
+  /// their copy of this fleet is what resolves their incoming shots; if
+  /// the two drifted apart the same shot would hit on one device and miss
+  /// on the other.
+  bool relocateOwnShip(ShipKind kind, int row, int col, bool horizontal) {
+    if (!battling || !isManoeuvreBattle) return false;
+    if (!boards[0].relocate(kind, row, col, horizontal)) return false;
+    network.sendMove(kind, row, col, horizontal);
+    revision++;
+    notifyListeners();
+    return true;
+  }
+
+  /// Whether a ship on the player's own board is still free to move.
+  bool canRelocate(PlacedShip ship) =>
+      battling && isManoeuvreBattle && boards[0].canRelocate(ship);
+
+  // -------------------------------------------------- RESUME SUPPORT ---
+
+  /// Everything a reconnecting opponent needs to pick the match back up
+  /// exactly where they left it.
+  ///
+  /// Built entirely from THIS device's state, which is sufficient because
+  /// each side already holds both fleets: our own board carries our exact
+  /// damage, and their board plus our own shot grid reconstructs their
+  /// damage precisely (a cell we recorded as a hit is, by definition, one
+  /// of their ships). Nothing has to be remembered on their behalf.
+  Map<String, dynamic> buildResumeSnapshot() => {
+        'mode': lanBattleMode.index,
+        // Match roles are fixed for the whole match. Telling them which
+        // side they are is what stops a reconnect from swapping fleet
+        // colours or turn order around.
+        'youAreHost': !network.isHost,
+        'yourBoard': boards[1].toJson(),
+        'myBoard': boards[0].toJson(),
+        'shotsByYou': p2Shots.map((row) => row.toList()).toList(),
+        'shotsByMe': myShots.map((row) => row.toList()).toList(),
+        'yourTurn': peerHasTurn,
+        'log': combatLog.toList(),
+      };
+
+  /// Rebuilds a whole in-progress match from the surviving player's
+  /// snapshot and drops straight back into battle.
+  void restoreFromSnapshot(Map<String, dynamic> s) {
+    _teardown();
+
+    lanBattleMode = LanBattleMode.values[
+        (s['mode'] as int? ?? LanBattleMode.turns.index)
+            .clamp(0, LanBattleMode.values.length - 1)];
+
+    // Our own fleet, and the opponent's, as the survivor knows them.
+    final own = Board.fromJson(Map<String, dynamic>.from(s['yourBoard'] as Map));
+    final enemy = Board.fromJson(Map<String, dynamic>.from(s['myBoard'] as Map));
+
+    final shotsByMe = _grid(s['shotsByYou']);   // what WE fired
+    final shotsByThem = _grid(s['shotsByMe']);  // what THEY fired at us
+
+    // Damage on our own fleet is derived rather than trusted: every cell
+    // they recorded as a hit is one of our ship cells, so this
+    // reconstructs it exactly and can't disagree with their shot grid.
+    for (final ship in own.ships) {
+      ship.hitIndices.clear();
+    }
+    for (var r = 0; r < kBoardSize; r++) {
+      for (var c = 0; c < kBoardSize; c++) {
+        if (shotsByThem[r][c] == 0) continue;
+        own.markShot(r, c);
+        if (shotsByThem[r][c] == 2) {
+          final ship = own.shipAt(r, c);
+          final idx = ship?.cellIndexAt(r, c);
+          if (ship != null && idx != null) ship.hitIndices.add(idx);
+        }
+      }
+    }
+    for (var r = 0; r < kBoardSize; r++) {
+      for (var c = 0; c < kBoardSize; c++) {
+        if (shotsByMe[r][c] != 0) enemy.markShot(r, c);
+      }
+    }
+
+    boards[0] = own;
+    boards[1] = enemy;
+
+    for (var r = 0; r < kBoardSize; r++) {
+      for (var c = 0; c < kBoardSize; c++) {
+        myShots[r][c] = shotsByMe[r][c];
+        p2Shots[r][c] = shotsByThem[r][c];
+      }
+    }
+
+    peerHasTurn = !(s['yourTurn'] as bool? ?? false);
+
+    phase = BattlePhase.battling;
+    matchAbandoned = false;
+    resumedMidMatch = true;
+    iWon = false;
+    p2Won = false;
+    endReason = '';
+    cooldownMax1 = kCooldownSeconds * profile.cannonSkin.cooldownFactor;
+    cooldownMax2 = kCooldownSeconds.toDouble();
+    cooldown1 = 0;
+    cooldown2 = 0;
+    aiTurnToFire = false;
+    _aiShotPending = false;
+    _pendingFinishEvent = null;
+    _pendingP1Win = false;
+    _pendingReason = '';
+
+    combatLog
+      ..clear()
+      ..addAll(((s['log'] as List?) ?? const []).map((e) => e.toString()));
+
+    _seedEventsFromShots(shotsByMe: shotsByMe, shotsByThem: shotsByThem);
+
+    revision++;
+    _ticker?.cancel();
+    _ticker = Timer.periodic(const Duration(milliseconds: 100), _onTick);
+    attachNetwork();
+    _log('🔄 Reconnected — battle resumed!');
+    notifyListeners();
+  }
+
+  static List<List<int>> _grid(Object? raw) {
+    final out = List.generate(kBoardSize, (_) => List.filled(kBoardSize, 0));
+    if (raw is! List) return out;
+    for (var r = 0; r < kBoardSize && r < raw.length; r++) {
+      final row = raw[r];
+      if (row is! List) continue;
+      for (var c = 0; c < kBoardSize && c < row.length; c++) {
+        out[r][c] = (row[c] as num?)?.toInt() ?? 0;
+      }
+    }
+    return out;
+  }
+
+  /// Recreates the combat events every past shot would have produced, all
+  /// pre-resolved (`impactAt` set), so the restored board shows its full
+  /// history of hit/miss markers and wrecks the instant it comes back up
+  /// rather than replaying a match's worth of cannon fire.
+  void _seedEventsFromShots({
+    required List<List<int>> shotsByMe,
+    required List<List<int>> shotsByThem,
+  }) {
+    events.clear();
+    void seed(List<List<int>> grid, bool byPlayer, Board target) {
+      for (var r = 0; r < kBoardSize; r++) {
+        for (var c = 0; c < kBoardSize; c++) {
+          final v = grid[r][c];
+          if (v == 0) continue;
+          final ship = v == 2 ? target.shipAt(r, c) : null;
+          // A sunk ship is reported on its final cell so the wreck and the
+          // fleet-status icon reveal, exactly as they would have live.
+          final sunk = ship != null &&
+              ship.isSunk &&
+              ship.cellIndexAt(r, c) == ship.spec.size - 1;
+          events.add(
+            CombatEvent(
+              row: r,
+              col: c,
+              result: v == 2
+                  ? (sunk ? ShotResult.sunk : ShotResult.hit)
+                  : ShotResult.miss,
+              byPlayer: byPlayer,
+              sunkShipName: sunk ? ship.spec.name : null,
+            )..impactAt = DateTime.now(),
+          );
+        }
+      }
+    }
+
+    seed(shotsByMe, true, boards[1]);
+    seed(shotsByThem, false, boards[0]);
+  }
+
+  // ----------------------------------------------------- ABANDONMENT ---
+
+  /// Ends a match that was never played to a finish because the opponent
+  /// walked out and did not come back.
+  ///
+  /// Deliberately does NOT call [ProfileStore.recordResult]: a match
+  /// nobody lost should not show up in anybody's record, so neither
+  /// player takes a win or a loss and no RP changes hands.
+  void abandonMatch({String reason = 'Your opponent left the match.'}) {
+    if (phase == BattlePhase.finished) return;
+    matchAbandoned = true;
+    phase = BattlePhase.finished;
+    _ticker?.cancel();
+    _aiShotPending = false;
+    iWon = false;
+    p2Won = false;
+    rpDelta = 0;
+    endReason = reason;
+    _log('🚪 $reason No result recorded.');
+    notifyListeners();
+  }
+
+  /// Clears the last match but keeps the connection and mode so a rematch
+  /// can go straight back into the pre-match flow.
+  void resetForRematch() {
+    _teardown();
+    phase = BattlePhase.idle;
+    boards[0] = Board();
+    boards[1] = Board();
+    rpAwarded = false;
+    rpDelta = 0;
+    iWon = false;
+    p2Won = false;
+    endReason = '';
+    matchAbandoned = false;
+    suddenTimeout = false;
+    events.clear();
+    combatLog.clear();
+    _pendingFinishEvent = null;
+    _pendingP1Win = false;
+    _pendingReason = '';
+    network.resetRematch();
+    network.resetLanVote();
+    notifyListeners();
   }
 
   void _registerShot({
@@ -399,7 +657,9 @@ class GameController extends ChangeNotifier {
     p2Won = !p1Win;
     endReason = reason;
 
-    if (!rpAwarded) {
+    // An abandoned match is void — see [abandonMatch]. Guarded here as
+    // well so a late-arriving result can't sneak a record in afterwards.
+    if (!rpAwarded && !matchAbandoned) {
       rpAwarded = true;
       rpDelta = profile.recordResult(won: p1Win);
     }
@@ -651,6 +911,33 @@ class GameController extends ChangeNotifier {
           result: result,
           sunk: sunk,
         );
+        break;
+
+      case 'move':
+        // MANOEUVRE mode: the opponent repositioned one of their ships.
+        // Applied verbatim — they are the authority on their own fleet,
+        // and they already validated it against the same rules we would.
+        final kind = ShipKind.values[msg['k'] as int];
+        final ship = boards[1].shipOfKind(kind);
+        if (ship != null) {
+          boards[1].ships.remove(ship);
+          boards[1].ships.add(PlacedShip(
+            spec: ship.spec,
+            row: msg['r'] as int,
+            col: msg['c'] as int,
+            horizontal: msg['h'] as bool,
+            hitIndices: Set<int>.from(ship.hitIndices),
+          ));
+          revision++;
+          notifyListeners();
+        }
+        break;
+
+      case 'resume_request':
+        // Our opponent made it back inside the grace window and needs the
+        // match handed to them. We are the surviving side, so our state is
+        // the authoritative copy.
+        if (battling) network.sendResume(buildResumeSnapshot());
         break;
 
       case 'surrender':

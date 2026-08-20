@@ -35,6 +35,10 @@ const _bluePlaceSkin = ShipSkin(
   0,
 );
 
+/// The ship skin every profile starts on — having it equipped means the
+/// player never picked one, so their side colour is used instead.
+const String _kDefaultShipSkinId = 'steel';
+
 /// "Deploy your ships" — reference-style placement:
 /// drag ships from the top dock onto the grid (or tap an empty cell),
 /// tap a placed ship to rotate it, RANDOM + green SAVE buttons.
@@ -417,13 +421,29 @@ class _PlacementScreenState extends State<PlacementScreen> {
     final isBlueFleet =
         isLan ? !controller.network.isHost : widget.isPlayer2;
 
+    // Side colour by default; a captain who has actually equipped a ship
+    // skin deploys in that instead, so the fleet they lay out here is the
+    // fleet they'll see on the battle grid. Matches `_shipSkinFor` in
+    // battle_screen.dart — including the rule that the catalogue's
+    // starting hull counts as "no skin chosen" and defers to red/blue.
+    final sideSkin = isBlueFleet ? _bluePlaceSkin : _redPlaceSkin;
+    final equippedShipSkinId = context.watch<ProfileStore>().shipSkinId;
+    final wearingSkin = isLan && equippedShipSkinId != _kDefaultShipSkinId;
+    final skin =
+        wearingSkin ? Catalog.shipById(equippedShipSkinId) : sideSkin;
+
+    // Name what the player is actually looking at: their side's colour
+    // normally, or the skin itself once they're wearing one — telling a
+    // captain in Emerald Tide that they command the "RED FLEET" would
+    // just be wrong.
+    final fleetLabel =
+        wearingSkin ? skin.name.toUpperCase() : '${isBlueFleet ? 'BLUE' : 'RED'} FLEET';
     final playerLabel = controller.mode == GameMode.local
         ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
         : isLan
             ? '${context.watch<ProfileStore>().playerName.toUpperCase()}'
-                ' — ${isBlueFleet ? 'BLUE' : 'RED'} FLEET'
+                ' — $fleetLabel'
             : context.watch<ProfileStore>().playerName.toUpperCase();
-    final skin = isBlueFleet ? _bluePlaceSkin : _redPlaceSkin;
     final cellSize = _cellSize(context);
 
     if (_showHandoff) {

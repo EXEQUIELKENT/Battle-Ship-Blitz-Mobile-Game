@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
+import '../services/network_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/battle_grid.dart';
@@ -45,6 +46,9 @@ class BattleScreen extends StatefulWidget {
 
 class _BattleScreenState extends State<BattleScreen>
     with TickerProviderStateMixin {
+  /// The theme for chrome that isn't tied to one half (the middle band).
+  /// Always this device's own — the band belongs to the player holding
+  /// the phone, not to either fleet.
   GameplayTheme get gameplayTheme => context.read<ProfileStore>().gameplayTheme;
 
   final _cannon1Fire = StreamController<void>.broadcast();
@@ -95,9 +99,16 @@ class _BattleScreenState extends State<BattleScreen>
   /// the screen edge) — see `flipLayout` in `_buildHalf`.
   late final bool _mirrorTopHalf;
 
+  /// LAN MANOEUVRE rules: undamaged ships can be repositioned mid-battle.
+  late final bool _manoeuvre;
+
   /// True when this device commands the BLUE fleet — i.e. it joined a LAN
   /// match rather than hosting it. The host always commands red.
   late final bool _iAmBlue;
+
+  // ----- MANOEUVRE mode: live drag preview on your own grid -----
+  PlacedShip? _movePreview;
+  bool _movePreviewValid = true;
 
   // ----- Countdown -----
   bool _countingDown = false;
@@ -213,6 +224,7 @@ class _BattleScreenState extends State<BattleScreen>
     _lan = controller.mode == GameMode.hotspot ||
         controller.mode == GameMode.online;
     _chaos = _lan && controller.lanBattleMode == LanBattleMode.chaos;
+    _manoeuvre = _lan && controller.lanBattleMode == LanBattleMode.rearrange;
     _turnTracked = !_chaos &&
         (controller.mode == GameMode.local ||
             controller.mode == GameMode.vsAI ||
@@ -220,11 +232,13 @@ class _BattleScreenState extends State<BattleScreen>
     _mirrorTopHalf = !_lan;
     _iAmBlue = _lan && !controller.network.isHost;
 
-    // LAN turn-based: the host fires the opening shot, so on the joiner's
-    // device the opponent's half starts active. Both ends stay in step
-    // from there via `_maybePassTurn`.
+    // Whose turn it is at the moment this screen opens. `peerHasTurn` is
+    // set by `beginBattle` (host fires first) and by a resume snapshot
+    // (whoever's turn it was when the match was interrupted), so a
+    // reconnecting player comes back on the correct side of the turn
+    // order rather than always as if the match had just started.
     if (_lan && _turnTracked) {
-      _p2Active = !controller.network.isHost;
+      _p2Active = controller.peerHasTurn;
     }
 
     _slideCtrl = AnimationController(
@@ -251,7 +265,9 @@ class _BattleScreenState extends State<BattleScreen>
     }
 
     // Start-of-battle countdown (video: big 3-2-1 over both halves).
-    if (controller.battling) {
+    // Skipped when walking back into a match already in progress — see
+    // `GameController.resumedMidMatch`.
+    if (controller.battling && !controller.resumedMidMatch) {
       _countingDown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) => _runCountdown());
     }
@@ -296,7 +312,18 @@ class _BattleScreenState extends State<BattleScreen>
       // branch fires the impact sound + screen shake PREMATURELY (before the
       // ball visibly lands). Excluding GameMode.local prevents this entirely;
       // P2's feedback is handled synchronously by _launchBall just like P1's.
-      if (!e.byPlayer && age < 200 && mounted && controller.mode != GameMode.local) {
+      // `impactAt == null` matters as much as the age check: a match
+      // rebuilt from a resume snapshot seeds every past shot as an
+      // already-landed event (see `GameController._seedEventsFromShots`),
+      // and those are brand new objects. Without this guard the newest of
+      // them would be mistaken for an incoming shot and fired again as a
+      // phantom cannonball whose impact could never resolve — leaving the
+      // opponent's gun permanently jammed.
+      if (!e.byPlayer &&
+          e.impactAt == null &&
+          age < 200 &&
+          mounted &&
+          controller.mode != GameMode.local) {
         if (!_delayedOpponentEvents.contains(e)) {
           _delayedOpponentEvents.add(e);
           _launchOpponentBall(e);
@@ -481,6 +508,9 @@ class _BattleScreenState extends State<BattleScreen>
     SoundService.instance.whir();
     SoundService.instance.turnPass();
     setState(() => _p2Active = toP2);
+    // Keep the controller's mirror current: it's what a resume snapshot
+    // reads to tell a reconnecting player whose turn they came back to.
+    context.read<GameController>().peerHasTurn = toP2;
     // Animate the slide: value 1 = P1 out (P2 home), 0 = P2 out (P1 home).
     if (toP2) {
       _slideCtrl.reverse();
@@ -579,16 +609,138 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ----------------------------------------------------- CANNON SLIDE ---
 
+  // ------------------------------------------------- PER-PLAYER GEAR ---
+  //
+  // In a network match each captain sails their OWN purchased loadout,
+  // and both devices render it the same way: my half uses what I have
+  // equipped, the opponent's half uses what they told us they have
+  // equipped in the handshake (see `NetworkService._helloPayload`). Away
+  // from network play there is only one profile, so everything falls back
+  // to it.
+
+  /// The skin a half's fleet is drawn in.
+  ///
+  /// A captain who has actually equipped a ship skin sails it, and their
+  /// opponent sees it too. A captain who has NOT keeps their side colour
+  /// — red for the host, blue for the challenger.
+  ///
+  /// That fallback matters: the catalogue's starting hull is a neutral
+  /// grey, so treating "equipped" as "always use the catalogue skin" put
+  /// two untouched profiles into two identical grey fleets and threw away
+  /// the only thing distinguishing the sides. Skins are an override on
+  /// top of the red/blue identity, not a replacement for it. Away from
+  /// network play the flat red/blue is used throughout, exactly as it
+  /// always has been.
+  ShipSkin _shipSkinFor(bool halfIsP1) {
+    final sideSkin = _fleetIsRed(halfIsP1) ? _redStatusSkin : _blueStatusSkin;
+    if (!_lan) return sideSkin;
+    final equipped = halfIsP1
+        ? context.read<ProfileStore>().shipSkinId
+        : context.read<NetworkService>().peerShipSkinId;
+    if (equipped == _kDefaultShipSkinId) return sideSkin;
+    return Catalog.shipById(equipped);
+  }
+
+  /// The ship skin every profile starts on. Having this equipped means
+  /// "I never picked one", so it defers to the side colour above.
+  static const String _kDefaultShipSkinId = 'steel';
+
+  CannonSkin _cannonSkinFor(bool halfIsP1) {
+    final profile = context.read<ProfileStore>();
+    if (!_lan || halfIsP1) return profile.cannonSkin;
+    return Catalog.cannonById(context.read<NetworkService>().peerCannonSkinId);
+  }
+
+  GameplayTheme _themeFor(bool halfIsP1) {
+    final profile = context.read<ProfileStore>();
+    if (!_lan || halfIsP1) return profile.gameplayTheme;
+    return Catalog
+        .gameplayThemeById(context.read<NetworkService>().peerThemeId);
+  }
+
+  // ------------------------------------------------ MANOEUVRE ACTIONS ---
+
+  /// Live "where would this ship land" highlight while it's being dragged
+  /// around your own grid.
+  void _previewMove(GameController controller, ShipKind kind, int row, int col) {
+    final ship = controller.boards[0].shipOfKind(kind);
+    if (ship == null) return;
+    final spec = ship.spec;
+    var r = row;
+    var c = col;
+    if (ship.horizontal && c + spec.size > kBoardSize) {
+      c = kBoardSize - spec.size;
+    }
+    if (!ship.horizontal && r + spec.size > kBoardSize) {
+      r = kBoardSize - spec.size;
+    }
+    setState(() {
+      _movePreview =
+          PlacedShip(spec: spec, row: r, col: c, horizontal: ship.horizontal);
+      _movePreviewValid =
+          controller.boards[0].canRelocateTo(ship, r, c, ship.horizontal);
+    });
+  }
+
+  void _commitMove(GameController controller, ShipKind kind, int row, int col) {
+    final ship = controller.boards[0].shipOfKind(kind);
+    setState(() => _movePreview = null);
+    if (ship == null) return;
+    var r = row;
+    var c = col;
+    if (ship.horizontal && c + ship.spec.size > kBoardSize) {
+      c = kBoardSize - ship.spec.size;
+    }
+    if (!ship.horizontal && r + ship.spec.size > kBoardSize) {
+      r = kBoardSize - ship.spec.size;
+    }
+    if (r == ship.row && c == ship.col) return; // no actual movement
+    if (controller.relocateOwnShip(kind, r, c, ship.horizontal)) {
+      SoundService.instance.place();
+    } else {
+      SoundService.instance.denied();
+    }
+  }
+
+  /// Tapping a ship turns it on the spot, same as during deployment.
+  void _rotateOwnShip(GameController controller, ShipKind kind) {
+    final ship = controller.boards[0].shipOfKind(kind);
+    if (ship == null) return;
+    final horizontal = !ship.horizontal;
+    var r = ship.row;
+    var c = ship.col;
+    if (horizontal && c + ship.spec.size > kBoardSize) {
+      c = kBoardSize - ship.spec.size;
+    }
+    if (!horizontal && r + ship.spec.size > kBoardSize) {
+      r = kBoardSize - ship.spec.size;
+    }
+    if (controller.relocateOwnShip(kind, r, c, horizontal)) {
+      SoundService.instance.place();
+    } else {
+      SoundService.instance.denied();
+    }
+  }
+
   /// How far a half's cannon has slid out of its parked position: 0 =
   /// tucked at the BACK of its own grid (the far edge of the screen),
   /// 1 = out at the middle of that grid, marking its owner's turn.
   ///
-  /// Chaos mode has no turns to mark, so both cannons stay pinned at the
-  /// back for the whole match — which is also where their cannonballs
-  /// then launch from, since every trajectory is derived from this same
-  /// value (see `_cannonMouth`).
+  /// Two modes pin both cannons at the back for the whole match, and
+  /// since every trajectory is derived from this same value (see
+  /// `_cannonMouth`), that is also where their cannonballs launch from.
+  ///
+  ///  * CHAOS — there are no turns to mark in the first place.
+  ///  * MANOEUVRE — a cannon parked in the middle of its owner's grid
+  ///    sits directly on top of the fleet they are supposed to be
+  ///    dragging around, hiding the very ships the mode is about. That
+  ///    applies to BOTH cannons on BOTH devices: your opponent's gun
+  ///    sliding onto their board blocks your view of the water you are
+  ///    aiming at just as badly. The turn is signalled by dimming the
+  ///    grid you cannot act on instead — see `dimThisHalf` in
+  ///    `_buildHalf`.
   double _slideFor(bool halfIsP1) {
-    if (_chaos) return 0.0;
+    if (_chaos || _manoeuvre) return 0.0;
     return halfIsP1 ? _slideCtrl.value : 1 - _slideCtrl.value;
   }
 
@@ -747,6 +899,13 @@ class _BattleScreenState extends State<BattleScreen>
                       height: bandH,
                       child: _gameOverBar(),
                     ),
+
+                  // ===== Opponent dropped: the match is held open for a
+                  // minute while they find their way back. =====
+                  if (_lan && controller.phase == BattlePhase.battling)
+                    _ReconnectOverlay(
+                      onAbandon: () => _abandon(controller),
+                    ),
                 ],
               ),
             );
@@ -755,6 +914,17 @@ class _BattleScreenState extends State<BattleScreen>
       ),
     ),
     );
+  }
+
+  /// Give up on an opponent who has not come back. The match is void —
+  /// no win, no loss, no RP for either side (see
+  /// `GameController.abandonMatch`) — so this goes straight home rather
+  /// than to a result screen that would have nothing to report.
+  void _abandon(GameController controller) {
+    controller.abandonMatch();
+    controller.network.stop();
+    _navigatedToResult = true;
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   /// One airborne cannonball: the ball itself plus its two motion-trail
@@ -949,7 +1119,10 @@ class _BattleScreenState extends State<BattleScreen>
     // instead (host red, joiner blue), so the two devices now agree on
     // who is which colour.
     final accent = _fleetIsRed(halfIsP1) ? AppColors.hit : AppColors.blue;
-    final gameplayTheme = context.watch<ProfileStore>().gameplayTheme;
+    // Each half is painted in ITS OWNER's battlefield theme, so the
+    // customisation a player paid for is what they sail on — and their
+    // opponent sees it too, on the same half, on both devices.
+    final gameplayTheme = _themeFor(halfIsP1);
 
     // VIDEO interaction model: the ACTIVE player's cannon sits at the
     // middle of their OWN grid (a "ready to fire" indicator). Tapping a
@@ -976,10 +1149,33 @@ class _BattleScreenState extends State<BattleScreen>
           !_projP2.visible;
     }
 
-    // This half belongs to whoever is currently firing — used to dim their
-    // own (inert) board so attention stays on the live target grid. Chaos
-    // mode has no active side at all, so nothing is dimmed there.
-    final isActiveHalf = !_chaos && (halfIsP1 != _p2Active);
+    // MANOEUVRE mode: your own fleet can still run between shots. Only
+    // ever on your OWN half, and locked while a shell is actually inbound
+    // at this grid — a ship can't be yanked out from under a shot that is
+    // already in the air.
+    final manoeuvring = _manoeuvre &&
+        halfIsP1 &&
+        inBattle &&
+        controller.phase == BattlePhase.battling &&
+        !_projP2.visible;
+
+    // Which half gets the scrim.
+    final bool dimThisHalf;
+    if (_chaos) {
+      // No active side at all — nothing to signal.
+      dimThisHalf = false;
+    } else if (_manoeuvre) {
+      // The cannon no longer marks whose turn it is (it stays at the back
+      // so it can't sit on top of the fleet being rearranged), so the
+      // scrim takes that job — over the ENEMY grid, while you can't shoot
+      // at it. Never over your own board: that is the one you need to see
+      // and work on, and it stays lit whichever turn it is.
+      dimThisHalf = !halfIsP1 && _p2Active;
+    } else {
+      // Spotlight: dim the firing player's own (inert) board so attention
+      // stays on the live target grid.
+      dimThisHalf = halfIsP1 != _p2Active;
+    }
 
     final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
 
@@ -995,7 +1191,20 @@ class _BattleScreenState extends State<BattleScreen>
     // "here's where everything was" recap before heading to the result
     // screen, instead of the empty-grid secrecy rule that applies mid-game.
     final gameOver = controller.phase == BattlePhase.finished;
-    final revealSkin = _fleetIsRed(halfIsP1) ? _redStatusSkin : _blueStatusSkin;
+    final fleetSkin = _shipSkinFor(halfIsP1);
+
+    // Whether this half's fleet is drawn on the board at all.
+    //
+    // The "empty grid" rule exists so a player can't read their
+    // opponent's fleet off a shared screen. With one player per device
+    // that no longer applies to your OWN board: those are your ships, on
+    // your side of the water, and hiding them from you buys nothing — so
+    // in every network mode and against the AI, your own fleet is drawn.
+    // Local pass-and-play still hides both fleets, because there the two
+    // players really are looking at the same screen.
+    final showOwnFleet = (_lan || controller.mode == GameMode.vsAI) && halfIsP1;
+    final shipsOnGrid =
+        gameOver ? board.ships : (showOwnFleet ? board.ships : null);
 
     // Only show markers whose cannonball has already landed. (PERF: these
     // come from the per-frame cache refreshed once in build() — see
@@ -1022,18 +1231,11 @@ class _BattleScreenState extends State<BattleScreen>
         final w = box.maxWidth;
         // Bigger board: the grid fills the half's full width/height with
         // no reserved side or top margin — same 10×10 grid, just as large
-        // as the available space allows (still a perfect square).
-        //
-        // The one exception is chaos mode. In a turn-based match the
-        // parked position is momentary (the cannon slides out the moment
-        // it's your turn) so it can afford to sit mostly past the outer
-        // screen edge — but chaos parks BOTH cannons there for the entire
-        // match, which has to actually be visible. So the grid gives up
-        // just enough height for a cannon lane behind it: `cannonSize` is
-        // 0.24 × the grid, and 1/1.28 leaves a little clearance on top of
-        // that so the barrel isn't flush against the board.
-        final gridSide =
-            _chaos ? math.min(w, halfH / 1.28) : math.min(w, halfH);
+        // as the available space allows (still a perfect square). Every
+        // mode uses this identical layout, chaos included: the only thing
+        // chaos changes is that the cannon never leaves its parked spot,
+        // and therefore where the cannonball is launched from.
+        final gridSide = math.min(w, halfH);
         final cell = gridSide / kBoardSize;
         final gridLeft = (w - gridSide) / 2;
         final cannonSize = gridSide * 0.24;
@@ -1052,25 +1254,17 @@ class _BattleScreenState extends State<BattleScreen>
 
         final gridTop = flipLayout ? halfH - gridSide : 0.0;
 
-        // Where the cannon sits when it isn't slid out. In chaos that is
-        // its permanent home, so it's centred in the lane reserved above;
-        // otherwise it keeps the original placement, just past the grid's
-        // outer edge. Deliberately NOT clamped back inside the half in
-        // that second case — on short/tight halves such a clamp used to
-        // pull the cannon in until its circle covered the grid's outer
-        // rows. The half's Stack uses Clip.none, so spilling past the
-        // half's own edge is fine and by design; covering the board isn't.
-        final Offset cannonCenter;
-        if (_chaos) {
-          final laneCentre = flipLayout
-              ? gridTop / 2
-              : gridTop + gridSide + (halfH - gridSide - gridTop) / 2;
-          cannonCenter = Offset(w / 2, laneCentre);
-        } else {
-          cannonCenter = flipLayout
-              ? Offset(w / 2, gridTop - cannonSize * 0.55)
-              : Offset(w / 2, gridTop + gridSide + cannonSize * 0.55);
-        }
+        // Where the cannon sits when it isn't slid out — just past the
+        // grid's outer edge, the "back" of this player's own waters. The
+        // same position in every mode; in chaos the cannon simply never
+        // leaves it. Deliberately NOT clamped back inside the half — on
+        // short/tight halves such a clamp used to pull the cannon in until
+        // its circle covered the grid's outer rows. The half's Stack uses
+        // Clip.none, so spilling past the half's own edge is fine and by
+        // design; covering the board is not.
+        final cannonCenter = flipLayout
+            ? Offset(w / 2, gridTop - cannonSize * 0.55)
+            : Offset(w / 2, gridTop + gridSide + cannonSize * 0.55);
         // Which way the barrel points, in this half's own local space.
         final muzzleLocalDir = flipLayout ? 1.0 : -1.0;
 
@@ -1116,25 +1310,41 @@ class _BattleScreenState extends State<BattleScreen>
                   child: BattleGrid(
                     key: ValueKey('grid-$halfIsP1'),
                     shots: shownShots,
-                    // 1:1 video: battle grids are EMPTY — you never see
-                    // either player's ships, only your hit/miss markers.
-                    // (Guessing where the enemy fleet hides IS the game.)
-                    // Sunk ships are one exception — see destroyedShips.
-                    // The other: once the game is over (gameOver above),
-                    // every ship on both fleets is revealed as a final
-                    // recap of the match.
-                    ships: gameOver ? board.ships : null,
-                    skin: gameOver ? revealSkin : null,
-                    destroyedShips: gameOver ? const [] : sunkShips,
+                    // The ENEMY's grid stays empty — guessing where their
+                    // fleet hides is the game. Your own fleet is drawn
+                    // (see `showOwnFleet`), and once the match is over
+                    // both fleets are revealed as a final recap.
+                    ships: shipsOnGrid,
+                    skin: shipsOnGrid == null ? null : fleetSkin,
+                    destroyedShips:
+                        (gameOver || showOwnFleet) ? const [] : sunkShips,
                     enabled: gridFirable,
                     glowColor: gameplayTheme.accent,
                     cellColor: gameplayTheme.grid,
                     gridLineColor: gameplayTheme.gridLine,
                     recentEvents: events,
                     aimCell: aimCell,
+                    previewShip: manoeuvring ? _movePreview : null,
+                    previewValid: _movePreviewValid,
                     // Tapping the opponent's grid fires at it immediately.
                     onTapCell: gridFirable
                         ? (r, c) => _fireAtCell(controller, r: r, c: c)
+                        : null,
+                    // MANOEUVRE mode: your own undamaged ships can be
+                    // dragged to new water between shots. Only ever wired
+                    // up on your OWN half — see `manoeuvring`.
+                    onShipDragUpdate:
+                        manoeuvring ? (k, r, c) => _previewMove(controller, k, r, c) : null,
+                    onShipDragEnd:
+                        manoeuvring ? (k, r, c) => _commitMove(controller, k, r, c) : null,
+                    onShipTap: manoeuvring ? (k) => _rotateOwnShip(controller, k) : null,
+                    // Only hulls that are still undamaged may move; one
+                    // hit pins a ship for the rest of the match.
+                    movableShips: manoeuvring
+                        ? {
+                            for (final s in board.ships)
+                              if (s.hitIndices.isEmpty) s.spec.kind
+                          }
                         : null,
                   ),
                 ),
@@ -1184,7 +1394,7 @@ class _BattleScreenState extends State<BattleScreen>
                   child: IgnorePointer(
                     child: AnimatedOpacity(
                       duration: const Duration(milliseconds: 320),
-                      opacity: isActiveHalf && inBattle ? 1 : 0,
+                      opacity: dimThisHalf && inBattle ? 1 : 0,
                       child: Container(
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(16),
@@ -1236,7 +1446,8 @@ class _BattleScreenState extends State<BattleScreen>
                           valueListenable: controller.cooldownTick,
                           builder: (context, _, __) {
                             final cannon = CannonWidget(
-                              skin: profile.cannonSkin,
+                              // Each side fires the gun ITS owner bought.
+                              skin: _cannonSkinFor(halfIsP1),
                               cooldownFraction: halfIsP1
                                   ? controller.cooldownFraction1
                                   : controller.cooldownFraction2,
@@ -1379,7 +1590,10 @@ class _BattleScreenState extends State<BattleScreen>
       {required bool faded,
       required bool isP1Fleet,
       required Set<String> revealedSunkNames}) {
-    final skin = _fleetIsRed(isP1Fleet) ? _redStatusSkin : _blueStatusSkin;
+    // The fleet strip shows each side's ships in that side's OWN skin, so
+    // it always matches the hulls actually on the board — including the
+    // red/blue fallback for a captain who hasn't equipped anything.
+    final skin = _shipSkinFor(isP1Fleet);
     // Per-cell pixel unit for the fleet row: each icon is drawn at
     // `unit * spec.size` wide with a constant beam (height), so a
     // 5-cell carrier reads clearly longer than a 2-cell destroyer — the
@@ -1777,6 +1991,90 @@ class _ExitPill extends StatelessWidget {
                 letterSpacing: 2,
                 color: AppColors.outline,
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown over a live battle when the opponent's connection drops.
+///
+/// The match is NOT over: it is held open for
+/// [NetworkService.kReconnectGraceSeconds] while the other player finds
+/// their way back in (their device advertises the room again, so they can
+/// rejoin from SCAN FOR GAMES — see `NetworkService._reopenForReturn`).
+/// The waiting player can bail out early; either way, a match nobody
+/// finished counts for nobody, so leaving from here records no result.
+class _ReconnectOverlay extends StatelessWidget {
+  final VoidCallback onAbandon;
+
+  const _ReconnectOverlay({required this.onAbandon});
+
+  @override
+  Widget build(BuildContext context) {
+    final net = context.watch<NetworkService>();
+    if (!net.peerLost && !net.peerGone) return const SizedBox.shrink();
+
+    final expired = net.peerGone;
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.72),
+        alignment: Alignment.center,
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Container(
+            padding: const EdgeInsets.all(22),
+            decoration: cartoonBox(AppColors.navy, radius: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  expired ? Icons.person_off : Icons.wifi_tethering_off,
+                  color: expired ? AppColors.hit : AppColors.gold,
+                  size: 40,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  expired
+                      ? '${net.peerName.toUpperCase()} DID NOT RETURN'
+                      : '${net.peerName.toUpperCase()} LOST CONNECTION',
+                  textAlign: TextAlign.center,
+                  style: AppText.heading(size: 15),
+                ),
+                const SizedBox(height: 10),
+                if (!expired) ...[
+                  Text(
+                    '${net.graceSecondsLeft}s',
+                    style: AppText.title(size: 42, color: AppColors.gold),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Holding the battle open. They can rejoin from\n'
+                    'MULTIPLAYER → SCAN FOR GAMES.',
+                    textAlign: TextAlign.center,
+                    style: AppText.body(
+                        size: 12,
+                        color: AppColors.cream.withValues(alpha: 0.85)),
+                  ),
+                ] else
+                  Text(
+                    'The match is void — no win, no loss,\nand no RP for either captain.',
+                    textAlign: TextAlign.center,
+                    style: AppText.body(
+                        size: 12,
+                        color: AppColors.cream.withValues(alpha: 0.85)),
+                  ),
+                const SizedBox(height: 18),
+                NeonButton(
+                  label: expired ? 'BACK TO MENU' : 'LEAVE — NO RESULT',
+                  icon: Icons.logout,
+                  color: expired ? AppColors.blue : AppColors.inkSoft,
+                  compact: true,
+                  onPressed: onAbandon,
+                ),
+              ],
             ),
           ),
         ),

@@ -175,8 +175,8 @@ class _LanModeScreenState extends State<LanModeScreen> {
                     padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
                     children: [
                       Text(
-                        'TAP THE MODE YOU WANT — MOST VOTES WINS.\n'
-                        'A 1–1 SPLIT GOES TO THE HOST.',
+                        'BOTH CAPTAINS MUST PICK THE SAME MODE.\n'
+                        'THE MATCH WILL NOT START ON A SPLIT VOTE.',
                         textAlign: TextAlign.center,
                         style: AppText.label(size: 10, color: AppColors.cream),
                       ),
@@ -232,7 +232,9 @@ class _LanModeScreenState extends State<LanModeScreen> {
         onTap: locked != null ? null : () => _vote(mode),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.all(16),
+          // Snug: three modes have to share the screen with a header and
+          // a countdown without turning the list into a scroll marathon.
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
           decoration: BoxDecoration(
             color: AppColors.cream,
             borderRadius: BorderRadius.circular(18),
@@ -270,10 +272,10 @@ class _LanModeScreenState extends State<LanModeScreen> {
               const SizedBox(height: 4),
               Text(mode.tagline,
                   style: AppText.label(size: 10, color: AppColors.inkSoft)),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               Text(mode.blurb,
-                  style: AppText.body(size: 11.5, color: AppColors.inkSoft)),
-              const SizedBox(height: 12),
+                  style: AppText.body(size: 11, color: AppColors.inkSoft)),
+              const SizedBox(height: 10),
               // Who voted for THIS mode. Both badges can sit here at once
               // (a 2–0 agreement); a badge moves the instant that player
               // taps the other card, which is what makes changing your
@@ -309,15 +311,37 @@ class _LanModeScreenState extends State<LanModeScreen> {
 
   Widget _waitingLine(NetworkService net) {
     final String msg;
-    if (net.myVote == null && net.peerVote == null) {
+    IconData? icon;
+    Color color = AppColors.cream;
+    if (net.bothVoted && !net.votesAgree) {
+      // The one case that needs to read as a blocker rather than as
+      // patience: both have picked, and the match still isn't starting.
+      icon = Icons.sync_problem;
+      color = AppColors.gold;
+      msg = 'PICKS DO NOT MATCH — ONE OF YOU MUST SWITCH\n'
+          'BEFORE THE BATTLE CAN START';
+    } else if (net.myVote == null && net.peerVote == null) {
       msg = 'BOTH CAPTAINS STILL DECIDING…';
     } else if (net.myVote == null) {
-      msg = '${net.peerName.toUpperCase()} HAS VOTED — YOUR PICK?';
+      msg = '${net.peerName.toUpperCase()} PICKED ${net.peerVote!.label}'
+          ' — YOUR CALL';
     } else {
       msg = 'WAITING FOR ${net.peerName.toUpperCase()}…';
     }
-    return Text(msg,
-        textAlign: TextAlign.center, style: AppText.label(size: 11));
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (icon != null) ...[
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 10),
+        ],
+        Flexible(
+          child: Text(msg,
+              textAlign: TextAlign.center,
+              style: AppText.label(size: 10.5, color: color)),
+        ),
+      ],
+    );
   }
 
   Widget _countdown(int seconds) {
