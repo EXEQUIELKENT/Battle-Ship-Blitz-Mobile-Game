@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -12,8 +14,49 @@ import 'services/network_service.dart';
 import 'services/sound_service.dart';
 import 'services/storage_service.dart';
 
+/// TEMPORARY DIAGNOSTIC (profile builds only — compiled out of release).
+///
+/// Reports slow frames to logcat, split into the two numbers that actually
+/// tell us WHERE the mobile jank is coming from:
+///   * build  = the UI thread (our Dart: widget rebuilds, layout, painting
+///              instructions). Slow here means the fix is in our code.
+///   * raster = the raster/GPU thread (actually rasterizing + compositing
+///              the layers we produced). Slow here means the fix is in how
+///              much/what we're asking the GPU to draw — overdraw, saveLayer,
+///              blurs, too many compositing layers.
+/// Grep logcat for `PERFJANK`. Remove once the bottleneck is identified.
+void _installFrameDiagnostics() {
+  if (!kProfileMode) return;
+  var frames = 0;
+  var jank = 0;
+  var worstBuild = 0.0;
+  var worstRaster = 0.0;
+  SchedulerBinding.instance.addTimingsCallback((timings) {
+    for (final t in timings) {
+      frames++;
+      final build = t.buildDuration.inMicroseconds / 1000.0;
+      final raster = t.rasterDuration.inMicroseconds / 1000.0;
+      if (build > worstBuild) worstBuild = build;
+      if (raster > worstRaster) worstRaster = raster;
+      // 16.7ms is the 60fps budget; flag anything that blew it.
+      if (build > 16.7 || raster > 16.7) {
+        jank++;
+        debugPrint('PERFJANK frame build=${build.toStringAsFixed(1)}ms '
+            'raster=${raster.toStringAsFixed(1)}ms');
+      }
+      if (frames % 120 == 0) {
+        debugPrint('PERFJANK SUMMARY frames=$frames janky=$jank '
+            '(${(jank * 100 / frames).toStringAsFixed(1)}%) '
+            'worstBuild=${worstBuild.toStringAsFixed(1)}ms '
+            'worstRaster=${worstRaster.toStringAsFixed(1)}ms');
+      }
+    }
+  });
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _installFrameDiagnostics();
 
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,

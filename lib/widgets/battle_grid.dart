@@ -265,20 +265,24 @@ class _BattleGridState extends State<BattleGrid>
           //    repainting is confined to its OWN layer instead of
           //    spilling out onto its siblings.
           // Ship/wreck widgets and the crosshair also moved OUTSIDE the
-          // ticker's rebuild scope entirely (only rebuild on a normal
-          // `setState`/parent rebuild, not 60 times a second) and each
-          // get their own `RepaintBoundary` too (see `_animatedShipBox`/
-          // `_destroyedShipWidgets`), so a sunk ship's occasional repaint
-          // doesn't ripple across every OTHER ship on the same grid.
+          // ticker's rebuild scope entirely (they only rebuild on a normal
+          // `setState`/parent rebuild, not 60 times a second).
           //
-          // One more `RepaintBoundary` around the WHOLE grid: this widget
-          // sits next to the cannon (its own animated recoil/smoke/pulse)
-          // in the battle screen's Stack. Without a boundary here, the
-          // cannon firing could force a repaint of this entire region too
-          // — now cheap either way, since every expensive piece inside is
-          // already independently boundaried above, but this stops even
-          // the grid's own (otherwise-static) border/shadow chrome from
-          // being walked on every cannon animation frame.
+          // IMPORTANT — boundaries are NOT free, and more is NOT better.
+          // There are exactly THREE here per grid: this one, and one each
+          // around the static and fx layers. Individual ships and wrecks
+          // deliberately have none (see `_animatedShipBox` /
+          // `_destroyedShipWidgets`): every `RepaintBoundary` is its own
+          // compositing layer / offscreen render target, so putting one on
+          // each ship made the layer count — and the GPU bandwidth and
+          // render-pass switches that go with it — grow as ships were
+          // placed and sunk. On a desktop GPU that is invisible; on a
+          // low-end phone it is precisely the "gets worse the longer the
+          // match runs" behavior we were trying to fix. Only put a
+          // boundary around something that repaints often AND
+          // independently — which is true of the fx layer, and of this
+          // whole grid relative to the neighbouring animated cannon, but
+          // not of a ship sitting still on the board.
           return RepaintBoundary(
             child: GestureDetector(
               onTapUp: _onTap(cell),
@@ -493,18 +497,23 @@ class _BattleGridState extends State<BattleGrid>
       top: centerY - boxSide / 2,
       width: boxSide,
       height: boxSide,
-      // PERF: its own layer so a hit landing on ONE ship (changing its
-      // hitCount/sunk state, which repaints its ShipPainter) never forces
-      // every OTHER ship/wreck on this grid to repaint too — see the PERF
-      // note on `BattleGrid.build()` for why a plain (non-boundary)
-      // CustomPaint sibling would otherwise get dragged along for free.
-      child: RepaintBoundary(
-        child: _ShipWithRotate(
-          ship: ship,
-          skin: widget.skin!,
-          cell: cell,
-          showRotate: widget.onShipTap != null && !ship.isSunk,
-        ),
+      // NB: deliberately NOT wrapped in a `RepaintBoundary`. An earlier
+      // pass added one per ship on the theory that it would isolate each
+      // ship's repaints — but a RepaintBoundary is only a win when its
+      // child repaints OFTEN and INDEPENDENTLY. These ships are static
+      // once placed. What the boundary actually bought was a separate
+      // compositing layer (an offscreen render target) per ship, and the
+      // count of those scales with the number of ships and wrecks on the
+      // board — i.e. it got worse exactly as the match progressed, which
+      // is the symptom we were chasing. Extra render-pass switches and
+      // the bandwidth to composite them are expensive on low-end mobile
+      // GPUs in a way they simply are not on a desktop GPU, which is why
+      // this looked harmless in local testing. See `build()`.
+      child: _ShipWithRotate(
+        ship: ship,
+        skin: widget.skin!,
+        cell: cell,
+        showRotate: widget.onShipTap != null && !ship.isSunk,
       ),
     );
   }
@@ -526,33 +535,32 @@ class _BattleGridState extends State<BattleGrid>
           top: ship.row * cell + 1,
           width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
           height: ship.horizontal ? cell - 2 : ship.spec.size * cell - 2,
-          // PERF: own layer, same reasoning as `_animatedShipBox` — a
-          // wreck's own one-shot reveal transition shouldn't force every
-          // OTHER already-settled wreck/ship on this grid to repaint too.
-          child: RepaintBoundary(
-            child: IgnorePointer(
-              child: _ShipRevealTransition(
-                child: ship.horizontal
-                    ? CustomPaint(
+          // NB: no `RepaintBoundary` here either — see `_animatedShipBox`.
+          // Wrecks are the worst case for that mistake: they only ever
+          // accumulate as the match goes on, so one offscreen layer per
+          // wreck meant the GPU cost climbed with every ship sunk.
+          child: IgnorePointer(
+            child: _ShipRevealTransition(
+              child: ship.horizontal
+                  ? CustomPaint(
+                      painter: ShipPainter(
+                        spec: ship.spec,
+                        skin: wreckSkin,
+                        sunk: true,
+                        hitCount: ship.spec.size,
+                      ),
+                    )
+                  : RotatedBox(
+                      quarterTurns: 1,
+                      child: CustomPaint(
                         painter: ShipPainter(
                           spec: ship.spec,
                           skin: wreckSkin,
                           sunk: true,
                           hitCount: ship.spec.size,
                         ),
-                      )
-                    : RotatedBox(
-                        quarterTurns: 1,
-                        child: CustomPaint(
-                          painter: ShipPainter(
-                            spec: ship.spec,
-                            skin: wreckSkin,
-                            sunk: true,
-                            hitCount: ship.spec.size,
-                          ),
-                        ),
                       ),
-              ),
+                    ),
             ),
           ),
         ),
@@ -836,12 +844,18 @@ class _CrosshairPainter extends CustomPainter {
     final inset = s * 0.13; // gap between the center and each bracket corner
     final d = s / 2 - inset;
 
+    // PERF: this used a `MaskFilter.blur` for a soft halo. Blur is one of
+    // the most expensive things you can ask a mobile GPU for under
+    // Impeller (Android's default renderer since Flutter 3.16) — and this
+    // one was drawn 8× per frame (two strokes per bracket, four brackets)
+    // for the whole time a shot was in flight. A plain wide, translucent
+    // stroke underneath the crisp one reads almost identically at this
+    // size for a tiny fraction of the cost.
     final glow = Paint()
-      ..color = Colors.white.withValues(alpha: 0.35)
+      ..color = Colors.white.withValues(alpha: 0.28)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = s * 0.10
-      ..strokeCap = StrokeCap.round
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.4);
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
     final stroke = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke

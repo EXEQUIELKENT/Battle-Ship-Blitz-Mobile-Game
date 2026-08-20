@@ -228,6 +228,51 @@ class Board {
   }
 }
 
+/// How a LAN (hotspot / online) match plays out. Both players vote for
+/// one of these before deploying their fleets — see the vote protocol in
+/// `NetworkService` and `LanModeScreen`.
+///
+/// Lives here rather than next to [GameMode] in `game_controller.dart`
+/// because `NetworkService` (which owns the vote) is imported BY the
+/// controller, not the other way round — putting it there would create an
+/// import cycle.
+enum LanBattleMode {
+  /// No turns at all. Both fleets fire the moment their own cannon has
+  /// reloaded, so shots cross in mid-air — the cooldown is the only
+  /// limiter. Both cannons stay parked at the BACK of their own grid
+  /// (the far edge of the screen) for the whole match instead of sliding
+  /// out to mark a turn, since there are no turns to mark.
+  chaos,
+
+  /// Classic alternating turns, identical in flow to local pass-and-play:
+  /// a hit lets you fire again, a miss hands the turn to your opponent,
+  /// and the active player's cannon slides out to the middle of their own
+  /// grid as the "your turn" indicator.
+  turns,
+}
+
+extension LanBattleModeX on LanBattleMode {
+  String get label => switch (this) {
+        LanBattleMode.chaos => 'CHAOS',
+        LanBattleMode.turns => 'TURN BASED',
+      };
+
+  String get tagline => switch (this) {
+        LanBattleMode.chaos => 'Fire at will — no turns',
+        LanBattleMode.turns => 'Take turns — hit to keep firing',
+      };
+
+  String get blurb => switch (this) {
+        LanBattleMode.chaos =>
+          'Both fleets fire at the same time from the back of their own '
+              'waters. No waiting, no turn order — only your reload timer '
+              'holds you back.',
+        LanBattleMode.turns =>
+          'One shot at a time. Land a hit and you fire again; miss and the '
+              'guns pass to your opponent.',
+      };
+}
+
 /// Difficulty of the AI captain.
 enum AIDifficulty { easy, normal, hard }
 

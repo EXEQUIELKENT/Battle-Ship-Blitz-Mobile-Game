@@ -9,7 +9,7 @@ import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
-import 'placement_screen.dart';
+import 'lan_mode_screen.dart';
 
 /// Hotspot (LAN) + Online matchmaking lobby — cartoon style.
 class MultiplayerScreen extends StatefulWidget {
@@ -55,13 +55,13 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     super.dispose();
   }
 
-  void _enterPlacement(GameMode mode) {
-    final controller = context.read<GameController>();
-    controller.mode = mode;
-    controller.attachNetwork();
-    controller.startPlacement();
+  /// Both devices are connected — before anyone deploys a fleet, the two
+  /// captains vote on which set of rules the match runs under. The mode
+  /// screen is what actually sets `controller.mode`/`lanBattleMode` and
+  /// moves on to placement once the vote locks in.
+  void _enterModeVote(GameMode mode) {
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const PlacementScreen()),
+      MaterialPageRoute(builder: (_) => LanModeScreen(mode: mode)),
     );
   }
 
@@ -86,7 +86,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         net.removeListener(listener);
         if (!mounted) return;
         setState(() => _hosting = false);
-        _enterPlacement(
+        _enterModeVote(
             mode == NetMode.hotspot ? GameMode.hotspot : GameMode.online);
       }
     }
@@ -108,7 +108,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
           net.removeListener(listener);
           if (!mounted) return;
           setState(() => _connecting = false);
-          _enterPlacement(GameMode.hotspot);
+          _enterModeVote(GameMode.hotspot);
         }
       }
 
@@ -135,7 +135,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
           net.removeListener(listener);
           if (!mounted) return;
           setState(() => _connecting = false);
-          _enterPlacement(GameMode.online);
+          _enterModeVote(GameMode.online);
         }
       }
 

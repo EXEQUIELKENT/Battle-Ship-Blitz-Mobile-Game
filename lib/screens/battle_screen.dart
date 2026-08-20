@@ -52,12 +52,52 @@ class _BattleScreenState extends State<BattleScreen>
   final _cannon1Ready = StreamController<void>.broadcast();
   final _cannon2Ready = StreamController<void>.broadcast();
 
-  /// Local pass-and-play: whose turn it is (P1's grid stays on the BOTTOM,
-  /// P2's on TOP — the halves never swap sides; players sit across from
-  /// each other). Only the "whose turn" flag changes.
+  /// Whose turn it is, in every mode that HAS turns. The bottom half's
+  /// owner is the "P1" side and the top half's owner is the "P2" side —
+  /// the halves never swap sides, only this flag changes.
+  ///
+  /// In a LAN match the bottom half is always THIS device's own fleet, so
+  /// `_p2Active == false` reads as "my turn" here and as "their turn" on
+  /// the opponent's device. Both ends derive it independently from the
+  /// same shot outcomes (see `_maybePassTurn`), which is what keeps them
+  /// agreeing without a dedicated turn message.
   bool _p2Active = false;
 
   bool _navigatedToResult = false;
+
+  // ----- Match shape (snapshotted once — none of it changes mid-battle) --
+
+  /// Hotspot/online: exactly ONE human per device, with the opponent on
+  /// the other end of a socket. This is the distinction that drives the
+  /// perspective fix below — several behaviors that make sense with two
+  /// players sharing one screen are actively wrong with two screens.
+  late final bool _lan;
+
+  /// LAN chaos rules: no turn order at all, both fleets firing at once,
+  /// both cannons parked at the back of their own grid all match.
+  late final bool _chaos;
+
+  /// A turn order exists and this screen owns handing it over.
+  late final bool _turnTracked;
+
+  /// Whether the TOP half is drawn rotated 180°.
+  ///
+  /// BUGFIX (LAN perspective): that rotation exists so two players seated
+  /// across from ONE device each read their own grid right-side-up — it's
+  /// a shared-screen affordance. LAN inherited it wholesale, which meant
+  /// the enemy grid you were shooting at appeared upside down: its rows
+  /// ran bottom-to-top and its columns right-to-left relative to yours, so
+  /// the two devices disagreed visually about where any given cell was
+  /// even though the underlying coordinates matched. With one player per
+  /// screen there is nobody sitting opposite, so LAN draws both halves
+  /// upright and the top half's grid+cannon are simply laid out mirrored
+  /// WITHIN the half instead (grid against the middle band, cannon out at
+  /// the screen edge) — see `flipLayout` in `_buildHalf`.
+  late final bool _mirrorTopHalf;
+
+  /// True when this device commands the BLUE fleet — i.e. it joined a LAN
+  /// match rather than hosting it. The host always commands red.
+  late final bool _iAmBlue;
 
   // ----- Countdown -----
   bool _countingDown = false;
@@ -65,13 +105,19 @@ class _BattleScreenState extends State<BattleScreen>
   bool _countdownGo = false;
 
   // ----- Cannonball flight + impact -----
-  late final AnimationController _projCtrl;
-  Offset _projFrom = Offset.zero;
-  Offset _projTo = Offset.zero;
-  double _projCell = 32;
-  bool _showProjectile = false;
-  List<int>? _pendingImpact; // cell waiting for the ball to land
-  bool _pendingByP1 = true; // who fired the ball in flight
+  //
+  // ONE SLOT PER SHOOTER, rather than one for the whole screen. There
+  // used to be a single projectile, so whenever a second shot went up
+  // while one was already airborne the newcomer got no flight animation
+  // at all — its marker just popped onto the board. That was tolerable
+  // while every mode took turns (shots could only overlap in rare
+  // network-timing edge cases), but LAN chaos mode makes overlapping the
+  // NORMAL case: both fleets fire the moment their own gun reloads, so
+  // balls cross in mid-air constantly. Each side now owns its own slot
+  // and both balls fly properly at the same time.
+  static const Duration _projDuration = Duration(milliseconds: 430);
+  late final _Projectile _projP1; // fired by the bottom half's owner
+  late final _Projectile _projP2; // fired by the top half's owner
 
   /// Screen-space geometry of each half, refreshed every layout pass.
   final Map<bool, _HalfGeom> _geom = {}; // key: isTopHalf
@@ -134,8 +180,6 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ----- PERF: cached derived grid data (see _refreshDerivedCache) -----
   int _cachedRevision = -1;
-  List<int>? _cachedPendingImpactKey;
-  bool _cachedPendingByP1 = true;
   final Map<bool, List<List<int>>> _shotsCache = {};
   final Map<bool, List<CombatEventLike>> _eventsCache = {};
 
@@ -166,10 +210,28 @@ class _BattleScreenState extends State<BattleScreen>
     final controller = context.read<GameController>();
     controller.addListener(_onUpdate);
 
+    _lan = controller.mode == GameMode.hotspot ||
+        controller.mode == GameMode.online;
+    _chaos = _lan && controller.lanBattleMode == LanBattleMode.chaos;
+    _turnTracked = !_chaos &&
+        (controller.mode == GameMode.local ||
+            controller.mode == GameMode.vsAI ||
+            _lan);
+    _mirrorTopHalf = !_lan;
+    _iAmBlue = _lan && !controller.network.isHost;
+
+    // LAN turn-based: the host fires the opening shot, so on the joiner's
+    // device the opponent's half starts active. Both ends stay in step
+    // from there via `_maybePassTurn`.
+    if (_lan && _turnTracked) {
+      _p2Active = !controller.network.isHost;
+    }
+
     _slideCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 340),
-      value: 1.0, // P1 starts active: P1 out at its grid, P2 parked at home
+      // 1 = P1's cannon out at its grid (P2 parked), 0 = the reverse.
+      value: _p2Active ? 0.0 : 1.0,
     );
 
     _shakeCtrl = AnimationController(
@@ -177,15 +239,16 @@ class _BattleScreenState extends State<BattleScreen>
       duration: const Duration(milliseconds: 380),
     );
 
-    _projCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 430),
-    )..addStatusListener((s) {
+    _projP1 = _Projectile(byP1: true, vsync: this, duration: _projDuration);
+    _projP2 = _Projectile(byP1: false, vsync: this, duration: _projDuration);
+    for (final p in [_projP1, _projP2]) {
+      p.ctrl.addStatusListener((s) {
         if (s == AnimationStatus.completed && mounted) {
-          setState(() => _showProjectile = false);
-          _tryResolveImpact();
+          setState(() => p.visible = false);
+          _tryResolveImpact(p);
         }
       });
+    }
 
     // Start-of-battle countdown (video: big 3-2-1 over both halves).
     if (controller.battling) {
@@ -234,29 +297,7 @@ class _BattleScreenState extends State<BattleScreen>
       // ball visibly lands). Excluding GameMode.local prevents this entirely;
       // P2's feedback is handled synchronously by _launchBall just like P1's.
       if (!e.byPlayer && age < 200 && mounted && controller.mode != GameMode.local) {
-        if (_projCtrl.isAnimating) {
-          // Another ball is already mid-flight, so this event's impact is
-          // shown immediately with no travel animation of its own — play
-          // its sound right now too, since `_tryResolveImpact` (which will
-          // fire later) is resolving a DIFFERENT, earlier pending shot.
-          if (e.impactAt == null) {
-            e.impactAt = DateTime.now();
-            _impactResolutions++;
-            controller.touch();
-            _playImpactSound(e.result);
-            if (e.result == ShotResult.sunk) {
-              _shake(_shakeSunkMagnitude);
-            } else if (e.result == ShotResult.hit) {
-              _shake(_shakeHitMagnitude);
-            }
-            // This event just became visible without ever going through
-            // _tryResolveImpact (it had no travel animation of its own),
-            // so it also needs its own chance to end the match if it was
-            // the deciding shot — see the bugfix note on
-            // GameController.hasPendingFinish.
-            controller.resolvePendingFinishFor(e);
-          }
-        } else if (!_delayedOpponentEvents.contains(e)) {
+        if (!_delayedOpponentEvents.contains(e)) {
           _delayedOpponentEvents.add(e);
           _launchOpponentBall(e);
         }
@@ -272,7 +313,8 @@ class _BattleScreenState extends State<BattleScreen>
     // instant that event actually arrives, from wherever in the event
     // list it landed. It's a safe no-op whenever nothing is pending or the
     // ball is still visibly in flight.
-    _tryResolveImpact();
+    _tryResolveImpact(_projP1);
+    _tryResolveImpact(_projP2);
   }
 
   /// Advances to the result screen — now the ONLY way there once the
@@ -301,31 +343,33 @@ class _BattleScreenState extends State<BattleScreen>
 
     final top = _geom[true];
     final bottom = _geom[false];
-    if (top == null || bottom == null || _projCtrl.isAnimating) {
-      // Never play an impact sound before the projectile reaches its cell.
-      // If geometry is unavailable, keep the event pending for the next
-      // frame instead of resolving it early.
+    if (top == null || bottom == null || _projP2.visible) {
+      // No flight is possible right now — either the halves haven't been
+      // laid out yet, or this gun's previous ball is somehow still
+      // airborne. Resolve the shot in place rather than dropping it: this
+      // used to just `return`, which left the event pending FOREVER,
+      // since `_onUpdate` only ever reconsiders events under 200ms old.
+      _resolveImpact(e);
       return;
     }
-    // The AI's cannon may be slid out to its grid center (during its turn)
-    // or parked at home — fire from wherever it currently sits.
-    // P2/AI uses the inverse of the P1 slide controller.
-    // During the AI turn the cannon moves out from home to the AI grid,
-    // so the projectile must spawn from that same visible cannon position.
-    final from = _cannonMouth(top, 1 - _slideCtrl.value);
+    // The opponent's cannon may be slid out to its grid center (during its
+    // turn) or parked at the back — fire from wherever it currently sits,
+    // which `_slideFor` reports for every mode including chaos (where it
+    // never leaves the back at all).
+    final from = _cannonMouth(top, _slideFor(false));
     final to = bottom.cellCenterScreen(e.row, e.col) +
         _mouthDir(bottom) * (bottom.cannonSize * 0.25);
     setState(() {
-      _pendingByP1 = false;
-      _pendingImpact = [e.row, e.col];
-      _projFrom = from;
-      _projTo = to;
-      _projCell = bottom.cell;
-      _showProjectile = true;
+      _projP2
+        ..pendingCell = [e.row, e.col]
+        ..from = from
+        ..to = to
+        ..cell = bottom.cell
+        ..visible = true;
     });
     SoundService.instance.cannonFire();
     _cannon2Fire.add(null);
-    _projCtrl.forward(from: 0);
+    _projP2.ctrl.forward(from: 0);
   }
 
   /// Resolves the currently pending shot (`_pendingImpact`/`_pendingByP1`)
@@ -343,17 +387,16 @@ class _BattleScreenState extends State<BattleScreen>
   /// but the event doesn't exist yet, it simply leaves `_pendingImpact`
   /// set and returns — the next call (from `_onUpdate`, the instant the
   /// real result arrives) finishes the job.
-  void _tryResolveImpact() {
-    if (_showProjectile) return; // ball still visibly traveling
-    final cell = _pendingImpact;
-    final byP1 = _pendingByP1;
+  void _tryResolveImpact(_Projectile p) {
+    if (p.visible) return; // ball still visibly traveling
+    final cell = p.pendingCell;
     if (cell == null) return;
     final controller = context.read<GameController>();
     CombatEvent? found;
     for (final e in controller.events.reversed) {
       if (e.row == cell[0] &&
           e.col == cell[1] &&
-          e.byPlayer == byP1 &&
+          e.byPlayer == p.byP1 &&
           e.impactAt == null) {
         found = e;
         break;
@@ -361,44 +404,72 @@ class _BattleScreenState extends State<BattleScreen>
     }
     if (found == null) return; // true result not in yet — wait for it
 
-    _pendingImpact = null;
-    found.impactAt = DateTime.now();
+    p.pendingCell = null;
+    _resolveImpact(found);
+  }
+
+  /// Everything that happens the instant a shot's impact becomes visible:
+  /// the marker/wreck reveal is unlocked (`impactAt`), the outcome sound
+  /// and screen shake play, the match is allowed to end if this was the
+  /// deciding shot, and the turn passes on a miss.
+  ///
+  /// Shared by the normal path (a ball finished its flight — see
+  /// [_tryResolveImpact]) and the fallback path (no flight was possible —
+  /// see [_launchOpponentBall]) so a shot lands identically either way.
+  /// Idempotent: an already-resolved event is left alone.
+  void _resolveImpact(CombatEvent e) {
+    if (e.impactAt != null) return;
+    final controller = context.read<GameController>();
+    e.impactAt = DateTime.now();
     _impactResolutions++;
     controller.touch();
-    final result = found.result;
     // Hit/sunk/miss sound, right as the ball actually lands — synced to
     // the same moment as the shake below and the hit/miss/wreckage reveal
     // (see `sunkShips` in `_buildHalf`), instead of firing back at tap
     // time before the ball has visually gone anywhere.
-    _playImpactSound(result);
+    _playImpactSound(e.result);
     // Screen shake, right as the ball actually lands — never on a miss
     // (there's nothing to "hit"). Sinking a ship shakes harder than a
     // plain hit so a killing blow reads as more impactful.
-    if (result == ShotResult.sunk) {
+    if (e.result == ShotResult.sunk) {
       _shake(_shakeSunkMagnitude);
-    } else if (result == ShotResult.hit) {
+    } else if (e.result == ShotResult.hit) {
       _shake(_shakeHitMagnitude);
     }
     // BUGFIX (end-game timing): the match is only actually allowed to end
     // here, now that this shot's impact has been visually applied — see
     // GameController.hasPendingFinish / resolvePendingFinishFor. A no-op
-    // unless `found` happens to be the exact shot that decided the match.
-    controller.resolvePendingFinishFor(found);
-    // 1:1 video rule: a HIT lets the same player keep firing; only a MISS
-    // passes the turn to the other player (local AND vs AI — same rule).
+    // unless `e` happens to be the exact shot that decided the match.
+    controller.resolvePendingFinishFor(e);
+    _maybePassTurn(e);
+  }
+
+  /// 1:1 video rule: a HIT lets the same player keep firing; only a MISS
+  /// passes the turn to the other player. Applies to every mode that HAS
+  /// turns — local pass-and-play, vs AI, and LAN "turn based" — but never
+  /// to LAN chaos, where both fleets fire freely and there is no turn to
+  /// hand over (`_turnTracked` is false there).
+  ///
+  /// In a LAN match both devices run this independently off their own
+  /// event streams. That stays consistent because every shot's outcome is
+  /// known to BOTH ends (the defender resolves it and echoes the result
+  /// back), and each end sees the same shot as the same side: my shots are
+  /// always `byPlayer == true` on my device and `byPlayer == false` on
+  /// theirs — which is exactly the flip the two `_p2Active` flags need.
+  void _maybePassTurn(CombatEvent e) {
+    if (!_turnTracked) return;
+    if (e.result != ShotResult.miss) return;
+    final controller = context.read<GameController>();
+    if (controller.phase != BattlePhase.battling) return;
+    // P1 missed → P2's turn; P2/AI/remote missed → P1's.
+    final passToP2 = e.byPlayer;
     // The handoff is seamless (no popup): the active flag flips, the
-    // cannons slide (outgoing → home, incoming → its grid center) and the
+    // cannons slide (outgoing → back, incoming → its grid center) and the
     // newly-active cannon flashes "ready".
-    if (controller.phase == BattlePhase.battling &&
-        result == ShotResult.miss &&
-        (controller.mode == GameMode.local ||
-            controller.mode == GameMode.vsAI)) {
-      final passToP2 = byP1; // P1 missed → P2's turn; P2/AI missed → P1's
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (!mounted || controller.phase != BattlePhase.battling) return;
-        _passTurn(passToP2);
-      });
-    }
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (!mounted || controller.phase != BattlePhase.battling) return;
+      _passTurn(passToP2);
+    });
   }
 
   /// Seamlessly pass the turn: flip the active flag, slide the cannons
@@ -434,8 +505,17 @@ class _BattleScreenState extends State<BattleScreen>
   /// nothing ever actually fired unless you also found and tapped the
   /// tiny cannon icon).
   void _fireAtCell(GameController controller, {required int r, required int c}) {
-    if (_countingDown || _showProjectile) return;
-    final byP1 = !_p2Active;
+    if (_countingDown) return;
+    // On a LAN device the local player IS the bottom half, always — the
+    // top half belongs to the remote opponent and is never fired by this
+    // device, whoever's turn it happens to be. Only shared-screen modes
+    // use `_p2Active` to pick which of two LOCAL players is shooting.
+    final byP1 = _lan ? true : !_p2Active;
+    // Block only on THIS gun's own ball still being airborne. Blocking on
+    // "any ball anywhere" would make chaos mode unplayable, since the
+    // opponent has a ball in the air a good part of the time.
+    final proj = byP1 ? _projP1 : _projP2;
+    if (proj.visible) return;
     final tracking = byP1 ? controller.myShots : controller.p2Shots;
     if (tracking[r][c] != 0) {
       // No pop-up reminder for this — an already-tried cell simply
@@ -480,29 +560,44 @@ class _BattleScreenState extends State<BattleScreen>
     // cell on the OPPONENT's grid.
     final shooterGeom = byP1 ? bottom : top;
     final targetGeom = byP1 ? top : bottom;
-    final from =
-        _cannonMouth(shooterGeom, byP1 ? _slideCtrl.value : 1 - _slideCtrl.value);
+    final from = _cannonMouth(shooterGeom, _slideFor(byP1));
     final to = targetGeom.cellCenterScreen(r, c) +
         _mouthDir(targetGeom) * (targetGeom.cannonSize * 0.25);
+    final proj = byP1 ? _projP1 : _projP2;
     setState(() {
-      _pendingByP1 = byP1;
-      _pendingImpact = [r, c];
-      _projFrom = from;
-      _projTo = to;
-      _projCell = targetGeom.cell;
-      _showProjectile = true;
+      proj
+        ..pendingCell = [r, c]
+        ..from = from
+        ..to = to
+        ..cell = targetGeom.cell
+        ..visible = true;
     });
     SoundService.instance.cannonFire();
     (byP1 ? _cannon1Fire : _cannon2Fire).add(null);
-    _projCtrl.forward(from: 0);
+    proj.ctrl.forward(from: 0);
   }
 
   // ----------------------------------------------------- CANNON SLIDE ---
 
+  /// How far a half's cannon has slid out of its parked position: 0 =
+  /// tucked at the BACK of its own grid (the far edge of the screen),
+  /// 1 = out at the middle of that grid, marking its owner's turn.
+  ///
+  /// Chaos mode has no turns to mark, so both cannons stay pinned at the
+  /// back for the whole match — which is also where their cannonballs
+  /// then launch from, since every trajectory is derived from this same
+  /// value (see `_cannonMouth`).
+  double _slideFor(bool halfIsP1) {
+    if (_chaos) return 0.0;
+    return halfIsP1 ? _slideCtrl.value : 1 - _slideCtrl.value;
+  }
+
   /// Unit direction from a half's cannon toward its grid mouth, in SCREEN
-  /// space (+y = down the screen). For the upright bottom half the mouth
-  /// faces up (−y); for the 180°-rotated top half it faces down (+y).
-  Offset _mouthDir(_HalfGeom g) => Offset(0, g.rotated ? 1.0 : -1.0);
+  /// space (+y = down the screen). Derived from the half's own muzzle
+  /// direction (which points at its grid in the half's LOCAL space) and
+  /// then flipped if the half itself is drawn rotated.
+  Offset _mouthDir(_HalfGeom g) =>
+      Offset(0, g.rotated ? -g.muzzleLocalDir : g.muzzleLocalDir);
 
   /// A half cannon CENTER (in that half's local, unrotated space),
   /// interpolated between its home position near the middle band (t=0)
@@ -524,7 +619,8 @@ class _BattleScreenState extends State<BattleScreen>
   Offset _cannonMouth(_HalfGeom g, double t) {
     final c = _cannonCenterLocal(g, t);
     final lx = c.dx;
-    final ly = c.dy - g.cannonSize * CannonWidget.muzzleFraction;
+    final ly =
+        c.dy + g.muzzleLocalDir * g.cannonSize * CannonWidget.muzzleFraction;
     if (g.rotated) {
       return Offset(g.halfW - lx, g.halfTopY + (g.halfH - ly));
     }
@@ -537,7 +633,8 @@ class _BattleScreenState extends State<BattleScreen>
     _cannon2Fire.close();
     _cannon1Ready.close();
     _cannon2Ready.close();
-    _projCtrl.dispose();
+    _projP1.dispose();
+    _projP2.dispose();
     _slideCtrl.dispose();
     _shakeCtrl.dispose();
     super.dispose();
@@ -550,9 +647,11 @@ class _BattleScreenState extends State<BattleScreen>
     final controller = context.watch<GameController>();
     final profile = context.watch<ProfileStore>();
     _refreshDerivedCache(controller);
-    // LOCAL FIX: the halves NEVER swap sides — P1 is always on the bottom
-    // (upright) and P2 always on top (rotated 180°), because the players
-    // sit across from each other. Only the "whose turn" flag changes.
+    // The halves NEVER swap sides: the bottom one is always "P1" (in a LAN
+    // match, always THIS device's own fleet) and the top one always "P2"
+    // (the opponent). Only the "whose turn" flag changes. Whether the top
+    // half is additionally drawn upside down depends on whether the two
+    // players are sharing this screen — see `_mirrorTopHalf`.
     const bottomIsP1 = true;
 
     return Scaffold(
@@ -579,12 +678,18 @@ class _BattleScreenState extends State<BattleScreen>
                   children: [
                   Column(
                     children: [
-                      // ===== TOP HALF — P2, rotated 180° (fixed side) =====
+                      // ===== TOP HALF — the opponent's fleet =====
+                      // Flipped 180° ONLY when both players share this
+                      // screen (local pass-and-play / vs AI), so the
+                      // person sitting opposite reads their own board
+                      // right-side-up. A LAN opponent is on their own
+                      // device, so here it stays upright and is laid out
+                      // mirrored within the half instead — see
+                      // `_mirrorTopHalf`.
                       SizedBox(
                         height: halfH,
-                        child: RotatedBox(
-                          quarterTurns: 2,
-                          child: _buildHalf(
+                        child: Builder(builder: (context) {
+                          final half = _buildHalf(
                             controller,
                             profile,
                             halfIsP1: !bottomIsP1,
@@ -592,8 +697,11 @@ class _BattleScreenState extends State<BattleScreen>
                             halfH: halfH,
                             halfTopY: 0,
                             bottomIsP1: bottomIsP1,
-                          ),
-                        ),
+                          );
+                          return _mirrorTopHalf
+                              ? RotatedBox(quarterTurns: 2, child: half)
+                              : half;
+                        }),
                       ),
 
                       // ===== MIDDLE BAND =====
@@ -616,71 +724,11 @@ class _BattleScreenState extends State<BattleScreen>
                   ),
 
                   // ===== Cannonball flight (spans both halves) =====
-                  if (_showProjectile)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: AnimatedBuilder(
-                          animation: _projCtrl,
-                          builder: (context, _) {
-                            final t = _projCtrl.value;
-                            // Vertical ARC for the up-and-down lob effect,
-                            // reused for the ball itself and its trail.
-                            Offset posAt(double tt) {
-                              final cl = tt.clamp(0.0, 1.0);
-                              final p = Offset.lerp(_projFrom, _projTo, cl)!;
-                              final arc = math.sin(cl * math.pi) * _projCell * 3.0;
-                              return p - Offset(0, arc);
-                            }
-
-                            // Cannonball launches noticeably LARGER than
-                            // the target cell and slowly SHRINKS the whole
-                            // way there, settling to exactly the grid
-                            // cell's size right as it lands — a clear
-                            // "incoming shot" effect that telegraphs
-                            // where the ball is about to hit.
-                            double diamAt(double tt) =>
-                                _projCell * (2.6 - 1.6 * tt.clamp(0.0, 1.0));
-
-                            final pos = posAt(t);
-                            final d = diamAt(t);
-                            // Continuous spin while airborne, sold by the
-                            // sphere's highlight sweeping around it.
-                            final spin = t * math.pi * 6;
-
-                            Widget ghost(double dt, double opacity, double scale) {
-                              final tt = t - dt;
-                              if (tt <= 0) return const SizedBox.shrink();
-                              final gp = posAt(tt);
-                              final gd = diamAt(tt) * scale;
-                              return Positioned(
-                                left: gp.dx - gd / 2,
-                                top: gp.dy - gd / 2,
-                                child: Opacity(
-                                  opacity: opacity,
-                                  child: _cannonball(gd),
-                                ),
-                              );
-                            }
-
-                            return Stack(
-                              children: [
-                                // Faint motion-trail ghosts behind the ball.
-                                ghost(0.11, 0.14, 0.72),
-                                ghost(0.055, 0.26, 0.84),
-                                Positioned(
-                                  left: pos.dx - d / 2,
-                                  top: pos.dy - d / 2,
-                                  child: Transform.rotate(
-                                    angle: spin,
-                                    child: _cannonball(d),
-                                  ),
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                      ),
-                    ),
+                  // One layer per shooter, so two balls can be airborne at
+                  // once — which is the normal state of affairs in chaos
+                  // mode. Each only mounts while its own ball is flying.
+                  if (_projP1.visible) _projectileLayer(_projP1),
+                  if (_projP2.visible) _projectileLayer(_projP2),
 
                   // ===== Countdown overlay (mirrored) =====
                   if (_countingDown) _countdownOverlay(bandH),
@@ -709,6 +757,70 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
+  /// One airborne cannonball: the ball itself plus its two motion-trail
+  /// ghosts, arcing from the firing cannon's muzzle to its target cell.
+  Widget _projectileLayer(_Projectile p) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: p.ctrl,
+          builder: (context, _) {
+            final t = p.ctrl.value;
+            // Vertical ARC for the up-and-down lob effect, reused for the
+            // ball itself and its trail.
+            Offset posAt(double tt) {
+              final cl = tt.clamp(0.0, 1.0);
+              final base = Offset.lerp(p.from, p.to, cl)!;
+              final arc = math.sin(cl * math.pi) * p.cell * 3.0;
+              return base - Offset(0, arc);
+            }
+
+            // Cannonball launches noticeably LARGER than the target cell
+            // and slowly SHRINKS the whole way there, settling to exactly
+            // the grid cell's size right as it lands — a clear "incoming
+            // shot" effect that telegraphs where the ball is about to hit.
+            double diamAt(double tt) =>
+                p.cell * (2.6 - 1.6 * tt.clamp(0.0, 1.0));
+
+            final pos = posAt(t);
+            final d = diamAt(t);
+            // Continuous spin while airborne, sold by the sphere's
+            // highlight sweeping around it.
+            final spin = t * math.pi * 6;
+
+            Widget ghost(double dt, double opacity, double scale) {
+              final tt = t - dt;
+              if (tt <= 0) return const SizedBox.shrink();
+              final gp = posAt(tt);
+              final gd = diamAt(tt) * scale;
+              return Positioned(
+                left: gp.dx - gd / 2,
+                top: gp.dy - gd / 2,
+                child: Opacity(opacity: opacity, child: _cannonball(gd)),
+              );
+            }
+
+            return Stack(
+              children: [
+                // Faint motion-trail ghosts behind the ball.
+                ghost(0.11, 0.14, 0.72),
+                ghost(0.055, 0.26, 0.84),
+                Positioned(
+                  left: pos.dx - d / 2,
+                  top: pos.dy - d / 2,
+                  child: Transform.rotate(
+                    angle: spin,
+                    child: _cannonball(d),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   // -------------------------------------------------------------- HALVES
 
   /// PERF: the game's cooldown ticker fires `notifyListeners()` every
@@ -722,22 +834,20 @@ class _BattleScreenState extends State<BattleScreen>
   /// only rebuilt when [GameController.revision] (or the locally-tracked
   /// in-flight ball) actually changes.
   void _refreshDerivedCache(GameController controller) {
-    final pendingKey = _pendingImpact;
-    final samePending = pendingKey == null
-        ? _cachedPendingImpactKey == null
-        : (_cachedPendingImpactKey != null &&
-            _cachedPendingImpactKey![0] == pendingKey[0] &&
-            _cachedPendingImpactKey![1] == pendingKey[1]);
+    // Everything built below is a pure function of `controller.events`
+    // (which only grows via `_registerShot`, bumping `revision`), each
+    // event's `impactAt` (which only ever gets set by `_resolveImpact`,
+    // bumping `_impactResolutions`), and the two boards' ship lists (set
+    // in `beginBattle`, which also bumps `revision`). So those two
+    // counters fully cover the inputs. The in-flight ball used to be part
+    // of this check too, but it never fed any of these outputs — it just
+    // invalidated the cache needlessly on every shot fired.
     if (controller.revision == _cachedRevision &&
-        samePending &&
-        _cachedPendingByP1 == _pendingByP1 &&
         _cachedImpactResolutions == _impactResolutions &&
         _shotsCache.isNotEmpty) {
       return;
     }
     _cachedRevision = controller.revision;
-    _cachedPendingImpactKey = pendingKey == null ? null : [pendingKey[0], pendingKey[1]];
-    _cachedPendingByP1 = _pendingByP1;
     _cachedImpactResolutions = _impactResolutions;
     for (final halfIsP1 in const [true, false]) {
       // PERF: reuse persistent mutable arrays instead of allocating new
@@ -831,52 +941,61 @@ class _BattleScreenState extends State<BattleScreen>
     // cooldown change repaints only the cannon instead of this whole half.
     final cannonStream = halfIsP1 ? _cannon1Fire : _cannon2Fire;
     final readyStream = halfIsP1 ? _cannon1Ready : _cannon2Ready;
-    final accent = halfIsP1 ? AppColors.hit : AppColors.blue;
+    // BUGFIX (both LAN captains were red): the fleet colour used to be
+    // pinned to the HALF — bottom red, top blue — which is right when the
+    // two players share one screen, but in a LAN match each device draws
+    // its OWN fleet on the bottom, so both players saw themselves in red
+    // and their opponent in blue. `_fleetIsRed` keys off the network role
+    // instead (host red, joiner blue), so the two devices now agree on
+    // who is which colour.
+    final accent = _fleetIsRed(halfIsP1) ? AppColors.hit : AppColors.blue;
     final gameplayTheme = context.watch<ProfileStore>().gameplayTheme;
 
     // VIDEO interaction model: the ACTIVE player's cannon sits at the
     // middle of their OWN grid (a "ready to fire" indicator). Tapping a
     // cell on the OPPONENT's grid fires at it immediately — a single tap
     // is the whole interaction.
-    //
-    // This half is the ACTIVE player's own half when halfIsP1 == !_p2Active.
-    // `_p2Active` tracks whose turn it is and is kept in sync by
-    // `_passTurn` for BOTH local pass-and-play and vs-AI (a miss hands the
-    // flag over in either mode). Previously only local mode consulted this
-    // flag here, so vs-AI always left the human's grid tappable even
-    // during the AI's turn — fixed by treating vs-AI the same as local.
-    // Hotspot/online each represent a single human player on this device,
-    // so they stay unrestricted here; the peer enforces turn order.
-    final turnTracked = controller.mode == GameMode.local ||
-        controller.mode == GameMode.vsAI;
-    final thisIsOpponentOfActive =
-        turnTracked ? (halfIsP1 == _p2Active) : !halfIsP1;
-    final inBattle = !_countingDown && controller.battling && !_showProjectile;
+    final inBattle = !_countingDown && controller.battling;
 
-    // The OPPONENT's grid is tappable to fire, on your turn.
-    final gridFirable = thisIsOpponentOfActive && inBattle;
+    // Which grid this device may tap right now.
+    final bool gridFirable;
+    if (_lan) {
+      // One human per device: you only ever shoot at the OPPONENT's grid
+      // (the top half). Your own board is never a target for you — the
+      // shared-screen rule below would have made it one on the opponent's
+      // "turn", letting you fire at your own fleet.
+      final myTurn = _chaos || !_p2Active;
+      gridFirable = !halfIsP1 && inBattle && myTurn && !_projP1.visible;
+    } else {
+      // Shared screen: the active player fires at the other half, whether
+      // that other player is a human sitting opposite or the AI.
+      // `_p2Active` is kept current by `_passTurn` in both those modes.
+      gridFirable = (halfIsP1 == _p2Active) &&
+          inBattle &&
+          !_projP1.visible &&
+          !_projP2.visible;
+    }
 
-    // This half belongs to whoever is currently active (the flip side of
-    // thisIsOpponentOfActive) — used to highlight "whose turn it is" with
-    // a soft blur glow behind their own grid.
-    final isActiveHalf = !thisIsOpponentOfActive;
+    // This half belongs to whoever is currently firing — used to dim their
+    // own (inert) board so attention stays on the live target grid. Chaos
+    // mode has no active side at all, so nothing is dimmed there.
+    final isActiveHalf = !_chaos && (halfIsP1 != _p2Active);
 
     final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
 
     // Cannonball currently in flight toward THIS half's grid — drives the
-    // targeting reticle below for exactly as long as the shot is
-    // airborne, disappearing the instant it lands (see _resolveImpact,
-    // which clears _pendingImpact right as the hit/miss marker appears).
-    final aimCell = (_pendingImpact != null && _pendingByP1 != halfIsP1)
-        ? _pendingImpact
-        : null;
+    // targeting reticle below for exactly as long as the shot is airborne,
+    // disappearing the instant it lands (`_tryResolveImpact` clears the
+    // pending cell right as the hit/miss marker appears). Each half is only
+    // ever the target of the OTHER half's gun.
+    final aimCell = halfIsP1 ? _projP2.pendingCell : _projP1.pendingCell;
 
     // Once the match is over, both fleets are common knowledge — reveal
     // every ship on every grid (not just the sunk ones) as a final
     // "here's where everything was" recap before heading to the result
     // screen, instead of the empty-grid secrecy rule that applies mid-game.
     final gameOver = controller.phase == BattlePhase.finished;
-    final revealSkin = halfIsP1 ? _p1StatusSkin : _p2StatusSkin;
+    final revealSkin = _fleetIsRed(halfIsP1) ? _redStatusSkin : _blueStatusSkin;
 
     // Only show markers whose cannonball has already landed. (PERF: these
     // come from the per-frame cache refreshed once in build() — see
@@ -904,30 +1023,68 @@ class _BattleScreenState extends State<BattleScreen>
         // Bigger board: the grid fills the half's full width/height with
         // no reserved side or top margin — same 10×10 grid, just as large
         // as the available space allows (still a perfect square).
-        final gridSide = math.min(w, halfH);
+        //
+        // The one exception is chaos mode. In a turn-based match the
+        // parked position is momentary (the cannon slides out the moment
+        // it's your turn) so it can afford to sit mostly past the outer
+        // screen edge — but chaos parks BOTH cannons there for the entire
+        // match, which has to actually be visible. So the grid gives up
+        // just enough height for a cannon lane behind it: `cannonSize` is
+        // 0.24 × the grid, and 1/1.28 leaves a little clearance on top of
+        // that so the barrel isn't flush against the board.
+        final gridSide =
+            _chaos ? math.min(w, halfH / 1.28) : math.min(w, halfH);
         final cell = gridSide / kBoardSize;
         final gridLeft = (w - gridSide) / 2;
-        final gridTop = 0.0; // no top margin — grid sits flush at the edge
         final cannonSize = gridSide * 0.24;
-        // Cannon HOME: tucked just past the grid's edge, toward the
-        // middle band, while it's not this player's turn. Deliberately
-        // NOT clamped to halfH — on short/tight halves that clamp used to
-        // pull the cannon back UP so its circle overlapped the grid's
-        // bottom two rows, making those cells untappable. The half's
-        // Stack uses Clip.none, so letting the cannon spill past the
-        // half's own bottom edge (into the middle band) is fine and by
-        // design; overlapping the tappable grid is not.
-        final cannonCenter =
-            Offset(w / 2, gridTop + gridSide + cannonSize * 0.55);
+
+        // Every half is laid out the same way in principle: grid against
+        // the MIDDLE BAND, cannon out past the grid at the far edge of
+        // the screen — the "back" of that player's own waters.
+        //
+        // Normally the 180° RotatedBox around the top half achieves that
+        // for free, so both halves can use one identical local layout
+        // (grid at local y=0, cannon below it). When that rotation is
+        // switched off for LAN, the top half has to produce the same
+        // ARRANGEMENT without it, so its grid moves to the bottom of the
+        // half and its cannon sits above, muzzle pointing down.
+        final flipLayout = isTopHalf && !_mirrorTopHalf;
+
+        final gridTop = flipLayout ? halfH - gridSide : 0.0;
+
+        // Where the cannon sits when it isn't slid out. In chaos that is
+        // its permanent home, so it's centred in the lane reserved above;
+        // otherwise it keeps the original placement, just past the grid's
+        // outer edge. Deliberately NOT clamped back inside the half in
+        // that second case — on short/tight halves such a clamp used to
+        // pull the cannon in until its circle covered the grid's outer
+        // rows. The half's Stack uses Clip.none, so spilling past the
+        // half's own edge is fine and by design; covering the board isn't.
+        final Offset cannonCenter;
+        if (_chaos) {
+          final laneCentre = flipLayout
+              ? gridTop / 2
+              : gridTop + gridSide + (halfH - gridSide - gridTop) / 2;
+          cannonCenter = Offset(w / 2, laneCentre);
+        } else {
+          cannonCenter = flipLayout
+              ? Offset(w / 2, gridTop - cannonSize * 0.55)
+              : Offset(w / 2, gridTop + gridSide + cannonSize * 0.55);
+        }
+        // Which way the barrel points, in this half's own local space.
+        final muzzleLocalDir = flipLayout ? 1.0 : -1.0;
+
         // Cannon "ready" (active) position: the actual MIDDLE of this
         // player's own grid — a clear, unmissable "your turn" indicator.
         // Safe to overlap the grid here: a player's OWN grid is never
         // tappable during their OWN turn (only the opponent's grid is),
-        // so sitting on top of it doesn't block anything.
+        // so sitting on top of it doesn't block anything. In chaos mode
+        // the cannon never travels here at all (see `_slideFor`).
         final gridCenterLocal = Offset(w / 2, gridTop + gridSide / 2);
 
-        // Record screen-space geometry (accounting for the 180° rotation
-        // of the top half) so the cannonball can fly between halves.
+        // Record screen-space geometry (accounting for the top half's
+        // rotation, where it applies) so cannonballs can fly between
+        // halves.
         _geom[isTopHalf] = _HalfGeom(
           gridLeft: gridLeft,
           gridTop: gridTop,
@@ -938,7 +1095,8 @@ class _BattleScreenState extends State<BattleScreen>
           cannonCenter: cannonCenter,
           gridCenterLocal: gridCenterLocal,
           cannonSize: cannonSize,
-          rotated: isTopHalf,
+          muzzleLocalDir: muzzleLocalDir,
+          rotated: isTopHalf && _mirrorTopHalf,
         );
 
         return Container(
@@ -1039,16 +1197,18 @@ class _BattleScreenState extends State<BattleScreen>
                 );
               }),
 
-              // Own cannon. During its owner's turn it slides to the
-              // MIDDLE of its own grid — a big, unmissable "your turn"
-              // indicator — with a little overshoot bounce on the way in.
-              // Otherwise it sits parked at home near the middle band.
-              // P1 = _slideCtrl.value, P2 = 1-value.
+              // Own cannon. In a turn-based match it slides to the MIDDLE
+              // of its own grid during its owner's turn — a big,
+              // unmissable "your turn" indicator — with a little overshoot
+              // bounce on the way in, and parks back at the BACK of its
+              // grid the rest of the time. In chaos mode there are no
+              // turns to signal, so it simply never leaves the back
+              // (`_slideFor` pins it there) and every shot is lobbed the
+              // full length of the board from behind its own waters.
               AnimatedBuilder(
                 animation: _slideCtrl,
                 builder: (context, _) {
-                  final raw =
-                      halfIsP1 ? _slideCtrl.value : 1 - _slideCtrl.value;
+                  final raw = _slideFor(halfIsP1);
                   final slide = Curves.easeOutBack.transform(raw.clamp(0.0, 1.0));
                   final pos =
                       Offset.lerp(cannonCenter, gridCenterLocal, slide)!;
@@ -1074,22 +1234,35 @@ class _BattleScreenState extends State<BattleScreen>
                         // advance these two arcs.
                         child: ValueListenableBuilder<int>(
                           valueListenable: controller.cooldownTick,
-                          builder: (context, _, __) => CannonWidget(
-                            skin: profile.cannonSkin,
-                            cooldownFraction: halfIsP1
-                                ? controller.cooldownFraction1
-                                : controller.cooldownFraction2,
-                            enabled: controller.battling && !_countingDown,
-                            size: cannonSize,
-                            fireTrigger: cannonStream.stream,
-                            readyTrigger: readyStream.stream,
-                            accentOverride: accent,
-                            // Firing now happens with a single tap on the
-                            // enemy grid cell (see gridFirable / onTapCell
-                            // above); the cannon itself just reacts (recoil
-                            // + muzzle flash) as a "shot fired" indicator.
-                            onFire: null,
-                          ),
+                          builder: (context, _, __) {
+                            final cannon = CannonWidget(
+                              skin: profile.cannonSkin,
+                              cooldownFraction: halfIsP1
+                                  ? controller.cooldownFraction1
+                                  : controller.cooldownFraction2,
+                              enabled: controller.battling && !_countingDown,
+                              size: cannonSize,
+                              fireTrigger: cannonStream.stream,
+                              readyTrigger: readyStream.stream,
+                              accentOverride: accent,
+                              // Firing happens with a single tap on the
+                              // enemy grid cell (see gridFirable /
+                              // onTapCell above); the cannon itself just
+                              // reacts (recoil + muzzle flash) as a "shot
+                              // fired" indicator.
+                              onFire: null,
+                            );
+                            // CannonWidget always draws its barrel toward
+                            // the top of its own box. When this half isn't
+                            // rotated but its cannon sits ABOVE its grid
+                            // (LAN top half), the barrel has to be spun to
+                            // point back down at the water it's firing
+                            // over — matching `muzzleLocalDir`, which is
+                            // what the cannonball's spawn point uses.
+                            return flipLayout
+                                ? RotatedBox(quarterTurns: 2, child: cannon)
+                                : cannon;
+                          },
                         ),
                       ),
                     ),
@@ -1125,6 +1298,8 @@ class _BattleScreenState extends State<BattleScreen>
     final activeIsP1 = !_p2Active;
     final topIsP1Fleet = !bottomIsP1;
     final bottomIsP1Fleet = bottomIsP1;
+    // Chaos mode has no "currently firing" side, so neither row dims.
+    bool fadedFor(bool isP1Fleet) => !_chaos && (isP1Fleet == activeIsP1);
     return SizedBox(
       height: bandH,
       child: Stack(
@@ -1137,7 +1312,7 @@ class _BattleScreenState extends State<BattleScreen>
                   color: AppColors.steelBlueDark,
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(topBoard,
-                      faded: topIsP1Fleet == activeIsP1,
+                      faded: fadedFor(topIsP1Fleet),
                       isP1Fleet: topIsP1Fleet,
                       revealedSunkNames: _revealedSunkNames(topIsP1Fleet)),
                 ),
@@ -1147,7 +1322,7 @@ class _BattleScreenState extends State<BattleScreen>
                   color: gameplayTheme.deck,
                   padding: const EdgeInsets.symmetric(horizontal: 56),
                   child: _statusRow(bottomBoard,
-                      faded: bottomIsP1Fleet == activeIsP1,
+                      faded: fadedFor(bottomIsP1Fleet),
                       isP1Fleet: bottomIsP1Fleet,
                       revealedSunkNames: _revealedSunkNames(bottomIsP1Fleet)),
                 ),
@@ -1161,6 +1336,15 @@ class _BattleScreenState extends State<BattleScreen>
             child: _DotsBadge(
               topLeft: 5 - topBoard.sunkCount,
               bottomLeft: 5 - bottomBoard.sunkCount,
+              // Follows the same host-red / joiner-blue identity as the
+              // fleets themselves, so the badge can't disagree with the
+              // ships it's counting.
+              topColor: _fleetIsRed(topIsP1Fleet)
+                  ? AppColors.hit
+                  : AppColors.blue,
+              bottomColor: _fleetIsRed(bottomIsP1Fleet)
+                  ? AppColors.hit
+                  : AppColors.blue,
             ),
           ),
           Positioned(
@@ -1174,16 +1358,28 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
-  static const ShipSkin _p1StatusSkin =
+  static const ShipSkin _redStatusSkin =
       ShipSkin('p1', 'P1', AppColors.shipRed, AppColors.shipRedDark, 0);
-  static const ShipSkin _p2StatusSkin =
+  static const ShipSkin _blueStatusSkin =
       ShipSkin('p2', 'P2', AppColors.shipBlue, AppColors.shipBlueDark, 0);
+
+  /// Whether the fleet on a given half flies RED colours.
+  ///
+  /// Shared screen (local pass-and-play / vs AI): Player 1 is red and
+  /// Player 2 is blue, exactly as before. LAN: the two players are told
+  /// apart by network role instead — the host commands red and whoever
+  /// joined commands blue — so each device paints its own bottom-half
+  /// fleet in ITS OWN colour and the opponent's top-half fleet in the
+  /// other, and the two screens agree. Used for the ship skins, the turn
+  /// accent, and the remaining-ships badge, so a side can never end up
+  /// with two different colours in different corners of the screen.
+  bool _fleetIsRed(bool isP1Fleet) => isP1Fleet != _iAmBlue;
 
   Widget _statusRow(Board board,
       {required bool faded,
       required bool isP1Fleet,
       required Set<String> revealedSunkNames}) {
-    final skin = isP1Fleet ? _p1StatusSkin : _p2StatusSkin;
+    final skin = _fleetIsRed(isP1Fleet) ? _redStatusSkin : _blueStatusSkin;
     // Per-cell pixel unit for the fleet row: each icon is drawn at
     // `unit * spec.size` wide with a constant beam (height), so a
     // 5-cell carrier reads clearly longer than a 2-cell destroyer — the
@@ -1253,7 +1449,10 @@ class _BattleScreenState extends State<BattleScreen>
       child: IgnorePointer(
         child: Column(
           children: [
-            Expanded(child: number(mirrored: true)),
+            // The top copy is only flipped when someone is actually
+            // sitting on that side of the device — on a LAN screen the
+            // single player reads both copies the same way up.
+            Expanded(child: number(mirrored: _mirrorTopHalf)),
             SizedBox(height: bandH),
             Expanded(child: number(mirrored: false)),
           ],
@@ -1410,6 +1609,40 @@ class _CannonballDetailPainter extends CustomPainter {
   bool shouldRepaint(covariant _CannonballDetailPainter oldDelegate) => false;
 }
 
+/// One airborne cannonball. There is one of these per SHOOTER (see
+/// `_projP1`/`_projP2`), so both sides can have a shot in the air at the
+/// same time — the normal case in chaos mode.
+class _Projectile {
+  _Projectile({
+    required this.byP1,
+    required TickerProvider vsync,
+    required Duration duration,
+  }) : ctrl = AnimationController(vsync: vsync, duration: duration);
+
+  /// True if this slot belongs to the BOTTOM half's owner. Also the value
+  /// matched against `CombatEvent.byPlayer` when looking up what this
+  /// shot actually did — see `_tryResolveImpact`.
+  final bool byP1;
+
+  final AnimationController ctrl;
+
+  /// Flight path, in absolute screen coordinates.
+  Offset from = Offset.zero;
+  Offset to = Offset.zero;
+
+  /// Target grid's cell size, which the ball is scaled against.
+  double cell = 32;
+
+  /// Whether a ball is airborne in this slot right now.
+  bool visible = false;
+
+  /// The cell this shot is headed for, held from launch until its impact
+  /// is resolved. Doubles as the target half's aiming reticle.
+  List<int>? pendingCell;
+
+  void dispose() => ctrl.dispose();
+}
+
 /// Screen-space geometry of one half (used for cannonball trajectories).
 class _HalfGeom {
   final double gridLeft;
@@ -1418,10 +1651,19 @@ class _HalfGeom {
   final double halfTopY;
   final double halfH;
   final double halfW;
-  final Offset cannonCenter; // home pos within the half (unrotated space)
-  final Offset gridCenterLocal; // grid center within the half (unrotated)
+  final Offset cannonCenter; // parked pos within the half (local space)
+  final Offset gridCenterLocal; // grid center within the half (local space)
   final double cannonSize;
-  final bool rotated; // top half is drawn rotated 180°
+
+  /// Which way this half's barrel points in the half's own LOCAL space:
+  /// −1 toward local −y (cannon sits below its grid), +1 toward local +y
+  /// (cannon sits above it). Always points AT the half's own grid, and so
+  /// out across the board at the opponent.
+  final double muzzleLocalDir;
+
+  /// Whether this half is drawn inside a 180° RotatedBox — true for the
+  /// top half only when both players share the screen.
+  final bool rotated;
 
   const _HalfGeom({
     required this.gridLeft,
@@ -1433,6 +1675,7 @@ class _HalfGeom {
     required this.cannonCenter,
     required this.gridCenterLocal,
     required this.cannonSize,
+    required this.muzzleLocalDir,
     required this.rotated,
   });
 
@@ -1453,7 +1696,14 @@ class _HalfGeom {
 class _DotsBadge extends StatelessWidget {
   final int topLeft;
   final int bottomLeft;
-  const _DotsBadge({required this.topLeft, required this.bottomLeft});
+  final Color topColor;
+  final Color bottomColor;
+  const _DotsBadge({
+    required this.topLeft,
+    required this.bottomLeft,
+    required this.topColor,
+    required this.bottomColor,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1488,9 +1738,9 @@ class _DotsBadge extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          dot(AppColors.blue, topLeft),
+          dot(topColor, topLeft),
           const SizedBox(height: 5),
-          dot(AppColors.hit, bottomLeft),
+          dot(bottomColor, bottomLeft),
         ],
       ),
     );

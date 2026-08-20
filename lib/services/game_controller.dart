@@ -36,6 +36,17 @@ class GameController extends ChangeNotifier {
   final NetworkService network;
 
   GameMode mode = GameMode.vsAI;
+
+  /// Which rules a hotspot/online match runs under — decided by both
+  /// players in the pre-match vote (see `LanModeScreen`). Ignored in
+  /// vs-AI and local pass-and-play, which are always turn-based.
+  LanBattleMode lanBattleMode = LanBattleMode.turns;
+
+  /// True when both fleets fire simultaneously with no turn order.
+  bool get isChaosBattle =>
+      (mode == GameMode.hotspot || mode == GameMode.online) &&
+      lanBattleMode == LanBattleMode.chaos;
+
   AIDifficulty difficulty = AIDifficulty.normal;
   BattlePhase phase = BattlePhase.idle;
   final List<Board> boards = [Board(), Board()];
@@ -581,6 +592,15 @@ class GameController extends ChangeNotifier {
         final c = msg['c'] as int;
         final (result, sunk) =
             boards[0].receiveShot(r, c);
+
+        // Mirror the peer's reload on their on-screen cannon. Purely
+        // cosmetic — nothing gates on `cooldown2` in a network match (the
+        // peer enforces its own) — but without it the opponent's cooldown
+        // ring sits permanently full, which reads as "they can fire
+        // forever". That's most obvious in chaos mode, where both cannons
+        // are visible and firing at once and the ring is the only cue for
+        // when the next incoming shot is due.
+        cooldown2 = cooldownMax2;
 
         network.sendResult(
           r,

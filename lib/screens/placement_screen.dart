@@ -15,14 +15,19 @@ import '../widgets/ship_painter.dart';
 import 'battle_screen.dart';
 
 /// Red / blue flat skins matching the 1:1 gameplay video.
-const _p1PlaceSkin = ShipSkin(
+///
+/// Which one a player gets is decided by their SIDE, not by the screen
+/// they're on: local pass-and-play gives red to Player 1 and blue to
+/// Player 2, and a hotspot/online match gives red to the host and blue to
+/// whoever joined — see `isBlueFleet` in `build()`.
+const _redPlaceSkin = ShipSkin(
   'p1v',
   'P1',
   AppColors.shipRed,
   AppColors.shipRedDark,
   0,
 );
-const _p2PlaceSkin = ShipSkin(
+const _bluePlaceSkin = ShipSkin(
   'p2v',
   'P2',
   AppColors.shipBlue,
@@ -268,18 +273,42 @@ class _PlacementScreenState extends State<PlacementScreen> {
     }
   }
 
+  /// Starts the match from the peer's fleet. Shared by both paths below so
+  /// "their board was already here" and "their board arrived while we
+  /// waited" behave identically.
+  void _beginWithPeerBoard(
+      GameController controller, Map<String, dynamic> msg) {
+    final enemyBoard = Board.fromJson(
+      Map<String, dynamic>.from(msg['b'] as Map),
+    );
+    controller.attachNetwork();
+    controller.beginBattle(enemyBoard: enemyBoard);
+    _goBattle();
+  }
+
   void _waitForPeerBoard(GameController controller) {
+    // BUGFIX (hotspot desync — the player who saved SECOND hung on
+    // "WAITING FOR OPPONENT…" while the other was already in battle):
+    // `network.messages` is a broadcast stream, so the peer's board is
+    // dropped if it lands before this screen subscribes — which is exactly
+    // what happens whenever the peer hits SAVE first. NetworkService now
+    // retains it, so check for an already-delivered board BEFORE
+    // subscribing (and before putting up a dialog we'd only have to tear
+    // straight back down).
+    final alreadyHere = controller.network.takePeerBoard();
+    if (alreadyHere != null) {
+      _beginWithPeerBoard(controller, alreadyHere);
+      return;
+    }
+
     late StreamSubscription sub;
     sub = controller.network.messages.listen((msg) {
       if (msg['type'] == 'board') {
-        final enemyBoard = Board.fromJson(
-          Map<String, dynamic>.from(msg['b'] as Map),
-        );
         sub.cancel();
+        // Consume the retained copy so it can't be picked up again.
+        controller.network.takePeerBoard();
         if (mounted) Navigator.of(context, rootNavigator: true).pop();
-        controller.attachNetwork();
-        controller.beginBattle(enemyBoard: enemyBoard);
-        _goBattle();
+        _beginWithPeerBoard(controller, msg);
       }
     });
     showDialog(
@@ -374,11 +403,27 @@ class _PlacementScreenState extends State<PlacementScreen> {
   @override
   Widget build(BuildContext context) {
     final controller = context.read<GameController>();
-    final isP2 = controller.mode == GameMode.local && widget.isPlayer2;
+    final isLan = controller.mode == GameMode.hotspot ||
+        controller.mode == GameMode.online;
+
+    // BUGFIX (both LAN players deployed RED fleets): the fleet colour used
+    // to be chosen purely from `isPlayer2`, which only ever means anything
+    // in local pass-and-play — so in a hotspot/online match BOTH devices
+    // fell through to the Player-1 skin and each captain saw a red fleet,
+    // on both this screen and (via the matching skin pick in
+    // battle_screen.dart) the battle grids. The two sides are told apart
+    // by their NETWORK ROLE instead: the host commands red, whoever joined
+    // commands blue. Non-network modes keep their existing P1/P2 meaning.
+    final isBlueFleet =
+        isLan ? !controller.network.isHost : widget.isPlayer2;
+
     final playerLabel = controller.mode == GameMode.local
         ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
-        : context.watch<ProfileStore>().playerName.toUpperCase();
-    final skin = isP2 ? _p2PlaceSkin : _p1PlaceSkin;
+        : isLan
+            ? '${context.watch<ProfileStore>().playerName.toUpperCase()}'
+                ' — ${isBlueFleet ? 'BLUE' : 'RED'} FLEET'
+            : context.watch<ProfileStore>().playerName.toUpperCase();
+    final skin = isBlueFleet ? _bluePlaceSkin : _redPlaceSkin;
     final cellSize = _cellSize(context);
 
     if (_showHandoff) {

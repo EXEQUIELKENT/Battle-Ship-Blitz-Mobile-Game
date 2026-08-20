@@ -271,6 +271,12 @@ class SoundService {
     final player = existing ?? AudioPlayer();
     _menuMusicPlayer = player;
     try {
+      // Same per-frame `getCurrentPosition` polling as the pooled players —
+      // see the root-cause note in `_ManagedPool._create`. The music track
+      // loops and nothing reads its position, so turn the polling off here
+      // too rather than leaving one more channel-spammer running for the
+      // entire time the app is on a menu.
+      player.positionUpdater = null;
       await player.setAudioContext(_sfxAudioContext);
       await player.setReleaseMode(ReleaseMode.loop);
       await player.setVolume(0.82);
@@ -455,7 +461,20 @@ class _ManagedPool {
   final List<AudioPlayer> _idle = [];
   final Map<AudioPlayer, void Function()> _busy = {};
 
-  static const _safetyTimeout = Duration(seconds: 6);
+  /// How long a checked-out player is considered busy before it's forced
+  /// back into the idle pool.
+  ///
+  /// This is the ONLY thing that ever returns a low-latency player to the
+  /// pool: Android's SoundPool has no completion callback, so
+  /// `onPlayerComplete` never fires for `PlayerMode.lowLatency` (the
+  /// listener below is kept purely for the platforms where it does work).
+  /// The old 6s value therefore pinned every player for 6 seconds after a
+  /// 0.4s sound, so pools were almost permanently exhausted and nearly
+  /// every play fell through to the steal-the-oldest path. Every gameplay
+  /// clip in `assets/sfx/` is short (longest is victory at ~1.9s), so this
+  /// comfortably outlasts any of them while letting a pool actually
+  /// recycle between shots.
+  static const _safetyTimeout = Duration(milliseconds: 2200);
 
   /// Creates every player this pool will ever hold. Called once from
   /// [SoundService.init] (fire-and-forget, well before any gameplay
@@ -473,6 +492,33 @@ class _ManagedPool {
 
   Future<AudioPlayer> _create() async {
     final p = AudioPlayer();
+    // ROOT-CAUSE FIX (mobile jank + audio dying mid-match) — measured on a
+    // real device with the Dart profiler: 99.4% of ALL UI-thread samples
+    // were inside `AudioPlayer.getCurrentPosition` →
+    // `MethodChannel.invokeMethod` → `sendPlatformMessage`.
+    //
+    // Nothing in this app ever asks for a playback position. The calls come
+    // from audioplayers itself: `AudioPlayer`'s constructor installs a
+    // `FramePositionUpdater`, which polls `getCurrentPosition()` over the
+    // platform channel ONCE PER FRAME, PER PLAYER — forever, whether or not
+    // that player is playing. This service keeps ~29 pooled players alive,
+    // so that was ~29 × 60 = ~1,700 platform round trips per second, each
+    // an async call allocating a Future/closure/suspend-state chain.
+    //
+    // Consequences, which match every symptom reported:
+    //  * The UI thread saturates on channel traffic → frames took ~300ms
+    //    (raster stayed a healthy 6-10ms — it was never a GPU problem,
+    //    which is why earlier render-side optimizations changed nothing).
+    //  * The async garbage accumulates faster than GC reclaims it — the
+    //    Dart heap climbed ~1MB per shot, past 590MB, until Android
+    //    OOM-killed the process. Longer match = bigger heap = longer GC
+    //    pauses, i.e. "fine early, unplayable late".
+    //  * That same saturated channel is what starves the actual play/stop
+    //    commands, so effects drop out mid-to-late match.
+    //
+    // Setting `positionUpdater = null` disables the polling entirely. One
+    // -shot SFX have no use for a position stream, so nothing is lost.
+    p.positionUpdater = null;
     await p.setAudioContext(audioContext);
     await p.setSource(AssetSource(asset));
     await p.setPlayerMode(PlayerMode.lowLatency);
@@ -546,6 +592,37 @@ class _ManagedPool {
     };
 
     try {
+      // ROOT-CAUSE FIX (effects play once then go silent; menu clicks dead
+      // after a match). Verified against audioplayers_android 5.2.1:
+      //
+      //   SoundPoolPlayer.start():
+      //     if (streamId != null) soundPool.resume(streamId)   // stale!
+      //     else                  streamId = soundPool.play(...)
+      //
+      // `streamId` is set on the first play and is ONLY ever cleared by
+      // stop(). SoundPool has no completion callback, so after a clip
+      // finishes naturally that id still points at a dead stream — every
+      // later `resume()` resumes nothing and is SILENT. On top of that,
+      // `WrappedPlayer.play()` is guarded by `if (!playing && !released)`,
+      // and `playing` is likewise only cleared by pause()/stop() — so a
+      // second `resume()` was frequently a no-op before it even reached
+      // the native player.
+      //
+      // Net effect: each pooled player produced sound exactly ONCE, then
+      // was mute for the rest of the app's lifetime. It looked random
+      // ("sometimes it plays") only because a pool has several players and
+      // the steal-the-oldest path happens to call stop(), briefly reviving
+      // one. It also explains why menu clicks died after a match: those
+      // pools were spent during the battle and never reset.
+      //
+      // `stop()` fixes BOTH preconditions in one call — it pauses (so
+      // `playing` goes false) and seeks to 0, which routes to
+      // SoundPoolPlayer.stop() and nulls `streamId` — so the next start()
+      // takes the `soundPool.play(...)` branch and produces a real, fresh
+      // stream every time. `prepared` stays true, so the already-loaded
+      // sample is reused and this is still the low-latency path (no asset
+      // reload).
+      await player.stop();
       await player.setVolume(volume.clamp(0.0, 1.0));
       // Resuming (rather than re-calling play(source)) reuses the already
       // -prepared native player instead of tearing it down and reloading
