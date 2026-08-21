@@ -3,6 +3,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../art/fleet_family.dart';
+
 /// A ship hull skin.
 ///
 /// Two generations live side by side here. The original nine are a pair
@@ -157,7 +159,7 @@ class Catalog {
         Color(0xFFEAFBFF), Color(0xFFBDF1FF), 1100, familyKey: 'arctic'),
     GameplayTheme('f_steam', 'Brass Works',
         'Riveted quarter-plates with bolted seams.', Color(0xFF4A3927),
-        Color(0xFF6B5537), Color(0xFF4E6474), Color(0xFF8FA6B4),
+        Color(0xFF6B5537), Color(0xFF57432E), Color(0xFFB89056),
         Color(0xFFC99A3F), Color(0xFFC99A3F), 1150, familyKey: 'steam'),
     GameplayTheme('f_volcanic', 'Cinder Straits',
         'Basalt slabs, molten seams, rising embers.', Color(0xFF241B1B),
@@ -440,6 +442,62 @@ class ProfileStore extends ChangeNotifier {
     _save();
     notifyListeners();
     return true;
+  }
+
+  /// The design's one-tap matched set: a family's hull, gun and
+  /// battlefield together, for less than the three bought separately.
+  ///
+  /// Returns false and changes nothing if it can't be afforded, so a
+  /// half-bought set is impossible. Pieces already owned are charged for
+  /// again by design — the discount is on the bundle, and refunding
+  /// against past purchases would let someone buy the two cheap pieces
+  /// first and take the expensive one at a fraction of its price.
+  /// [setDiscountFor] is what the card actually quotes, and it only
+  /// discounts what is still missing.
+  bool buyFamilySet(FleetFamily family) {
+    final price = setPriceFor(family);
+    if (price > rp) return false;
+    rp -= price;
+    owned.add(_ownKey('ship', 'f_${family.key}'));
+    owned.add(_ownKey('cannon', 'f_${family.key}'));
+    owned.add(_ownKey('theme', 'f_${family.key}'));
+    shipSkinId = 'f_${family.key}';
+    shipSkinChosen = true;
+    cannonSkinId = 'f_${family.key}';
+    gameplayThemeId = 'f_${family.key}';
+    _save();
+    notifyListeners();
+    return true;
+  }
+
+  /// What this player would pay for [family]'s set right now: 80% of the
+  /// pieces they don't already have. Someone who bought the hull last
+  /// week still gets the bundle price on the rest rather than paying for
+  /// it twice.
+  int setPriceFor(FleetFamily family) {
+    final key = 'f_${family.key}';
+    var full = 0;
+    if (!ownsShip(key)) full += Catalog.shipById(key).cost;
+    if (!ownsCannon(key)) full += Catalog.cannonById(key).cost;
+    if (!ownsTheme(key)) full += Catalog.gameplayThemeById(key).cost;
+    return (full * 0.8).round();
+  }
+
+  /// RP saved by taking the set instead of the remaining pieces singly.
+  int setSavingFor(FleetFamily family) {
+    final key = 'f_${family.key}';
+    var full = 0;
+    if (!ownsShip(key)) full += Catalog.shipById(key).cost;
+    if (!ownsCannon(key)) full += Catalog.cannonById(key).cost;
+    if (!ownsTheme(key)) full += Catalog.gameplayThemeById(key).cost;
+    return full - (full * 0.8).round();
+  }
+
+  /// True once all three pieces of [family] are owned — the point at
+  /// which its set card has nothing left to sell.
+  bool ownsFamilySet(FleetFamily family) {
+    final key = 'f_${family.key}';
+    return ownsShip(key) && ownsCannon(key) && ownsTheme(key);
   }
 
   bool equipGameplayTheme(GameplayTheme theme) {

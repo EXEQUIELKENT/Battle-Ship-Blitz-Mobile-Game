@@ -43,11 +43,13 @@ class GameController extends ChangeNotifier {
   LanBattleMode lanBattleMode = LanBattleMode.turns;
 
   /// True when both fleets fire simultaneously with no turn order.
-  bool get isChaosBattle => isNetworkBattle && lanBattleMode == LanBattleMode.chaos;
+  /// CHAOS and BLITZ; the two differ only in whether hulls can move.
+  bool get isChaosBattle => isNetworkBattle && !lanBattleMode.hasTurns;
 
-  /// True when ships may be repositioned mid-battle (MANOEUVRE mode).
+  /// True when ships may be repositioned mid-battle. MANOEUVRE and BLITZ;
+  /// the two differ only in whether there are turns.
   bool get isManoeuvreBattle =>
-      isNetworkBattle && lanBattleMode == LanBattleMode.rearrange;
+      isNetworkBattle && lanBattleMode.canRearrange;
 
   bool get isNetworkBattle =>
       mode == GameMode.hotspot || mode == GameMode.online;

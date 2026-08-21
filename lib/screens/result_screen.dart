@@ -7,6 +7,7 @@ import '../core/theme.dart';
 import '../services/game_controller.dart';
 import '../services/network_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'lan_mode_screen.dart';
@@ -77,6 +78,17 @@ class _ResultScreenState extends State<ResultScreen>
     final won = controller.iWon;
 
     return Scaffold(
+      // Last stop in the conversation: the whole match's chat is still
+      // here, so "good game" lands where it belongs and either captain
+      // can read back what was said. Floated rather than placed in the
+      // column so it can't push the rematch buttons around, and so the
+      // result reveal underneath is untouched.
+      floatingActionButton: controller.isNetworkBattle
+          ? const Padding(
+              padding: EdgeInsets.only(bottom: 4),
+              child: MatchChatButton(),
+            )
+          : null,
       body: OceanBackground(
         showSonar: false,
         child: SafeArea(

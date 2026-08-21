@@ -20,7 +20,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # existing one: Android refuses to install an APK whose versionCode is
 # lower than the one already on the device, and treats an equal one as a
 # reinstall rather than an update.
-version: 1.1.0+2
+version: 1.4.0+5
 
 environment:
   sdk: ^3.9.2

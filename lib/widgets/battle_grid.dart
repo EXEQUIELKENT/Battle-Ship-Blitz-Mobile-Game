@@ -2,6 +2,8 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import '../art/family_board_art.dart';
+import '../art/fleet_family.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/storage_service.dart';
@@ -56,6 +58,10 @@ class BattleGrid extends StatefulWidget {
 
   /// Cell fill color (defaults to the video's steel blue).
   final Color cellColor;
+
+  /// Thematic family whose battlefield replaces the flat cells and
+  /// printed gridlines. Null keeps the original painted grid.
+  final FleetFamily? boardFamily;
   final Color gridLineColor;
 
   /// Placement-mode ghost preview.
@@ -97,6 +103,7 @@ class BattleGrid extends StatefulWidget {
     this.destroyedShips = const [],
     this.glowColor = AppColors.water,
     this.cellColor = AppColors.steelBlue,
+    this.boardFamily,
     this.gridLineColor = AppColors.steelBlueLight,
     this.previewShip,
     this.previewValid = true,
@@ -322,6 +329,7 @@ class _BattleGridState extends State<BattleGrid>
                           previewValid: widget.previewValid,
                           gridColor: widget.glowColor,
                           cellColor: widget.cellColor,
+                          boardFamily: widget.boardFamily,
                           gridLineColor: widget.gridLineColor,
                           destroyedShips: widget.destroyedShips,
                         ),
@@ -932,6 +940,10 @@ class _StaticGridPainter extends CustomPainter {
   final bool previewValid;
   final Color gridColor;
   final Color cellColor;
+
+  /// Thematic family whose battlefield replaces the flat cells and
+  /// printed gridlines. Null keeps the original painted grid.
+  final FleetFamily? boardFamily;
   final Color gridLineColor;
   final List<PlacedShip> destroyedShips;
 
@@ -941,6 +953,7 @@ class _StaticGridPainter extends CustomPainter {
     this.previewValid = true,
     required this.gridColor,
     this.cellColor = AppColors.steelBlue,
+    this.boardFamily,
     this.gridLineColor = AppColors.steelBlueLight,
     this.destroyedShips = const [],
   });
@@ -948,23 +961,33 @@ class _StaticGridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final cell = size.width / kBoardSize;
+    final family = boardFamily;
 
-    // ---- Flat steel-blue cells with thin lighter grid lines (video style) ----
-    canvas.drawRect(Offset.zero & size, Paint()..color = cellColor);
-    final linePaint = Paint()
-      ..color = gridLineColor.withValues(alpha: 0.55)
-      ..strokeWidth = 1.1;
-    for (var i = 1; i < kBoardSize; i++) {
-      canvas.drawLine(
-        Offset(i * cell, 0),
-        Offset(i * cell, size.height),
-        linePaint,
-      );
-      canvas.drawLine(
-        Offset(0, i * cell),
-        Offset(size.width, i * cell),
-        linePaint,
-      );
+    if (family != null) {
+      // A themed battlefield replaces the water AND the gridlines — ice
+      // floes with crack lines, basalt slabs with molten seams, riveted
+      // plate with bolted seams. It is authored on the same ten-by-ten
+      // 400-unit field the game already plays on, so nothing about cell
+      // size, coordinates or tap targets moves.
+      paintFamilyBoard(canvas, size, family);
+    } else {
+      // ---- Flat steel-blue cells with thin lighter grid lines (video style) ----
+      canvas.drawRect(Offset.zero & size, Paint()..color = cellColor);
+      final linePaint = Paint()
+        ..color = gridLineColor.withValues(alpha: 0.55)
+        ..strokeWidth = 1.1;
+      for (var i = 1; i < kBoardSize; i++) {
+        canvas.drawLine(
+          Offset(i * cell, 0),
+          Offset(i * cell, size.height),
+          linePaint,
+        );
+        canvas.drawLine(
+          Offset(0, i * cell),
+          Offset(size.width, i * cell),
+          linePaint,
+        );
+      }
     }
 
     // ---- Placement highlight: shows exactly which cells a ship will
@@ -1022,7 +1045,17 @@ class _StaticGridPainter extends CustomPainter {
         // destroyed ship graphic replaces all individual hit cells.
         if (v == 2 && destroyedCells.contains(r * kBoardSize + c)) continue;
         final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
-        if (v == 2) {
+        if (family != null) {
+          // A themed marker is still exactly one cell — a foam ring, a
+          // frost star, a magma crater — so what a player has to read
+          // ("that square is spent", "that square is a hit") is unchanged
+          // and only the drawing differs.
+          if (v == 2) {
+            paintFamilyHit(canvas, center, cell, family);
+          } else {
+            paintFamilyMiss(canvas, center, cell, family);
+          }
+        } else if (v == 2) {
           _drawHit(canvas, center, cell, hitCellPaint, hitDiamondPaint);
         } else {
           _drawMiss(canvas, center, cell, missCellPaint, missMarkPaint);
@@ -1090,6 +1123,7 @@ class _StaticGridPainter extends CustomPainter {
         oldDelegate.preview != preview ||
         oldDelegate.previewValid != previewValid ||
         oldDelegate.cellColor != cellColor ||
+        oldDelegate.boardFamily?.id != boardFamily?.id ||
         oldDelegate.gridColor != gridColor ||
         !identical(oldDelegate.destroyedShips, destroyedShips);
   }

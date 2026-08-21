@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../art/family_ship_art.dart';
+import '../art/fleet_family.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/storage_service.dart';
@@ -34,6 +36,21 @@ class ShipPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final w = size.width;
     final h = size.height;
+
+    // A thematic family brings its own five hull shapes, so it takes over
+    // the whole drawing rather than tinting this one. Everything else
+    // about a ship — its footprint, its damage state, the wreck it turns
+    // into — is unchanged, which is why the switch is this narrow.
+    final family = FleetFamilies.byKey(skin.familyKey);
+    if (family != null && !sunk) {
+      final bob = (wavePhase - 0.5) * h * 0.06;
+      canvas.save();
+      canvas.translate(0, bob);
+      paintFamilyShip(canvas, size, family, spec.kind);
+      canvas.restore();
+      if (hitCount > 0) _familyDamage(canvas, w, h);
+      return;
+    }
 
     // Destroyed version: charred toward near-black instead of just faded,
     // so a sunk ship reads clearly as "wrecked" rather than a ghostly
@@ -109,6 +126,26 @@ class ShipPainter extends CustomPainter {
       }
     }
     canvas.restore();
+  }
+
+  /// The same dark X craters the flat skins get.
+  ///
+  /// Damage is deliberately NOT themed: a player has to read "this hull
+  /// has been hit" at a glance on an opponent's board, and making that
+  /// signal depend on which fleet they happen to have bought would put a
+  /// gameplay read behind a cosmetic. The ships change; the wounds don't.
+  void _familyDamage(Canvas canvas, double w, double h) {
+    final crater = Paint()
+      ..color = AppColors.outline.withValues(alpha: 0.85)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < hitCount && i < spec.size; i++) {
+      final cx = w * (0.18 + 0.64 * (i / math.max(1, spec.size - 1)));
+      final cy = h * 0.5 + (i.isOdd ? h * 0.12 : -h * 0.12);
+      const d = 4.5;
+      canvas.drawLine(Offset(cx - d, cy - d), Offset(cx + d, cy + d), crater);
+      canvas.drawLine(Offset(cx - d, cy + d), Offset(cx + d, cy - d), crater);
+    }
   }
 
   void _drawHull(Canvas canvas, double w, double h, Paint fill, Paint outline) {

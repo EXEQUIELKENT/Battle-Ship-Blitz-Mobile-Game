@@ -328,6 +328,17 @@ enum LanBattleMode {
   /// the rest of the match), and they can never be moved onto a cell the
   /// enemy has already fired at — you cannot un-discover water.
   rearrange,
+
+  /// Both of the above at once: no turns AND a fleet that can still run.
+  /// Cannons stay parked at the back of their own waters and fire the
+  /// moment they reload, exactly as in [chaos], while undamaged hulls can
+  /// be dragged to fresh water at any time, exactly as in [rearrange].
+  ///
+  /// Appended rather than slotted in beside its two parents on purpose:
+  /// [index] is what goes over the wire in the vote and in a resume
+  /// snapshot, so inserting anywhere else would silently reinterpret an
+  /// in-flight match on a device running the older build.
+  blitz,
 }
 
 extension LanBattleModeX on LanBattleMode {
@@ -335,12 +346,14 @@ extension LanBattleModeX on LanBattleMode {
         LanBattleMode.chaos => 'CHAOS',
         LanBattleMode.turns => 'TURN BASED',
         LanBattleMode.rearrange => 'MANOEUVRE',
+        LanBattleMode.blitz => 'BLITZ',
       };
 
   String get tagline => switch (this) {
         LanBattleMode.chaos => 'Fire at will — no turns',
         LanBattleMode.turns => 'Take turns — hit to keep firing',
         LanBattleMode.rearrange => 'Take turns — and keep moving',
+        LanBattleMode.blitz => 'No turns, and keep moving',
       };
 
   String get blurb => switch (this) {
@@ -356,10 +369,20 @@ extension LanBattleModeX on LanBattleMode {
               'ship that is still undamaged to fresh water — a hull that '
               'has been hit is pinned, and nowhere already fired on is safe '
               'to hide.',
+        LanBattleMode.blitz =>
+          'Everything at once. No turn order, no waiting — both fleets '
+              'fire on their own reload timers, and any hull that has not '
+              'been hit yet can run for fresh water while the shells are '
+              'still in the air.',
       };
 
-  /// True for the modes that alternate turns (everything but chaos).
-  bool get hasTurns => this != LanBattleMode.chaos;
+  /// True for the modes that alternate turns.
+  bool get hasTurns =>
+      this != LanBattleMode.chaos && this != LanBattleMode.blitz;
+
+  /// True for the modes where an undamaged hull can still be moved.
+  bool get canRearrange =>
+      this == LanBattleMode.rearrange || this == LanBattleMode.blitz;
 }
 
 /// Difficulty of the AI captain.

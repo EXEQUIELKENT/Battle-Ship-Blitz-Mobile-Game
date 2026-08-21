@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../art/fleet_family.dart';
 import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
@@ -11,9 +12,41 @@ import '../services/game_controller.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/battle_grid.dart';
+import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ship_painter.dart';
 import 'battle_screen.dart';
+
+/// Which cell a dragged ship's ORIGIN lands on, given where the finger
+/// is in the grid's own coordinates.
+///
+/// Pure, and separated out from the screen, because it is the whole of a
+/// bug that took a while to see: the correction depends on facts about
+/// two different coordinate systems and nothing about widgets.
+///
+/// For Player 1, the pointer IS the origin — `pointerDragAnchorStrategy`
+/// pins the drag ghost's top-left to the finger, and the ghost is drawn
+/// the same way up as the board. For Player 2 the board is inside a 180°
+/// `RotatedBox` but the ghost is not: `Draggable` renders `feedback` into
+/// the root `Overlay`, outside that rotation. So the finger still marks
+/// the ghost's top-left ON SCREEN, and under a half turn a screen
+/// top-left is a board BOTTOM-RIGHT — the ship's far end, not its start.
+///
+/// Because the rotation is exactly 180°, the fix is exact rather than
+/// approximate: subtracting the ship's own extent recovers the origin.
+Offset dropOrigin({
+  required Offset pointerLocal,
+  required bool flipped,
+  required int shipCells,
+  required bool horizontal,
+  required double cell,
+}) {
+  if (!flipped) return pointerLocal;
+  final extent = horizontal
+      ? Offset(cell * shipCells, cell)
+      : Offset(cell, cell * shipCells);
+  return pointerLocal - extent;
+}
 
 /// "Deploy your ships" — reference-style placement:
 /// drag ships from the top dock onto the grid (or tap an empty cell),
@@ -376,6 +409,29 @@ class _PlacementScreenState extends State<PlacementScreen> {
   /// build) the RenderBox isn't available yet, so this falls back to an
   /// estimate from the screen width, which is close enough for that one
   /// frame and self-corrects on the next rebuild.
+  /// [dropOrigin] against this screen's live grid.
+  ///
+  /// BUGFIX (Player 2's flipped board: the drop highlight and the drag
+  /// ghost landed on different cells, off by the ship's own length — so
+  /// the destroyer looked nearly right and the carrier looked broken).
+  /// See [dropOrigin] for why; note in particular that `globalToLocal`
+  /// handles the rotation correctly and was never the problem, which is
+  /// what made this one hard to spot.
+  Offset _dropOrigin(
+    RenderBox gridBox,
+    Offset pointerGlobal,
+    ShipSpec spec,
+    bool horizontal,
+    double cell,
+  ) =>
+      dropOrigin(
+        pointerLocal: gridBox.globalToLocal(pointerGlobal),
+        flipped: widget.isPlayer2,
+        shipCells: spec.size,
+        horizontal: horizontal,
+        cell: cell,
+      );
+
   double _cellSize(BuildContext context) {
     final gridBox = _gridKey.currentContext?.findRenderObject() as RenderBox?;
     if (gridBox != null && gridBox.hasSize) {
@@ -392,7 +448,11 @@ class _PlacementScreenState extends State<PlacementScreen> {
   /// — so it has to be turned right way up for them here, and a centred
   /// panel reads correctly either way up while a sheet would slide in from
   /// what is, from Player 2's seat, the top of the screen.
-  Future<void> _openGear(GameController controller, FleetLook look) async {
+  Future<void> _openGear(
+    GameController controller,
+    FleetLook look, {
+    required bool isLocal,
+  }) async {
     SoundService.instance.click();
     final profile = context.read<ProfileStore>();
     await showDialog<void>(
@@ -402,19 +462,56 @@ class _PlacementScreenState extends State<PlacementScreen> {
         quarterTurns: widget.isPlayer2 ? 2 : 0,
         child: _GearDialog(
           profile: profile,
-          seatLabel: widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1',
+          seatLabel: isLocal
+              ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
+              : 'YOUR',
           isRedSide: look.isRedSide,
-          current: controller.localLoadouts[_seat],
-          onChanged: (lo) => controller.setLocalLoadout(_seat, lo),
+          current: isLocal
+              ? controller.localLoadouts[_seat]
+              : Loadout.of(profile),
+          onChanged: (lo) => isLocal
+              ? controller.setLocalLoadout(_seat, lo)
+              : _equipForNetworkMatch(controller, lo),
         ),
       ),
     );
     if (mounted) setState(() {});
   }
 
+  /// Applies a gear change made on a hotspot/online deployment screen.
+  ///
+  /// Two things have to happen that pass-and-play doesn't need. It is
+  /// written to the PROFILE, because in a network match "your loadout" is
+  /// simply what you have equipped — there is no second seat on this
+  /// device to keep it separate from, and a change made here should still
+  /// be equipped next time you play. And it is announced to the opponent,
+  /// because they are drawing your fleet from the gear you sent in the
+  /// handshake; without this they would keep rendering the hull you
+  /// arrived in for the whole match.
+  void _equipForNetworkMatch(GameController controller, Loadout lo) {
+    final profile = context.read<ProfileStore>();
+    // The dialog only ever offers gear this player already owns, so
+    // these can't spend RP — but they're still the equip path rather
+    // than a direct field write, so ownership stays enforced in one
+    // place.
+    profile.equipShipSkin(Catalog.shipById(lo.shipSkinId));
+    profile.equipCannonSkin(Catalog.cannonById(lo.cannonSkinId));
+    profile.equipGameplayTheme(Catalog.gameplayThemeById(lo.themeId));
+    controller.network.announceLoadout(
+      shipSkinId: lo.shipSkinId,
+      cannonSkinId: lo.cannonSkinId,
+      themeId: lo.themeId,
+      shipChosen: true,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final controller = context.read<GameController>();
+    // WATCHED, not read: picking a battlefield in the GEAR dialog writes
+    // through the controller for pass-and-play, and this screen has to
+    // repaint underneath the still-open dialog for the change to look
+    // live rather than appearing only once the dialog is dismissed.
+    final controller = context.watch<GameController>();
     final isLan = controller.mode == GameMode.hotspot ||
         controller.mode == GameMode.online;
 
@@ -443,13 +540,23 @@ class _PlacementScreenState extends State<PlacementScreen> {
     // fleet they'll see on the battle grid. One shared rule, in
     // `fleet_identity.dart`, so this screen can't drift out of step with
     // the mode vote or the battle grid.
+    // This screen only ever shows the fleet of whoever is sitting in
+    // front of it, so their own choice always applies — including against
+    // the AI, where they should get to see what they bought.
     final look = fleetLook(
       isRedSide: !isBlueFleet,
       equippedShipSkinId: loadout.shipSkinId,
       chosen: loadout.shipChosen,
-      skinsApply: isLan || isLocal,
     );
     final skin = look.skin;
+    // The battlefield this captain is deploying onto. It used to be the
+    // hardcoded steel-blue grid in every mode, so a player who had bought
+    // Cinder Straits laid their fleet out on default water and only saw
+    // what they had equipped once the shooting started — the one screen
+    // where you are looking at your own board for a full minute was also
+    // the one that ignored your choice of board.
+    final theme = loadout.theme;
+    final boardFamily = FleetFamilies.byKey(theme.familyKey);
     final fleetLabel = look.label;
     final playerLabel = isLocal
         ? '${widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1'} — $fleetLabel'
@@ -476,8 +583,15 @@ class _PlacementScreenState extends State<PlacementScreen> {
     }
 
     return Scaffold(
-      body: Container(
-        color: AppColors.coralVideo,
+      // Animated rather than swapped: picking a new battlefield in the
+      // GEAR dialog changes this while the dialog is still open, and a
+      // hard cut behind a modal reads as a glitch. 320ms matches the
+      // grid's own cross-fade below so the deck and the water land
+      // together.
+      body: AnimatedContainer(
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOut,
+        color: theme.deck,
         child: SafeArea(
           // REDESIGN (Player 2 rotated perspective): rather than rotating
           // individual pieces, the ENTIRE placement interface — header,
@@ -523,17 +637,24 @@ class _PlacementScreenState extends State<PlacementScreen> {
                               style: AppText.title(size: 24),
                             ),
                           ),
-                          // Pass-and-play only: this is the one moment
-                          // each of the two players is alone with the
-                          // device, so it's where they pick their own
-                          // gear. In a network match your gear is already
-                          // whatever you equipped in the shipyard, and
-                          // there's only one of you here.
-                          if (isLocal) ...[
+                          // Deployment is the last moment before the guns
+                          // are live, and it's where you can see your
+                          // fleet laid out — so it's the natural place to
+                          // change what you're taking in, whoever you're
+                          // playing. In pass-and-play it writes to this
+                          // seat's own loadout; in a network match it
+                          // re-equips your profile and tells the opponent
+                          // (see `_equipForNetworkMatch`).
+                          if (isLocal || isLan) ...[
                             _GearButton(
                               color: look.color,
-                              onTap: () => _openGear(controller, look),
+                              onTap: () =>
+                                  _openGear(controller, look, isLocal: isLocal),
                             ),
+                            const SizedBox(width: 8),
+                          ],
+                          if (isLan) ...[
+                            const MatchChatButton(size: 36),
                             const SizedBox(width: 8),
                           ],
                           _ExitButton(onTap: () => Navigator.pop(context)),
@@ -579,16 +700,18 @@ class _PlacementScreenState extends State<PlacementScreen> {
                 ),
 
                 // ---------- Dock tray (draggable ship icons) ----------
-                Container(
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 320),
+                  curve: Curves.easeOut,
                   height: _dockH,
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
                     vertical: 6,
                   ),
-                  decoration: const BoxDecoration(
-                    color: AppColors.coralLight,
-                    border: Border(
+                  decoration: BoxDecoration(
+                    color: theme.deckAccent,
+                    border: const Border(
                       bottom: BorderSide(color: AppColors.outline, width: 3),
                     ),
                   ),
@@ -633,8 +756,9 @@ class _PlacementScreenState extends State<PlacementScreen> {
                             _gridKey.currentContext?.findRenderObject()
                                 as RenderBox?;
                         if (gridBox == null) return;
-                        final local = gridBox.globalToLocal(details.offset);
                         final cell = gridBox.size.width / kBoardSize;
+                        final local = _dropOrigin(gridBox, details.offset,
+                            spec, details.data.horizontal, cell);
                         var c = (local.dx / cell).floor();
                         var r = (local.dy / cell).floor();
                         final h = details.data.horizontal;
@@ -665,8 +789,9 @@ class _PlacementScreenState extends State<PlacementScreen> {
                             _gridKey.currentContext?.findRenderObject()
                                 as RenderBox?;
                         if (gridBox == null) return;
-                        final local = gridBox.globalToLocal(details.offset);
                         final cell = gridBox.size.width / kBoardSize;
+                        final local = _dropOrigin(gridBox, details.offset,
+                            spec, details.data.horizontal, cell);
                         var c = (local.dx / cell).floor();
                         var r = (local.dy / cell).floor();
                         final h = details.data.horizontal;
@@ -693,24 +818,42 @@ class _PlacementScreenState extends State<PlacementScreen> {
                       builder: (context, candidates, rejected) {
                         return Container(
                           key: _gridKey,
-                          child: BattleGrid(
-                            shots: List.generate(
-                              kBoardSize,
-                              (_) => List.filled(kBoardSize, 0),
+                          // Cross-faded on the theme id so switching
+                          // battlefield in the GEAR dialog dissolves from
+                          // one board to the next. A family board is real
+                          // artwork rather than a palette, so there is
+                          // nothing to tween between — two boards briefly
+                          // stacked and faded is the only honest way to
+                          // make that change smooth.
+                          //
+                          // The key stays on the Container OUTSIDE this,
+                          // so the drop maths keeps measuring one stable
+                          // box while the switch is in flight.
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 320),
+                            child: BattleGrid(
+                              key: ValueKey(theme.id),
+                              shots: List.generate(
+                                kBoardSize,
+                                (_) => List.filled(kBoardSize, 0),
+                              ),
+                              ships: _board.ships,
+                              skin: skin,
+                              cellColor: theme.grid,
+                              glowColor: theme.accent,
+                              gridLineColor: theme.gridLine,
+                              boardFamily: boardFamily,
+                              previewShip: _previewShip,
+                              previewValid: _previewValid,
+                              // Locked while a random shuffle is dealing
+                              // ships out (`_randomizing`) so a tap/drag
+                              // can't land mid-animation and fight the
+                              // in-flight reshuffle.
+                              onTapCell: _randomizing ? null : _onGridTap,
+                              onShipTap: _randomizing ? null : _rotateShip,
+                              onShipDragEnd: _randomizing ? null : _moveShip,
+                              onShipDragUpdate: _onShipDragPreview,
                             ),
-                            ships: _board.ships,
-                            skin: skin,
-                            cellColor: AppColors.steelBlue,
-                            glowColor: AppColors.steelBlueDark,
-                            previewShip: _previewShip,
-                            previewValid: _previewValid,
-                            // Locked while a random shuffle is dealing ships
-                            // out (`_randomizing`) so a tap/drag can't land
-                            // mid-animation and fight the in-flight reshuffle.
-                            onTapCell: _randomizing ? null : _onGridTap,
-                            onShipTap: _randomizing ? null : _rotateShip,
-                            onShipDragEnd: _randomizing ? null : _moveShip,
-                            onShipDragUpdate: _onShipDragPreview,
                           ),
                         );
                       },
@@ -728,7 +871,17 @@ class _PlacementScreenState extends State<PlacementScreen> {
                         ? 'FLEET READY — HIT SAVE TO ENTER BATTLE!'
                         : 'TAP A SHIP ABOVE, OR RANDOM TO AUTO-DEPLOY',
                     textAlign: TextAlign.center,
-                    style: AppText.label(size: 11, color: AppColors.navy),
+                    // Ink from the deck's own luminance now that the deck
+                    // is the equipped battlefield's and can be anything
+                    // from Cinder Straits' near-black to Rime Field's
+                    // near-white. A fixed navy hint vanished on the dark
+                    // ones.
+                    style: AppText.label(
+                      size: 11,
+                      color: theme.deck.computeLuminance() > 0.5
+                          ? AppColors.navy
+                          : AppColors.cream,
+                    ),
                   ),
                 ),
               ],
@@ -1025,11 +1178,11 @@ class _GearDialogState extends State<_GearDialog> {
   @override
   Widget build(BuildContext context) {
     final ships =
-        Catalog.shipSkins.where((s) => widget.profile.owns(s.id)).toList();
+        Catalog.shipSkins.where((s) => widget.profile.ownsShip(s.id)).toList();
     final cannons =
-        Catalog.cannonSkins.where((c) => widget.profile.owns(c.id)).toList();
+        Catalog.cannonSkins.where((c) => widget.profile.ownsCannon(c.id)).toList();
     final themes =
-        Catalog.gameplayThemes.where((t) => widget.profile.owns(t.id)).toList();
+        Catalog.gameplayThemes.where((t) => widget.profile.ownsTheme(t.id)).toList();
     final sideSkin = widget.isRedSide ? kRedFleetSkin : kBlueFleetSkin;
 
     return Dialog(

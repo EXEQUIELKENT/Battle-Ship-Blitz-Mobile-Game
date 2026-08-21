@@ -490,6 +490,14 @@ class NetworkService extends ChangeNotifier {
     return b;
   }
 
+  /// Feeds a message in as if it had arrived from the opponent.
+  ///
+  /// Exists so the rules applied to INCOMING data — which is the one
+  /// thing here that comes from another device and so cannot be trusted —
+  /// can be tested without standing up a socket.
+  @visibleForTesting
+  void handleIncomingForTest(Map<String, dynamic> msg) => _handleIncoming(msg);
+
   void _handleIncoming(Map<String, dynamic> msg) {
     if (msg['type'] == 'hello') {
       peerName = (msg['name'] as String?) ?? 'Opponent';
@@ -531,6 +539,19 @@ class NetworkService extends ChangeNotifier {
       inMatch = true;
       joiningResumable = false;
       notifyListeners();
+    }
+    if (msg['type'] == 'chat') {
+      // Length is enforced again on arrival, not just at the sender: a
+      // peer is not something to take on trust about how long a line is.
+      final raw = (msg['m'] as String?)?.trim() ?? '';
+      if (raw.isNotEmpty) {
+        _appendChat(ChatLine(
+          mine: false,
+          text: raw.length > kChatMaxChars
+              ? raw.substring(0, kChatMaxChars)
+              : raw,
+        ));
+      }
     }
     if (msg['type'] == 'rematch') {
       peerRematch = true;
@@ -828,6 +849,85 @@ class NetworkService extends ChangeNotifier {
     _selfThemeId = themeId;
   }
 
+  /// Re-announces this device's gear to an already-connected opponent.
+  ///
+  /// The loadout normally rides along with the greeting, which is fine
+  /// while it is fixed before the match. It stopped being fixed when the
+  /// deployment screen grew a GEAR button: change your hull there and the
+  /// opponent would still be drawing the fleet you arrived in. Reusing
+  /// the `hello` shape rather than inventing a second message means the
+  /// receiving side already knows how to apply it — this is the same
+  /// announcement, made again.
+  void announceLoadout({
+    required String shipSkinId,
+    required String cannonSkinId,
+    required String themeId,
+    bool shipChosen = false,
+  }) {
+    setSelfLoadout(
+      shipSkinId: shipSkinId,
+      cannonSkinId: cannonSkinId,
+      themeId: themeId,
+      shipChosen: shipChosen,
+    );
+    _link?.send(_helloPayload());
+  }
+
+  // -------------------------------------------------- MATCH CHAT ---
+
+  /// Longest message accepted, in characters. Trimmed at the sender so a
+  /// peer can never push an unbounded string into our list.
+  static const int kChatMaxChars = 160;
+
+  /// How many lines are kept. A match generates a handful; the cap is
+  /// only here so a very long session can't grow this without limit.
+  static const int kChatMaxLines = 120;
+
+  /// The whole match's conversation, oldest first.
+  ///
+  /// ONE list for the entire match, deliberately: the vote screen, the
+  /// deployment screen, the battle and the result screen are four routes,
+  /// but they are one conversation. Anything scoped to a screen would
+  /// throw away what was said the moment the match moved on — and a
+  /// message sent while your opponent is still deploying would arrive to
+  /// nobody.
+  ///
+  /// Held as a plain field rather than pushed through [messages] for the
+  /// same reason the votes are: that stream is a broadcast, so a line
+  /// sent while the other end is mid-route-change would be dropped
+  /// permanently. A list the next screen can simply read on its first
+  /// frame has no such window.
+  final List<ChatLine> chat = [];
+
+  /// Lines that have arrived since the player last had the chat open —
+  /// what the badge on the closed chat button counts.
+  int unreadChat = 0;
+
+  void sendChat(String text) {
+    final clean = text.trim();
+    if (clean.isEmpty) return;
+    final capped = clean.length > kChatMaxChars
+        ? clean.substring(0, kChatMaxChars)
+        : clean;
+    _appendChat(ChatLine(mine: true, text: capped));
+    _link?.send({'type': 'chat', 'm': capped});
+  }
+
+  void markChatRead() {
+    if (unreadChat == 0) return;
+    unreadChat = 0;
+    notifyListeners();
+  }
+
+  void _appendChat(ChatLine line) {
+    chat.add(line);
+    if (chat.length > kChatMaxLines) {
+      chat.removeRange(0, chat.length - kChatMaxLines);
+    }
+    if (!line.mine) unreadChat++;
+    notifyListeners();
+  }
+
   void sendFire(int r, int c) => _link?.send({'type': 'fire', 'r': r, 'c': c});
 
   void sendBoard(Board board) => _link?.send({'type': 'board', 'b': board.toJson()});
@@ -917,7 +1017,23 @@ class NetworkService extends ChangeNotifier {
     peerCannonSkinId = 'mk1';
     peerThemeId = 'classic';
     _peerBoardMsg = null; // never carry a fleet into the next match
+    chat.clear(); // nor a conversation with someone you are no longer playing
+    unreadChat = 0;
     mode = NetMode.none;
     notifyListeners();
   }
+}
+
+/// One line of match chat.
+class ChatLine {
+  /// True when this device sent it. The peer's display name is read live
+  /// from `NetworkService.peerName` rather than stamped on each line, so
+  /// a name that arrives late (or changes on a reconnect) doesn't leave
+  /// half the conversation labelled wrongly.
+  final bool mine;
+  final String text;
+  final DateTime at;
+
+  ChatLine({required this.mine, required this.text, DateTime? at})
+      : at = at ?? DateTime.now();
 }

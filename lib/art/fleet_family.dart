@@ -15,6 +15,48 @@ import 'package:flutter/material.dart';
 /// the LAN protocol changing at all.
 enum FleetFamilyId { pirate, naval, steam, arctic, volcanic, scifi }
 
+/// The cannon art's shared design box (`viewBox="-40 -108 220 216"`).
+///
+/// Lives here rather than in `family_cannon_art.dart` because the
+/// geometry tokens below are expressed in these units and the art file
+/// imports this one, not the other way round.
+const double kGunBoxW = 220;
+const double kGunBoxH = 216;
+const double kGunBoxLeft = -40;
+const double kGunBoxTop = -108;
+
+/// What a family's gun throws out when it fires.
+///
+/// Straight from the design's firing storyboard, whose whole point is
+/// that the *timing* never changes — the shot resolves on the same frame
+/// and the shell leaves the muzzle at t=90 ms for all six — while the
+/// shape of the exhaust does. So this picks a silhouette for the smoke,
+/// never a duration.
+enum MuzzleExhaust {
+  /// Grey powder cloud that drifts up and away and hangs. Blackpowder:
+  /// "nothing glows — the carriage takes the whole shot".
+  smoke,
+
+  /// Two short, sharp sideways vents from a muzzle brake, gone almost at
+  /// once. Iron Pact.
+  brake,
+
+  /// Two long jets thrown sideways rather than upward, from the bypass
+  /// pipe. Brass Consortium.
+  steam,
+
+  /// Vapour that sinks instead of rising, shedding ice motes. Rime
+  /// Wardens.
+  frost,
+
+  /// Dark ash cloud with hot motes climbing out of it. Cinder Hold.
+  embers,
+
+  /// No smoke at all: an expanding ring that bleeds off. Helios Drift —
+  /// "recoil is a ring, not a kick".
+  ring,
+}
+
 /// Colours a family's ships are drawn from.
 class ShipPalette {
   final Color hull, trim, deck, sail, ink, glow;
@@ -115,12 +157,99 @@ class FleetFamily {
   final ShellPalette shell;
   final BoardPalette board;
 
-  /// Geometry tokens — the design's own table. [muzzleFrac] is the one
-  /// the battle screen reads to spawn the cannonball, so a long-barrelled
-  /// gun genuinely fires from further out than a stubby mortar.
+  /// The design's own token table, kept verbatim for reference. These are
+  /// relative *intent* ("this gun is long, that one is stubby") rather
+  /// than measurements — see [muzzleY] for the value the game actually
+  /// fires from.
   final double barrelFrac;
-  final double muzzleFrac;
   final double shellRadius;
+
+  /// Where this gun's bore actually ends, in the cannon art's own design
+  /// units (negative = above the mount, since the barrel points up).
+  ///
+  /// Read straight off the drawing rather than taken from the design's
+  /// token table. The tokens are proportions of an idealised gun and land
+  /// as much as 60% away from where the artwork's muzzle really is — far
+  /// enough that a naval autoloader's shell was being born above the top
+  /// edge of its own widget. Measuring the art means the shell leaves the
+  /// hole it visibly comes out of, for every family, by construction.
+  final double muzzleY;
+
+  /// The mount ring the reload sweep rides, in the same design units.
+  /// Every family draws its own platform at its own size and height, so
+  /// the sweep has to follow the art rather than assume a fixed circle.
+  final double mountCy;
+  final double mountROuter;
+  final double mountRInner;
+
+  /// What this gun throws out when it fires — the design's firing
+  /// storyboard gives each family its own exhaust beat over the same
+  /// fixed 260 ms.
+  final MuzzleExhaust exhaust;
+
+  /// Body colour of that exhaust (the glow colour handles the hot parts).
+  final Color exhaustColor;
+
+  /// How much the gun art is shrunk about its own mount centre, to leave
+  /// a ring of reload platform showing around its base.
+  ///
+  /// The standard cannon has always been a barrel standing on a disc,
+  /// with the cooldown sweep running round that disc — the reload reads
+  /// as something the mounting does, not as a hoop painted across the
+  /// gun. Drawing the family sweep on each family's own drawn mount put
+  /// it *on the cannon itself*, which is a different (and worse) thing:
+  /// on a wide mount like the Magma Bombard's rock collar the arc cut
+  /// straight across the body.
+  ///
+  /// So the platform is drawn behind, a little wider than the family's
+  /// own mount, and the art is inset by this much so the difference
+  /// shows. Chosen so the widest platform (Cinder Hold's) still fits
+  /// inside the widget.
+  static const double gunInset = 0.82;
+
+  /// Distance from a square cannon widget's centre to the muzzle, as a
+  /// fraction of its width — the single value `battle_screen` reads to
+  /// spawn a shell.
+  ///
+  /// Derived from [muzzleY], and it has to account for [gunInset]: the
+  /// drawing is shrunk about its mount, so the muzzle really does move
+  /// closer to the mount and the shell has to be born at the new
+  /// position, not the authored one.
+  double get muzzleFrac => 0.5 - gunY(1, muzzleY);
+
+  /// Maps a design-space y to a square cannon widget of width [side].
+  ///
+  /// `FamilyCanvas.fit` letterboxes the 220×216 box into the square on
+  /// its width, so one design unit is `side / 220` and the vertical
+  /// centring works out such that design `y = 0` lands exactly on the
+  /// widget's centre. [gunInset] is applied about the mount centre, which
+  /// is therefore the one point that does not move.
+  ///
+  /// Everything the widget places on top of the art — reload sweep,
+  /// muzzle flash, exhaust — goes through here, so the chrome can never
+  /// drift away from the drawing it belongs to.
+  double gunY(double side, double designY) {
+    final y = mountCy + (designY - mountCy) * gunInset;
+    return side * 0.5 + side * y / kGunBoxW;
+  }
+
+  /// Same mapping for a length rather than a position. Not inset: lengths
+  /// passed here are platform geometry, which is what the art is inset
+  /// *against*.
+  double gunLen(double side, double designLen) => side * designLen / kGunBoxW;
+
+  /// Outer radius of the reload platform behind the gun. A little wider
+  /// than the family's own mount so a ring of it is always visible.
+  double platformRadius(double side) => gunLen(side, mountROuter * 1.06);
+
+  /// Radius the reload sweep rides at — the middle of the visible ring,
+  /// between the inset mount's edge and the platform's rim.
+  double sweepRadius(double side) =>
+      gunLen(side, mountROuter * (gunInset + 1.06) / 2);
+
+  /// Thickness of that sweep: the width of the visible ring.
+  double sweepWidth(double side) =>
+      gunLen(side, mountROuter * (1.06 - gunInset) * 0.9);
 
   /// Prices, in RP.
   final int hullCost;
@@ -143,8 +272,13 @@ class FleetFamily {
     required this.shell,
     required this.board,
     required this.barrelFrac,
-    required this.muzzleFrac,
     required this.shellRadius,
+    required this.muzzleY,
+    required this.mountCy,
+    required this.mountROuter,
+    required this.mountRInner,
+    required this.exhaust,
+    required this.exhaustColor,
     required this.hullCost,
     required this.cannonCost,
     required this.boardCost,
@@ -209,8 +343,13 @@ class FleetFamilies {
       miss: Color(0xFFBEE3D8),
     ),
     barrelFrac: 0.48,
-    muzzleFrac: 0.44,
     shellRadius: 0.42,
+    muzzleY: -86,
+    mountCy: 34,
+    mountROuter: 62,
+    mountRInner: 46,
+    exhaust: MuzzleExhaust.smoke,
+    exhaustColor: Color(0xFFC8C8C3),
     hullCost: 650,
     cannonCost: 600,
     boardCost: 800,
@@ -261,8 +400,13 @@ class FleetFamilies {
       miss: Color(0xFF9FB6C4),
     ),
     barrelFrac: 0.78,
-    muzzleFrac: 0.72,
     shellRadius: 0.34,
+    muzzleY: -99,
+    mountCy: 40,
+    mountROuter: 60,
+    mountRInner: 40,
+    exhaust: MuzzleExhaust.brake,
+    exhaustColor: Color(0xFFB9C4CC),
     hullCost: 800,
     cannonCost: 700,
     boardCost: 950,
@@ -306,15 +450,23 @@ class FleetFamilies {
     ),
     board: BoardPalette(
       deck: Color(0xFF4A3927),
-      field: Color(0xFF4E6474),
-      line: Color(0xFF8FA6B4),
+      // Bronze under-plate and brass seams. Steel-blue values here used
+      // to make Brass Works and Fleet Command nearly the same board —
+      // see `_steamField`.
+      field: Color(0xFF57432E),
+      line: Color(0xFFB89056),
       lineWidth: 2,
       accent: Color(0xFFC99A3F),
       miss: Color(0xFFC99A3F),
     ),
     barrelFrac: 0.66,
-    muzzleFrac: 0.62,
     shellRadius: 0.46,
+    muzzleY: -98,
+    mountCy: 36,
+    mountROuter: 58,
+    mountRInner: 42,
+    exhaust: MuzzleExhaust.steam,
+    exhaustColor: Color(0xFFE2E2DC),
     hullCost: 1200,
     cannonCost: 900,
     boardCost: 1150,
@@ -365,8 +517,13 @@ class FleetFamilies {
       miss: Color(0xFFEAFBFF),
     ),
     barrelFrac: 0.50,
-    muzzleFrac: 0.46,
     shellRadius: 0.44,
+    muzzleY: -64,
+    mountCy: 42,
+    mountROuter: 58,
+    mountRInner: 41,
+    exhaust: MuzzleExhaust.frost,
+    exhaustColor: Color(0xFFE8F6FC),
     hullCost: 900,
     cannonCost: 1000,
     boardCost: 1100,
@@ -416,8 +573,13 @@ class FleetFamilies {
       miss: Color(0xFF8A8079),
     ),
     barrelFrac: 0.54,
-    muzzleFrac: 0.50,
     shellRadius: 0.48,
+    muzzleY: -80,
+    mountCy: 40,
+    mountROuter: 62,
+    mountRInner: 44,
+    exhaust: MuzzleExhaust.embers,
+    exhaustColor: Color(0xFF6E625E),
     hullCost: 1600,
     cannonCost: 1400,
     boardCost: 1600,
@@ -468,8 +630,13 @@ class FleetFamilies {
       miss: Color(0xFF6FE7FF),
     ),
     barrelFrac: 0.72,
-    muzzleFrac: 0.68,
     shellRadius: 0.40,
+    muzzleY: -94,
+    mountCy: 44,
+    mountROuter: 58,
+    mountRInner: 40,
+    exhaust: MuzzleExhaust.ring,
+    exhaustColor: Color(0xFF6FE7FF),
     hullCost: 2800,
     cannonCost: 2600,
     boardCost: 2200,

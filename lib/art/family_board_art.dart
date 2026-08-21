@@ -118,7 +118,15 @@ void _navalField(FamilyCanvas c, FleetFamily f) {
 void _steamField(FamilyCanvas c, FleetFamily f) {
   c.rect(0, 0, 400, 400, fillColor: f.board.field);
   // Riveted quarter-plates with visible seams.
-  const plate = Color(0xFF465B69);
+  //
+  // Brass, not steel. These were originally a blue-grey plate, which put
+  // Brass Works and Fleet Command within a few points of each other —
+  // near-identical at store-card size and hard to tell apart even at full
+  // board size. Two of six battlefields reading as the same battlefield
+  // is precisely the failure the "structural, not chromatic" rule exists
+  // to catch, and here it was the colour doing the damage rather than the
+  // structure: the plates, seams and bolt grid were always right.
+  const plate = Color(0xFF6E5638);
   c.rect(0, 0, 200, 200, fillColor: plate);
   c.rect(200, 200, 200, 200, fillColor: plate);
   _gridlines(c, f, opacity: 0.5);
@@ -126,7 +134,7 @@ void _steamField(FamilyCanvas c, FleetFamily f) {
   for (var r = 1; r < 6; r++) {
     for (var col = 1; col < 6; col++) {
       c.circle(col * 80, r * 80, 3.4,
-          fillColor: const Color(0xFF2E3B45), fillOpacity: 0.75);
+          fillColor: const Color(0xFF2E2317), fillOpacity: 0.8);
     }
   }
 }

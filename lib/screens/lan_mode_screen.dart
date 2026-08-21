@@ -10,6 +10,7 @@ import '../services/game_controller.dart';
 import '../services/network_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/match_chat.dart';
 import '../widgets/ocean_background.dart';
 import 'placement_screen.dart';
 
@@ -128,6 +129,7 @@ class _LanModeScreenState extends State<LanModeScreen> {
         LanBattleMode.chaos => Icons.whatshot,
         LanBattleMode.turns => Icons.swap_vert_circle,
         LanBattleMode.rearrange => Icons.open_with,
+        LanBattleMode.blitz => Icons.bolt,
       };
 
   @override
@@ -169,6 +171,11 @@ class _LanModeScreenState extends State<LanModeScreen> {
                             child: Text('CHOOSE BATTLE MODE',
                                 style: AppText.title(size: 18)),
                           ),
+                          // In the header rather than floating over the
+                          // cards: a split vote is resolved by talking,
+                          // so the chat has to be reachable without
+                          // covering the very thing you're discussing.
+                          const MatchChatButton(size: 36),
                         ],
                       ),
                       const SizedBox(height: 6),
@@ -208,9 +215,12 @@ class _LanModeScreenState extends State<LanModeScreen> {
                         style: AppText.label(size: 10, color: AppColors.cream),
                       ),
                       const SizedBox(height: 14),
+                      // Four modes now, so this scrolls — which it
+                      // already did, since a phone was never going to fit
+                      // three cards of this weight either.
                       for (final mode in LanBattleMode.values) ...[
                         _modeCard(net, mode, myName),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 12),
                       ],
                     ],
                   ),

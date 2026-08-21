@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../art/family_cannon_art.dart';
+import '../art/fleet_family.dart';
 import '../core/theme.dart';
 import '../services/storage_service.dart';
 
@@ -45,6 +47,19 @@ class CannonWidget extends StatefulWidget {
   /// the old, much shorter value would otherwise leave the ball visibly
   /// detached from the new, longer barrel's actual tip.
   static const double muzzleFraction = 0.62;
+
+  /// Where THIS gun's muzzle sits, as a fraction of [size].
+  ///
+  /// The original nine cannons are one drawing in nine colourways, so
+  /// they all share [muzzleFraction]. The thematic families are six
+  /// genuinely different guns with six different barrel lengths, each
+  /// measured off its own artwork (see `FleetFamily.muzzleY`). Since this
+  /// is the single value `battle_screen`'s `_cannonMouth` uses to spawn
+  /// the shell, honouring it is what makes a long gun actually throw from
+  /// further out instead of the ball popping out of the middle of the
+  /// barrel — or, for the longest gun, out of thin air above it.
+  static double muzzleFractionOf(CannonSkin skin) =>
+      FleetFamilies.byKey(skin.familyKey)?.muzzleFrac ?? muzzleFraction;
 
   @override
   State<CannonWidget> createState() => _CannonWidgetState();
@@ -182,6 +197,7 @@ class _CannonWidgetState extends State<CannonWidget>
                 accent: ready
                     ? (widget.accentOverride ?? widget.skin.projectile)
                     : AppColors.inkSoft,
+                family: FleetFamilies.byKey(widget.skin.familyKey),
                 cooldown: widget.cooldownFraction,
                 recoil: _recoil.value,
                 ready: ready,
@@ -237,8 +253,13 @@ class CannonPainter extends CustomPainter {
   /// the static painter reused by the transition overlay).
   final List<_SmokePuff> smokePuffs;
 
+  /// Set when a thematic family is equipped, in which case that family's
+  /// gun is drawn instead of the standard one.
+  final FleetFamily? family;
+
   CannonPainter({
     required this.accent,
+    this.family,
     this.cooldown = 1,
     this.recoil = 0,
     this.ready = true,
@@ -250,6 +271,17 @@ class CannonPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final outerR = size.width * 0.48;
+
+    // A family gun is its own silhouette end to end — mount, barrel and
+    // muzzle — so it replaces the drawing rather than recolouring it.
+    // The behaviour around it is untouched: same recoil pull, same
+    // cooldown ring, same muzzle smoke, so a shot still reads and times
+    // identically whichever gun is bolted on.
+    final fam = family;
+    if (fam != null) {
+      _paintFamily(canvas, size, fam, center, outerR);
+      return;
+    }
 
     // Soft ground shadow ellipse
     canvas.drawOval(
@@ -501,6 +533,297 @@ class CannonPainter extends CustomPainter {
     }
   }
 
+  /// Draws a thematic family's gun.
+  ///
+  /// The art itself comes from `family_cannon_art.dart` verbatim; what
+  /// happens here is everything AROUND it that has to keep behaving the
+  /// same regardless of which gun is equipped:
+  ///
+  ///  * the barrel is pulled back into the mount on recoil, by the same
+  ///    proportion of its own (family-specific) barrel length;
+  ///  * the reload sweep rides that family's OWN platform — every one of
+  ///    them draws a mount at its own height and radius, so a sweep on a
+  ///    fixed circle sat off the artwork entirely;
+  ///  * the exhaust spawns at the real muzzle, read off the drawing.
+  void _paintFamily(
+    Canvas canvas,
+    Size size,
+    FleetFamily fam,
+    Offset center,
+    double outerR,
+  ) {
+    final side = size.width;
+    final barrelLen = side * fam.muzzleFrac;
+    final recoilPull = barrelLen * 0.16 * recoil;
+
+    // ----- Reload platform -----
+    // The standard cannon is a barrel standing on a disc, with the
+    // cooldown running round that disc: the reload reads as something
+    // the MOUNTING does. Every family now gets the same thing rather
+    // than an arc drawn over its own artwork — on a wide mount like the
+    // Magma Bombard's rock collar, a sweep on the drawing cut straight
+    // across the gun's body.
+    //
+    // Drawn before the art so the gun genuinely stands on it, in the
+    // family's own colours so it belongs to that gun rather than
+    // looking bolted on from the standard one.
+    final mountCenter =
+        Offset(side / 2, fam.gunY(side, fam.mountCy) + recoilPull);
+    final platformR = fam.platformRadius(side);
+
+    // Ground shadow, under the platform rather than under the gun — the
+    // art's own shadow is switched off below so there is only ever one.
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: mountCenter + Offset(0, platformR * 0.30),
+        width: platformR * 2.3,
+        height: platformR * 0.85,
+      ),
+      Paint()..color = Colors.black.withValues(alpha: 0.20),
+    );
+
+    // Rim, then the plate itself — the same two-tone build as the
+    // standard mount, in this family's metal.
+    canvas.drawCircle(mountCenter, platformR, Paint()..color = fam.gun.ink);
+    canvas.drawCircle(
+      mountCenter,
+      platformR * 0.93,
+      Paint()
+        ..shader = uiGradient(mountCenter, platformR * 0.93, [
+          Color.lerp(fam.gun.hull, Colors.white, 0.20)!,
+          fam.gun.hull,
+          Color.lerp(fam.gun.hull, Colors.black, 0.30)!,
+        ]),
+    );
+
+    final sweepR = fam.sweepRadius(side);
+    final trackW = fam.sweepWidth(side);
+
+    // Unlit track first, so the charged arc reads against the plate even
+    // on the pale families — Rime's ice-blue glow on an ice-blue mount
+    // would otherwise be invisible — and so the ink shows either side of
+    // the sweep like a groove it runs in.
+    canvas.drawCircle(
+      mountCenter,
+      sweepR,
+      Paint()
+        ..color = fam.gun.ink.withValues(alpha: 0.5)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = trackW,
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: mountCenter, radius: sweepR),
+      -math.pi / 2,
+      2 * math.pi * cooldown,
+      false,
+      Paint()
+        // Charging runs the family's trim up to its glow, so the
+        // platform brightens as the gun comes back online instead of
+        // just filling in.
+        ..color = Color.lerp(fam.gun.trim, fam.gun.glow, cooldown)!
+            .withValues(alpha: ready ? 0.95 : 0.72)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = trackW * 0.72
+        ..strokeCap = StrokeCap.round,
+    );
+
+    canvas.save();
+    // The whole gun kicks back, exactly as the standard barrel does.
+    canvas.translate(0, recoilPull);
+    // Shrunk about the mount centre so the platform shows as a ring
+    // around the base. `FleetFamily.gunY` applies the same inset, which
+    // is what keeps the muzzle flash, the exhaust and the shell's spawn
+    // point on the gun as it is actually drawn.
+    canvas.translate(mountCenter.dx, mountCenter.dy - recoilPull);
+    canvas.scale(FleetFamily.gunInset);
+    canvas.translate(-mountCenter.dx, -(mountCenter.dy - recoilPull));
+    paintFamilyCannon(canvas, size, fam, shadow: false);
+    canvas.restore();
+
+    final mouthCenter =
+        Offset(side / 2, fam.gunY(side, fam.muzzleY) + recoilPull);
+
+    // Muzzle flash, tinted with the family's own accent — a magma
+    // bombard should not flash the same white as an ion lance.
+    if (recoil > 0.02) {
+      canvas.drawCircle(
+        mouthCenter,
+        outerR * 0.42 * recoil,
+        Paint()..color = fam.gun.glow.withValues(alpha: 0.75 * recoil),
+      );
+      canvas.drawCircle(
+        mouthCenter,
+        outerR * 0.20 * recoil,
+        Paint()..color = Colors.white.withValues(alpha: 0.85 * recoil),
+      );
+    }
+
+    if (smoke > 0.01 && smokePuffs.isNotEmpty) {
+      _paintExhaust(canvas, fam, mouthCenter, outerR);
+    }
+  }
+
+  /// The design's firing storyboard, past the flash.
+  ///
+  /// "Same 260 ms. Different beat." — the timing is fixed for every
+  /// family and lives in `_CannonWidgetState`; what varies is the shape
+  /// of what comes out. Blackpowder hangs a grey cloud up and to the
+  /// left; Brass throws two jets sideways rather than upward; Helios
+  /// never makes smoke at all and bleeds off a ring instead. All six run
+  /// off the same `smoke` 0→1 and the same fixed puff spread, so nothing
+  /// here can change how long a shot takes.
+  void _paintExhaust(
+    Canvas canvas,
+    FleetFamily fam,
+    Offset mouth,
+    double outerR,
+  ) {
+    /// Where this puff is in its own life, 0→1, after its stagger.
+    double lifeOf(_SmokePuff puff) {
+      final span = (1 - puff.delay).clamp(0.0001, 1.0);
+      return ((smoke - puff.delay) / span).clamp(0.0, 1.0);
+    }
+
+    switch (fam.exhaust) {
+      // Powder smoke: billows out, climbs, and drifts to one side as it
+      // goes — the design's "grey cloud drifts up and left".
+      case MuzzleExhaust.smoke:
+        for (final puff in smokePuffs) {
+          final t = lifeOf(puff);
+          if (t <= 0) continue;
+          final centre = mouth +
+              Offset(
+                (puff.dx - 0.55) * outerR * t,
+                -puff.rise * outerR * t,
+              );
+          canvas.drawCircle(
+            centre,
+            outerR * (0.22 + t * 0.34) * puff.sizeMul,
+            Paint()
+              ..color = fam.exhaustColor.withValues(alpha: (1 - t) * 0.42),
+          );
+        }
+        break;
+
+      // Muzzle brake: the gas is vented hard sideways and it is over
+      // almost at once. Short, flat, and gone by a third of the way in.
+      case MuzzleExhaust.brake:
+        final t = (smoke / 0.34).clamp(0.0, 1.0);
+        if (t >= 1) break;
+        for (final dir in const [-1.0, 1.0]) {
+          for (var i = 0; i < 3; i++) {
+            final spread = (i + 1) / 3;
+            canvas.drawCircle(
+              mouth + Offset(dir * outerR * 0.5 * spread * t, outerR * 0.05 * i),
+              outerR * 0.13 * (1 - spread * 0.4),
+              Paint()
+                ..color = fam.exhaustColor.withValues(alpha: (1 - t) * 0.5),
+            );
+          }
+        }
+        break;
+
+      // Two long steam jets thrown sideways rather than upward, from the
+      // bypass pipe — the beat the design calls out for Brass.
+      case MuzzleExhaust.steam:
+        for (final dir in const [-1.0, 1.0]) {
+          for (final puff in smokePuffs) {
+            final t = lifeOf(puff);
+            if (t <= 0) continue;
+            // Reach sideways fast, rise only slightly: a jet, not a cloud.
+            final centre = mouth +
+                Offset(
+                  dir * outerR * (0.25 + 1.25 * t) * puff.sizeMul,
+                  -outerR * 0.18 * t * puff.rise + puff.dx * outerR * 0.12,
+                );
+            canvas.drawCircle(
+              centre,
+              outerR * (0.13 + t * 0.16) * puff.sizeMul,
+              Paint()
+                ..color = fam.exhaustColor.withValues(alpha: (1 - t) * 0.5),
+            );
+          }
+        }
+        break;
+
+      // Vapour off a cold barrel sinks instead of rising, and sheds a few
+      // ice motes on the way down.
+      case MuzzleExhaust.frost:
+        for (final puff in smokePuffs) {
+          final t = lifeOf(puff);
+          if (t <= 0) continue;
+          final centre = mouth +
+              Offset(
+                puff.dx * outerR * 0.9 * t,
+                outerR * 0.55 * t * puff.rise,
+              );
+          canvas.drawCircle(
+            centre,
+            outerR * (0.18 + t * 0.26) * puff.sizeMul,
+            Paint()
+              ..color = fam.exhaustColor.withValues(alpha: (1 - t) * 0.45),
+          );
+          canvas.drawCircle(
+            centre + Offset(puff.dx * outerR * 0.4, -outerR * 0.1),
+            outerR * 0.045 * (1 - t),
+            Paint()..color = fam.gun.glow.withValues(alpha: (1 - t) * 0.9),
+          );
+        }
+        break;
+
+      // Ash cloud, dark and slow, with hot motes climbing out of it
+      // faster than the ash itself.
+      case MuzzleExhaust.embers:
+        for (final puff in smokePuffs) {
+          final t = lifeOf(puff);
+          if (t <= 0) continue;
+          final centre = mouth +
+              Offset(puff.dx * outerR * 0.7 * t, -outerR * 0.5 * t * puff.rise);
+          canvas.drawCircle(
+            centre,
+            outerR * (0.22 + t * 0.32) * puff.sizeMul,
+            Paint()
+              ..color = fam.exhaustColor.withValues(alpha: (1 - t) * 0.5),
+          );
+          // The mote rides the same puff but outruns it, so the cloud
+          // keeps throwing sparks upward as it thins.
+          canvas.drawCircle(
+            mouth +
+                Offset(
+                  puff.dx * outerR * 1.1 * t,
+                  -outerR * 1.05 * t * puff.rise,
+                ),
+            outerR * 0.06 * (1 - t) * puff.sizeMul,
+            Paint()..color = fam.gun.glow.withValues(alpha: 1 - t),
+          );
+        }
+        break;
+
+      // No smoke at all. An energy weapon bleeds its charge off as an
+      // expanding ring that fades — the design is explicit that "recoil
+      // is a ring, not a kick".
+      case MuzzleExhaust.ring:
+        final r = outerR * (0.18 + smoke * 1.15);
+        canvas.drawCircle(
+          mouth,
+          r,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = outerR * 0.12 * (1 - smoke)
+            ..color = fam.exhaustColor.withValues(alpha: (1 - smoke) * 0.75),
+        );
+        canvas.drawCircle(
+          mouth,
+          r * 0.62,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = outerR * 0.07 * (1 - smoke)
+            ..color = Colors.white.withValues(alpha: (1 - smoke) * 0.45),
+        );
+        break;
+    }
+  }
+
   static Shader uiGradient(Offset center, double r, List<Color> colors) {
     return RadialGradient(
       colors: colors,
@@ -515,5 +838,6 @@ class CannonPainter extends CustomPainter {
       oldDelegate.cooldown != cooldown ||
       oldDelegate.recoil != recoil ||
       oldDelegate.ready != ready ||
+      oldDelegate.family != family ||
       oldDelegate.smoke != smoke;
 }

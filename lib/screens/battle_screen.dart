@@ -4,6 +4,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../art/family_shell_art.dart';
+import '../art/fleet_family.dart';
 import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
@@ -13,6 +15,7 @@ import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
+import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ship_painter.dart';
 import 'result_screen.dart';
@@ -67,6 +70,11 @@ class _BattleScreenState extends State<BattleScreen>
   /// same shot outcomes (see `_maybePassTurn`), which is what keeps them
   /// agreeing without a dedicated turn message.
   bool _p2Active = false;
+
+  /// Whether the middle band's chat tab has been swiped open. Held here
+  /// rather than inside the tab so the fleet strips can make room for it
+  /// instead of being covered by it.
+  bool _chatRevealed = false;
 
   bool _navigatedToResult = false;
 
@@ -224,8 +232,11 @@ class _BattleScreenState extends State<BattleScreen>
 
     _lan = controller.mode == GameMode.hotspot ||
         controller.mode == GameMode.online;
-    _chaos = _lan && controller.lanBattleMode == LanBattleMode.chaos;
-    _manoeuvre = _lan && controller.lanBattleMode == LanBattleMode.rearrange;
+    // BLITZ is both at once, so these read the two properties rather
+    // than naming modes — otherwise every rule below would need a second
+    // clause for a mode that behaves exactly like its two parents.
+    _chaos = _lan && !controller.lanBattleMode.hasTurns;
+    _manoeuvre = _lan && controller.lanBattleMode.canRearrange;
     _turnTracked = !_chaos &&
         (controller.mode == GameMode.local ||
             controller.mode == GameMode.vsAI ||
@@ -384,7 +395,7 @@ class _BattleScreenState extends State<BattleScreen>
     // turn) or parked at the back — fire from wherever it currently sits,
     // which `_slideFor` reports for every mode including chaos (where it
     // never leaves the back at all).
-    final from = _cannonMouth(top, _slideFor(false));
+    final from = _cannonMouth(top, _slideFor(false), false);
     final to = bottom.cellCenterScreen(e.row, e.col) +
         _mouthDir(bottom) * (bottom.cannonSize * 0.25);
     setState(() {
@@ -591,7 +602,7 @@ class _BattleScreenState extends State<BattleScreen>
     // cell on the OPPONENT's grid.
     final shooterGeom = byP1 ? bottom : top;
     final targetGeom = byP1 ? top : bottom;
-    final from = _cannonMouth(shooterGeom, _slideFor(byP1));
+    final from = _cannonMouth(shooterGeom, _slideFor(byP1), byP1);
     final to = targetGeom.cellCenterScreen(r, c) +
         _mouthDir(targetGeom) * (targetGeom.cannonSize * 0.25);
     final proj = byP1 ? _projP1 : _projP2;
@@ -643,7 +654,15 @@ class _BattleScreenState extends State<BattleScreen>
     if (context.read<GameController>().mode == GameMode.local) {
       return context.read<GameController>().localLoadouts[halfIsP1 ? 0 : 1];
     }
-    return Loadout.of(context.read<ProfileStore>());
+    // VS AI. The battlefield is the player's — it is their theme, on both
+    // halves — but the FLEET and the GUN on the far side belong to the
+    // opponent, so the AI sails the plain blue hulls and fires the
+    // standard cannon. Handing the AI the player's own Cinder Hold and
+    // Magma Bombard would make the two sides indistinguishable, which is
+    // the one thing a battle screen cannot afford.
+    final mine = Loadout.of(context.read<ProfileStore>());
+    if (halfIsP1) return mine;
+    return Loadout(themeId: mine.themeId);
   }
 
   /// How a half's fleet reads on screen — hull colour, chrome colour and
@@ -651,17 +670,16 @@ class _BattleScreenState extends State<BattleScreen>
   /// so this screen, the deployment screen and the mode vote can never
   /// disagree about what colour a captain is.
   ///
-  /// Skins only override the plain red/blue where two different people
-  /// are actually choosing gear. Against the AI both fleets belong to one
-  /// player, so there is no identity to express and the flat red/blue is
-  /// kept exactly as it always was.
+  /// Skins apply to whichever fleet its owner actually chose. That is
+  /// both halves in LAN and pass-and-play, and only the player's own half
+  /// against the AI — whose loadout above is deliberately left plain, so
+  /// "mine" and "theirs" stay instantly separable.
   FleetLook _lookFor(bool halfIsP1) {
     final lo = _loadoutFor(halfIsP1);
     return fleetLook(
       isRedSide: _fleetIsRed(halfIsP1),
       equippedShipSkinId: lo.shipSkinId,
       chosen: lo.shipChosen,
-      skinsApply: _lan || context.read<GameController>().mode == GameMode.local,
     );
   }
 
@@ -791,11 +809,17 @@ class _BattleScreenState extends State<BattleScreen>
   /// longer barrel is actually drawn out to — so the cannonball always
   /// visibly launches from the real muzzle tip instead of a stale offset
   /// left over from the old, much shorter cannon.
-  Offset _cannonMouth(_HalfGeom g, double t) {
+  Offset _cannonMouth(_HalfGeom g, double t, bool halfIsP1) {
     final c = _cannonCenterLocal(g, t);
     final lx = c.dx;
-    final ly =
-        c.dy + g.muzzleLocalDir * g.cannonSize * CannonWidget.muzzleFraction;
+    // Per-gun, not per-game: the thematic families each have their own
+    // barrel length, so the ball is born at THIS cannon's muzzle rather
+    // than at a fixed distance that would leave a short mortar throwing
+    // from thin air and a long autoloader swallowing its own shot.
+    final ly = c.dy +
+        g.muzzleLocalDir *
+            g.cannonSize *
+            CannonWidget.muzzleFractionOf(_cannonSkinFor(halfIsP1));
     if (g.rotated) {
       return Offset(g.halfW - lx, g.halfTopY + (g.halfH - ly));
     }
@@ -959,6 +983,10 @@ class _BattleScreenState extends State<BattleScreen>
           animation: p.ctrl,
           builder: (context, _) {
             final t = p.ctrl.value;
+            // Whose gun this shell came out of — the shell is part of the
+            // cannon, not of the board it is crossing.
+            final shellFamily =
+                FleetFamilies.byKey(_cannonSkinFor(p.byP1).familyKey);
             // Vertical ARC for the up-and-down lob effect, reused for the
             // ball itself and its trail.
             Offset posAt(double tt) {
@@ -989,7 +1017,9 @@ class _BattleScreenState extends State<BattleScreen>
               return Positioned(
                 left: gp.dx - gd / 2,
                 top: gp.dy - gd / 2,
-                child: Opacity(opacity: opacity, child: _cannonball(gd)),
+                child: Opacity(
+                    opacity: opacity,
+                    child: _cannonball(gd, family: shellFamily)),
               );
             }
 
@@ -1003,7 +1033,7 @@ class _BattleScreenState extends State<BattleScreen>
                   top: pos.dy - d / 2,
                   child: Transform.rotate(
                     angle: spin,
-                    child: _cannonball(d),
+                    child: _cannonball(d, family: shellFamily),
                   ),
                 ),
               ],
@@ -1351,6 +1381,11 @@ class _BattleScreenState extends State<BattleScreen>
                     enabled: gridFirable,
                     glowColor: gameplayTheme.accent,
                     cellColor: gameplayTheme.grid,
+                    // Each half is painted in ITS OWNER's battlefield, so
+                    // in a network match you fight across two different
+                    // seas at once — your ice against their basalt.
+                    boardFamily:
+                        FleetFamilies.byKey(gameplayTheme.familyKey),
                     gridLineColor: gameplayTheme.gridLine,
                     recentEvents: events,
                     aimCell: aimCell,
@@ -1541,6 +1576,37 @@ class _BattleScreenState extends State<BattleScreen>
     final bottomIsP1Fleet = bottomIsP1;
     // Chaos mode has no "currently firing" side, so neither row dims.
     bool fadedFor(bool isP1Fleet) => !_chaos && (isP1Fleet == activeIsP1);
+
+    // Each row wears its OWN captain's battlefield deck. The top row used
+    // to be a hardcoded steel blue, which meant Player 2's strip stayed
+    // stubbornly blue whatever either of them had equipped — the one
+    // patch of default palette left on a fully themed screen. A hairline
+    // keeps the two rows readable as two rows now that they can be the
+    // same colour.
+    final topDeck = _themeFor(topIsP1Fleet).deck;
+    final bottomDeck = _themeFor(bottomIsP1Fleet).deck;
+
+    // Room for the chat tab on the left, and for the EXIT pill on the
+    // right. The extra left room only appears while the chat is actually
+    // revealed: parked there permanently, it squeezed both fleet strips
+    // for a control most of a match doesn't use.
+    final leftInset = _chatRevealed
+        ? 56.0 + MatchChatReveal.gap + 34 + 6
+        : 56.0;
+
+    Widget row(Board board, bool isP1Fleet, Color deck) => Expanded(
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            color: deck,
+            padding: EdgeInsets.only(left: leftInset, right: 56),
+            child: _statusRow(board,
+                faded: fadedFor(isP1Fleet),
+                isP1Fleet: isP1Fleet,
+                revealedSunkNames: _revealedSunkNames(isP1Fleet)),
+          ),
+        );
+
     return SizedBox(
       height: bandH,
       child: Stack(
@@ -1548,26 +1614,12 @@ class _BattleScreenState extends State<BattleScreen>
         children: [
           Column(
             children: [
-              Expanded(
-                child: Container(
-                  color: AppColors.steelBlueDark,
-                  padding: const EdgeInsets.symmetric(horizontal: 56),
-                  child: _statusRow(topBoard,
-                      faded: fadedFor(topIsP1Fleet),
-                      isP1Fleet: topIsP1Fleet,
-                      revealedSunkNames: _revealedSunkNames(topIsP1Fleet)),
-                ),
+              row(topBoard, topIsP1Fleet, topDeck),
+              Container(
+                height: 1.5,
+                color: AppColors.outline.withValues(alpha: 0.45),
               ),
-              Expanded(
-                child: Container(
-                  color: gameplayTheme.deck,
-                  padding: const EdgeInsets.symmetric(horizontal: 56),
-                  child: _statusRow(bottomBoard,
-                      faded: fadedFor(bottomIsP1Fleet),
-                      isP1Fleet: bottomIsP1Fleet,
-                      revealedSunkNames: _revealedSunkNames(bottomIsP1Fleet)),
-                ),
-              ),
+              row(bottomBoard, bottomIsP1Fleet, bottomDeck),
             ],
           ),
           Positioned(
@@ -1584,6 +1636,22 @@ class _BattleScreenState extends State<BattleScreen>
               bottomColor: _lookFor(bottomIsP1Fleet).color,
             ),
           ),
+          // The middle band is the one strip of this screen that isn't a
+          // grid, which makes it the only place a chat control can live
+          // without sitting on top of somebody's board. It stays a thin
+          // tab beside the ship counter until it is swiped out, so the
+          // fleet strips keep their full width the rest of the time.
+          if (_lan)
+            Positioned(
+              left: 34,
+              top: (bandH - 34) / 2,
+              child: MatchChatReveal(
+                size: 34,
+                onOpenChanged: (open) {
+                  if (mounted) setState(() => _chatRevealed = open);
+                },
+              ),
+            ),
           Positioned(
             right: -2,
             top: 2,
@@ -1621,43 +1689,58 @@ class _BattleScreenState extends State<BattleScreen>
     // same relative proportions those ships have on the actual battle
     // grid — instead of every icon sharing one fixed bounding box
     // regardless of the ship's real length.
-    const unit = 11.5;
-    const beam = 26.0;
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: [
-        for (final spec in kFleet)
-          Builder(builder: (context) {
-            final ship = board.shipOfKind(spec.kind);
-            // REDESIGN (destroyed ship preview): a ship only switches to
-            // its destroyed model once its sinking shot has visually
-            // landed (see `_revealedSunkNames`) — not the instant its last
-            // cell is logically hit, and not on any earlier, non-final
-            // hit either: the preview stays looking exactly like a normal
-            // active ship right up until that moment (hitCount is only
-            // ever passed once destroyed==true), matching "a ship remains
-            // active until all of its cells are destroyed". No X overlay:
-            // the destroyed state IS the ship's own wrecked model (charred
-            // hull, damage craters, smoke — see ShipPainter), so it stays
-            // recognizable as the same ship type instead of being replaced
-            // by a generic icon.
-            final destroyed = ship != null &&
-                ship.isSunk &&
-                revealedSunkNames.contains(spec.name);
-            return Opacity(
-              opacity: faded ? 0.38 : 1.0,
-              child: AnimatedShip(
-                spec: spec,
-                skin: skin,
-                width: unit * spec.size,
-                height: beam,
-                sunk: destroyed,
-                hitCount: destroyed ? spec.size : 0,
-              ),
-            );
-          }),
-      ],
-    );
+    //
+    // Measured rather than fixed, because the row's width is not fixed:
+    // the chat tab takes a slice of it when it is swiped open, and a
+    // narrow phone has less to give in the first place. At a hard 11.5
+    // the five hulls total 195px of unshrinkable content and the Row
+    // simply overflows once the space drops below that. The cap keeps
+    // the size the strip has always had whenever there is room for it.
+    const maxUnit = 11.5;
+    // Total cells across the whole fleet (5+4+3+3+2), plus a little
+    // breathing room so the ships never quite touch.
+    const fleetCells = 17.0;
+    return LayoutBuilder(builder: (context, box) {
+      final unit = box.maxWidth.isFinite
+          ? math.min(maxUnit, (box.maxWidth * 0.86) / fleetCells)
+          : maxUnit;
+      final beam = 26.0 * (unit / maxUnit);
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          for (final spec in kFleet)
+            Builder(builder: (context) {
+              final ship = board.shipOfKind(spec.kind);
+              // REDESIGN (destroyed ship preview): a ship only switches to
+              // its destroyed model once its sinking shot has visually
+              // landed (see `_revealedSunkNames`) — not the instant its last
+              // cell is logically hit, and not on any earlier, non-final
+              // hit either: the preview stays looking exactly like a normal
+              // active ship right up until that moment (hitCount is only
+              // ever passed once destroyed==true), matching "a ship remains
+              // active until all of its cells are destroyed". No X overlay:
+              // the destroyed state IS the ship's own wrecked model (charred
+              // hull, damage craters, smoke — see ShipPainter), so it stays
+              // recognizable as the same ship type instead of being replaced
+              // by a generic icon.
+              final destroyed = ship != null &&
+                  ship.isSunk &&
+                  revealedSunkNames.contains(spec.name);
+              return Opacity(
+                opacity: faded ? 0.38 : 1.0,
+                child: AnimatedShip(
+                  spec: spec,
+                  skin: skin,
+                  width: unit * spec.size,
+                  height: beam,
+                  sunk: destroyed,
+                  hitCount: destroyed ? spec.size : 0,
+                ),
+              );
+            }),
+        ],
+      );
+    });
   }
 
   // ---------------------------------------------------------- OVERLAYS
@@ -1714,7 +1797,36 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
-  Widget _cannonball(double d) => SizedBox(
+  /// The projectile in flight.
+  ///
+  /// A shell belongs to the gun that fired it, so this takes the
+  /// shooter's family rather than the board's or the fleet's: equip the
+  /// Ion Lance and plasma bolts fly, whatever water they cross and
+  /// whatever hulls they land on. With no family equipped it stays the
+  /// original iron ball, untouched.
+  Widget _cannonball(double d, {FleetFamily? family}) {
+    if (family != null) {
+      // The design's shell box is taller than wide (the tail hangs below
+      // the body), so the drawing is given that room and centred on the
+      // same point the iron ball occupies.
+      final h = d / kShellBoxAspect;
+      return SizedBox(
+        width: d,
+        height: d,
+        child: OverflowBox(
+          maxWidth: d,
+          maxHeight: h,
+          child: CustomPaint(
+            size: Size(d, h),
+            painter: _FamilyShellPainter(family),
+          ),
+        ),
+      );
+    }
+    return _ironBall(d);
+  }
+
+  Widget _ironBall(double d) => SizedBox(
         width: d,
         height: d,
         child: Stack(
@@ -2102,4 +2214,24 @@ class _ReconnectOverlay extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Draws a family's projectile into the flight layer.
+///
+/// Stateless and cheap — the shell has no animation of its own; the arc,
+/// the shrink and the motion-trail ghosts all come from the projectile
+/// layer, exactly as they did for the iron ball. Swapping the drawing
+/// therefore changes what is in the air without touching how it flies.
+class _FamilyShellPainter extends CustomPainter {
+  final FleetFamily family;
+
+  const _FamilyShellPainter(this.family);
+
+  @override
+  void paint(Canvas canvas, Size size) =>
+      paintFamilyShell(canvas, size, family);
+
+  @override
+  bool shouldRepaint(covariant _FamilyShellPainter old) =>
+      old.family.id != family.id;
 }

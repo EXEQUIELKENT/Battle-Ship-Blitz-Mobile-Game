@@ -120,6 +120,136 @@ void main() {
       controller.lanBattleMode = LanBattleMode.turns;
       expect(controller.isChaosBattle, isFalse);
     });
+
+    test('BLITZ is chaos AND manoeuvre, not a third thing', () async {
+      // The mode is defined as its two parents combined, so the test is
+      // that it behaves as both — no turn order, and hulls can still run.
+      // Anything that special-cased CHAOS or MANOEUVRE by name rather
+      // than by property would fail exactly one of these.
+      final controller = await newController();
+      controller.mode = GameMode.hotspot;
+
+      controller.lanBattleMode = LanBattleMode.blitz;
+      expect(controller.isChaosBattle, isTrue);
+      expect(controller.isManoeuvreBattle, isTrue);
+
+      controller.lanBattleMode = LanBattleMode.chaos;
+      expect(controller.isChaosBattle, isTrue);
+      expect(controller.isManoeuvreBattle, isFalse);
+
+      controller.lanBattleMode = LanBattleMode.rearrange;
+      expect(controller.isChaosBattle, isFalse);
+      expect(controller.isManoeuvreBattle, isTrue);
+
+      controller.lanBattleMode = LanBattleMode.turns;
+      expect(controller.isChaosBattle, isFalse);
+      expect(controller.isManoeuvreBattle, isFalse);
+    });
+
+    test('BLITZ never leaks into a non-network match', () async {
+      final controller = await newController();
+      controller.lanBattleMode = LanBattleMode.blitz;
+      for (final mode in [GameMode.vsAI, GameMode.local]) {
+        controller.mode = mode;
+        expect(controller.isChaosBattle, isFalse);
+        expect(controller.isManoeuvreBattle, isFalse);
+      }
+    });
+
+    test('every mode has its own label, tagline and blurb', () {
+      // Two modes sharing a description is the failure that made
+      // MANOEUVRE and TURN BASED read as the same card, and BLITZ sits
+      // between two existing modes so it is the likeliest to be
+      // described as one of them by accident.
+      final labels = LanBattleMode.values.map((m) => m.label).toSet();
+      final taglines = LanBattleMode.values.map((m) => m.tagline).toSet();
+      final blurbs = LanBattleMode.values.map((m) => m.blurb).toSet();
+      expect(labels.length, LanBattleMode.values.length);
+      expect(taglines.length, LanBattleMode.values.length);
+      expect(blurbs.length, LanBattleMode.values.length);
+    });
+
+    test('mode indices are stable, because they go over the wire', () {
+      // A vote and a resume snapshot both send `LanBattleMode.index`. If
+      // a new mode were inserted rather than appended, an in-flight match
+      // against an older build would silently change rules.
+      expect(LanBattleMode.chaos.index, 0);
+      expect(LanBattleMode.turns.index, 1);
+      expect(LanBattleMode.rearrange.index, 2);
+      expect(LanBattleMode.blitz.index, 3);
+    });
+  });
+
+  group('match chat', () {
+    test('a sent line is kept locally and counts as read', () {
+      final net = NetworkService();
+      net.sendChat('  taking the left flank  ');
+      expect(net.chat, hasLength(1));
+      expect(net.chat.single.text, 'taking the left flank');
+      expect(net.chat.single.mine, isTrue);
+      // Your own message is not something you need told about.
+      expect(net.unreadChat, 0);
+    });
+
+    test('blank messages are not sent', () {
+      final net = NetworkService();
+      net.sendChat('   ');
+      net.sendChat('');
+      expect(net.chat, isEmpty);
+    });
+
+    test('an over-long line is capped rather than refused', () {
+      final net = NetworkService();
+      net.sendChat('x' * 500);
+      expect(net.chat.single.text.length, NetworkService.kChatMaxChars);
+    });
+
+    test('the log is bounded, oldest dropped first', () {
+      final net = NetworkService();
+      for (var i = 0; i < NetworkService.kChatMaxLines + 20; i++) {
+        net.sendChat('line $i');
+      }
+      expect(net.chat, hasLength(NetworkService.kChatMaxLines));
+      expect(net.chat.last.text, 'line ${NetworkService.kChatMaxLines + 19}');
+      // The first twenty are gone, not the newest twenty.
+      expect(net.chat.first.text, 'line 20');
+    });
+
+    test('unread counts only the opponent, and clears on read', () {
+      final net = NetworkService();
+      net.handleIncomingForTest({'type': 'chat', 'm': 'hello'});
+      net.handleIncomingForTest({'type': 'chat', 'm': 'ready?'});
+      net.sendChat('one moment');
+      expect(net.unreadChat, 2);
+      net.markChatRead();
+      expect(net.unreadChat, 0);
+    });
+
+    test('an over-long line from the peer is capped on arrival too', () {
+      // Length is enforced at the sender, but the sender is the other
+      // device — not something to take on trust.
+      final net = NetworkService();
+      net.handleIncomingForTest({'type': 'chat', 'm': 'y' * 9000});
+      expect(net.chat.single.text.length, NetworkService.kChatMaxChars);
+    });
+
+    test('an empty line from the peer is dropped', () {
+      final net = NetworkService();
+      net.handleIncomingForTest({'type': 'chat', 'm': '   '});
+      net.handleIncomingForTest({'type': 'chat'});
+      expect(net.chat, isEmpty);
+      expect(net.unreadChat, 0);
+    });
+
+    test('stopping clears the conversation', () async {
+      // A chat log that survived into the next match would show one
+      // opponent's words under another opponent's name.
+      final net = NetworkService();
+      net.sendChat('gg');
+      await net.stop();
+      expect(net.chat, isEmpty);
+      expect(net.unreadChat, 0);
+    });
   });
 }
 
