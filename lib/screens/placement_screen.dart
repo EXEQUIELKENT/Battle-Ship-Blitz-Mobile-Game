@@ -1220,66 +1220,57 @@ class _GearDialogState extends State<_GearDialog> {
                 shrinkWrap: true,
                 children: [
                   _section('HULL'),
-                  SizedBox(
+                  _ArrowScroller(
                     height: 76,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: [
-                        // Opting back out of skins entirely: the plain
-                        // side colour is a legitimate choice, not merely
-                        // the absence of one.
+                    children: [
+                      // Opting back out of skins entirely: the plain
+                      // side colour is a legitimate choice, not merely
+                      // the absence of one.
+                      _hullChip(
+                        skin: sideSkin,
+                        label: widget.isRedSide ? 'RED FLEET' : 'BLUE FLEET',
+                        selected: !_lo.shipChosen,
+                        onTap: () => _set(_lo.copyWith(shipChosen: false)),
+                      ),
+                      for (final s in ships)
                         _hullChip(
-                          skin: sideSkin,
-                          label: widget.isRedSide ? 'RED FLEET' : 'BLUE FLEET',
-                          selected: !_lo.shipChosen,
-                          onTap: () => _set(_lo.copyWith(shipChosen: false)),
+                          skin: s,
+                          label: s.name.toUpperCase(),
+                          selected: _lo.shipChosen && _lo.shipSkinId == s.id,
+                          onTap: () => _set(
+                              _lo.copyWith(shipSkinId: s.id, shipChosen: true)),
                         ),
-                        for (final s in ships)
-                          _hullChip(
-                            skin: s,
-                            label: s.name.toUpperCase(),
-                            selected: _lo.shipChosen && _lo.shipSkinId == s.id,
-                            onTap: () => _set(
-                                _lo.copyWith(shipSkinId: s.id, shipChosen: true)),
-                          ),
-                      ],
-                    ),
+                    ],
                   ),
                   const SizedBox(height: 12),
                   _section('CANNON'),
-                  SizedBox(
+                  _ArrowScroller(
                     height: 64,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: [
-                        for (final c in cannons)
-                          _swatchChip(
-                            top: c.barrel,
-                            bottom: c.projectile,
-                            label: c.name.toUpperCase(),
-                            selected: _lo.cannonSkinId == c.id,
-                            onTap: () => _set(_lo.copyWith(cannonSkinId: c.id)),
-                          ),
-                      ],
-                    ),
+                    children: [
+                      for (final c in cannons)
+                        _swatchChip(
+                          top: c.barrel,
+                          bottom: c.projectile,
+                          label: c.name.toUpperCase(),
+                          selected: _lo.cannonSkinId == c.id,
+                          onTap: () => _set(_lo.copyWith(cannonSkinId: c.id)),
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 12),
                   _section('BATTLEFIELD'),
-                  SizedBox(
+                  _ArrowScroller(
                     height: 64,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: [
-                        for (final t in themes)
-                          _swatchChip(
-                            top: t.grid,
-                            bottom: t.deck,
-                            label: t.name.toUpperCase(),
-                            selected: _lo.themeId == t.id,
-                            onTap: () => _set(_lo.copyWith(themeId: t.id)),
-                          ),
-                      ],
-                    ),
+                    children: [
+                      for (final t in themes)
+                        _swatchChip(
+                          top: t.grid,
+                          bottom: t.deck,
+                          label: t.name.toUpperCase(),
+                          selected: _lo.themeId == t.id,
+                          onTap: () => _set(_lo.copyWith(themeId: t.id)),
+                        ),
+                    ],
                   ),
                 ],
               ),
@@ -1394,6 +1385,162 @@ class _GearDialogState extends State<_GearDialog> {
                 style: AppText.label(size: 8)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A horizontally-scrolling chip row for the gear dialog, with left/right
+/// arrow buttons that fade in only when there is actually more content to
+/// scroll to on that side.
+///
+/// The dialog is narrow enough (it shares the width of a phone screen)
+/// that a shipyard with more than three or four unlocks in a category
+/// always runs off the right edge with nothing on screen to say so — the
+/// row just looks cut off. The arrows make the overflow discoverable and
+/// tappable, on top of the swipe gesture the ListView already supports.
+class _ArrowScroller extends StatefulWidget {
+  final double height;
+  final List<Widget> children;
+
+  const _ArrowScroller({required this.height, required this.children});
+
+  @override
+  State<_ArrowScroller> createState() => _ArrowScrollerState();
+}
+
+class _ArrowScrollerState extends State<_ArrowScroller> {
+  final ScrollController _controller = ScrollController();
+  bool _canLeft = false;
+  bool _canRight = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_refreshArrows);
+    // The list hasn't laid out yet on the first frame, so its
+    // maxScrollExtent isn't known until just after — a single
+    // post-frame check is enough to show the right arrow immediately
+    // when the content overflows.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshArrows());
+  }
+
+  @override
+  void didUpdateWidget(covariant _ArrowScroller old) {
+    super.didUpdateWidget(old);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshArrows());
+  }
+
+  void _refreshArrows() {
+    if (!mounted || !_controller.hasClients) return;
+    final pos = _controller.position;
+    final left = pos.pixels > pos.minScrollExtent + 1;
+    final right = pos.pixels < pos.maxScrollExtent - 1;
+    if (left != _canLeft || right != _canRight) {
+      setState(() {
+        _canLeft = left;
+        _canRight = right;
+      });
+    }
+  }
+
+  void _nudge(double delta) {
+    if (!_controller.hasClients) return;
+    SoundService.instance.click();
+    final target = (_controller.offset + delta)
+        .clamp(_controller.position.minScrollExtent,
+            _controller.position.maxScrollExtent);
+    _controller.animateTo(target,
+        duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_refreshArrows);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: widget.height,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          ListView(
+            controller: _controller,
+            scrollDirection: Axis.horizontal,
+            children: widget.children,
+          ),
+          if (_canLeft)
+            Positioned(
+              left: 0,
+              child: _edgeFade(alignRight: false),
+            ),
+          if (_canRight)
+            Positioned(
+              right: 0,
+              child: _edgeFade(alignRight: true),
+            ),
+          if (_canLeft)
+            Positioned(
+              left: -6,
+              child: _arrowButton(
+                  icon: Icons.chevron_left, onTap: () => _nudge(-110)),
+            ),
+          if (_canRight)
+            Positioned(
+              right: -6,
+              child: _arrowButton(
+                  icon: Icons.chevron_right, onTap: () => _nudge(110)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// A soft gradient behind each arrow so it reads on top of whichever
+  /// chip happens to be scrolled underneath it, instead of the button
+  /// floating with no visual anchor.
+  Widget _edgeFade({required bool alignRight}) {
+    return IgnorePointer(
+      child: Container(
+        width: 28,
+        height: widget.height,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: alignRight ? Alignment.centerLeft : Alignment.centerRight,
+            end: alignRight ? Alignment.centerRight : Alignment.centerLeft,
+            colors: [
+              AppColors.navy.withValues(alpha: 0),
+              AppColors.navy.withValues(alpha: 0.85),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _arrowButton({required IconData icon, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 26,
+        height: 26,
+        decoration: BoxDecoration(
+          color: AppColors.navyDeep,
+          shape: BoxShape.circle,
+          border: Border.all(color: AppColors.outline, width: 2),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x33000000),
+              offset: Offset(0, 1),
+              blurRadius: 2,
+            ),
+          ],
+        ),
+        child: Icon(icon, size: 16, color: AppColors.cream),
       ),
     );
   }

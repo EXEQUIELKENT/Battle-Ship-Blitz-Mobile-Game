@@ -71,11 +71,6 @@ class _BattleScreenState extends State<BattleScreen>
   /// agreeing without a dedicated turn message.
   bool _p2Active = false;
 
-  /// Whether the middle band's chat tab has been swiped open. Held here
-  /// rather than inside the tab so the fleet strips can make room for it
-  /// instead of being covered by it.
-  bool _chatRevealed = false;
-
   bool _navigatedToResult = false;
 
   // ----- Match shape (snapshotted once — none of it changes mid-battle) --
@@ -1587,19 +1582,17 @@ class _BattleScreenState extends State<BattleScreen>
     final bottomDeck = _themeFor(bottomIsP1Fleet).deck;
 
     // Room for the chat tab on the left, and for the EXIT pill on the
-    // right. The extra left room only appears while the chat is actually
-    // revealed: parked there permanently, it squeezed both fleet strips
-    // for a control most of a match doesn't use.
-    final leftInset = _chatRevealed
-        ? 56.0 + MatchChatReveal.gap + 34 + 6
-        : 56.0;
+    // right. Fixed regardless of whether the chat is open: the revealed
+    // button floats over the band as an overlay (see the Positioned
+    // below) instead of carving out extra padding, so opening it no
+    // longer reflows — and doesn't shrink — the ships in either fleet
+    // strip.
+    const leftInset = 56.0;
 
     Widget row(Board board, bool isP1Fleet, Color deck) => Expanded(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
+          child: Container(
             color: deck,
-            padding: EdgeInsets.only(left: leftInset, right: 56),
+            padding: const EdgeInsets.only(left: leftInset, right: 56),
             child: _statusRow(board,
                 faded: fadedFor(isP1Fleet),
                 isP1Fleet: isP1Fleet,
@@ -1639,18 +1632,16 @@ class _BattleScreenState extends State<BattleScreen>
           // The middle band is the one strip of this screen that isn't a
           // grid, which makes it the only place a chat control can live
           // without sitting on top of somebody's board. It stays a thin
-          // tab beside the ship counter until it is swiped out, so the
-          // fleet strips keep their full width the rest of the time.
+          // tab beside the ship counter until it is swiped out. The
+          // revealed button floats as an overlay on top of the fleet
+          // strips (it's drawn last, after `row`, in this Stack) rather
+          // than pushing their padding out, so the ships underneath never
+          // resize when it opens.
           if (_lan)
             Positioned(
               left: 34,
               top: (bandH - 34) / 2,
-              child: MatchChatReveal(
-                size: 34,
-                onOpenChanged: (open) {
-                  if (mounted) setState(() => _chatRevealed = open);
-                },
-              ),
+              child: MatchChatReveal(size: 34),
             ),
           Positioned(
             right: -2,
