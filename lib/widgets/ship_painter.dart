@@ -24,13 +24,30 @@ class ShipPainter extends CustomPainter {
   final bool sunk;
   final int hitCount;
 
+  /// Which specific local cell indices (0 = stern/first cell, size-1 =
+  /// bow/last cell) have actually been hit. This is what a crater's
+  /// on-screen position is driven by — NOT [hitCount] — so a hit on the
+  /// third cell of a ship shows its damage on the third cell, rather than
+  /// wherever the Nth crater happens to fall when counted from one end.
+  ///
+  /// When omitted, falls back to marking the first [hitCount] cells (0,
+  /// 1, 2, ...) as hit, which is only correct when every hit ship cell is
+  /// actually contiguous from index 0 — true for a fully-sunk/wrecked
+  /// ship (every cell is hit) but NOT true in general for a live,
+  /// partially-damaged ship. Callers that track per-cell damage (see
+  /// `PlacedShip.hitIndices`) should always pass [hitIndices] explicitly.
+  final Set<int> hitIndices;
+
   ShipPainter({
     required this.spec,
     required this.skin,
     this.wavePhase = 0,
     this.sunk = false,
     this.hitCount = 0,
-  });
+    Set<int>? hitIndices,
+  }) : hitIndices = hitIndices ?? (hitCount > 0
+            ? Set<int>.from(List.generate(hitCount, (i) => i))
+            : const <int>{});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -48,7 +65,7 @@ class ShipPainter extends CustomPainter {
       canvas.translate(0, bob);
       paintFamilyShip(canvas, size, family, spec.kind);
       canvas.restore();
-      if (hitCount > 0) _familyDamage(canvas, w, h);
+      if (hitIndices.isNotEmpty) _familyDamage(canvas, w, h);
       return;
     }
 
@@ -98,13 +115,16 @@ class ShipPainter extends CustomPainter {
         break;
     }
 
-    // Hit damage marks: little dark X craters along the deck
-    if (hitCount > 0) {
+    // Hit damage marks: little dark X craters, one per actually-hit cell,
+    // positioned at THAT cell's spot along the hull rather than counted
+    // in from the bow.
+    if (hitIndices.isNotEmpty) {
       final crater = Paint()
         ..color = AppColors.outline.withValues(alpha: 0.85)
         ..strokeWidth = 3
         ..strokeCap = StrokeCap.round;
-      for (var i = 0; i < hitCount && i < spec.size; i++) {
+      for (final i in hitIndices) {
+        if (i < 0 || i >= spec.size) continue;
         final cx = w * (0.18 + 0.64 * (i / math.max(1, spec.size - 1)));
         final cy = h * 0.5 + (i.isOdd ? h * 0.12 : -h * 0.12);
         const d = 4.5;
@@ -139,7 +159,8 @@ class ShipPainter extends CustomPainter {
       ..color = AppColors.outline.withValues(alpha: 0.85)
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
-    for (var i = 0; i < hitCount && i < spec.size; i++) {
+    for (final i in hitIndices) {
+      if (i < 0 || i >= spec.size) continue;
       final cx = w * (0.18 + 0.64 * (i / math.max(1, spec.size - 1)));
       final cy = h * 0.5 + (i.isOdd ? h * 0.12 : -h * 0.12);
       const d = 4.5;
@@ -288,7 +309,18 @@ class ShipPainter extends CustomPainter {
       oldDelegate.wavePhase != wavePhase ||
       oldDelegate.sunk != sunk ||
       oldDelegate.hitCount != hitCount ||
+      // Same hit COUNT can still mean a different cell was the one hit
+      // (e.g. count stays 1 but the hit index changes) — compare the
+      // actual set, not just its size, or a repaint gets skipped and the
+      // crater stays stuck on the old cell.
+      !_setEquals(oldDelegate.hitIndices, hitIndices) ||
       oldDelegate.skin.hull != skin.hull;
+
+  static bool _setEquals(Set<int> a, Set<int> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    return a.containsAll(b);
+  }
 }
 
 /// Standalone flat ship widget (dock tray, customization previews, hero

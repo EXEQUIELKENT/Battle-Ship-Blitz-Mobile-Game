@@ -723,6 +723,10 @@ class _ShipWithRotate extends StatelessWidget {
       skin: skin,
       sunk: ship.isSunk,
       hitCount: ship.hitIndices.length,
+      // The actual local cell indices that were hit — NOT just how many —
+      // so a damage crater lands on the specific grid cell that was shot
+      // instead of always filling in from the bow end. See ShipPainter.
+      hitIndices: ship.hitIndices,
     );
 
     Widget assembly = SizedBox(

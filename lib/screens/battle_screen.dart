@@ -2043,28 +2043,47 @@ class _DotsBadge extends StatelessWidget {
     required this.bottomColor,
   });
 
+  // The ring and the digit inside it are both painted straight in the
+  // fleet's colour, sitting on the badge's fixed AppColors.cream disc.
+  // That reads fine for the dark/mid-tone skins (Crimson Armada, Abyss
+  // Ghost, Midnight Ops, the family sets, the red/blue side fallback…)
+  // but Arctic Storm and Rime Wardens are near-white hulls, and a
+  // near-white ring around a near-white number on a near-white disc is
+  // effectively invisible — exactly the same failure the name chips
+  // and vote badges had before [FleetLook.ink] started picking ink off
+  // the hull's own luminance instead of trusting every hull to be dark
+  // enough to read. Same fix here: past the luminance cutoff where a
+  // hull stops contrasting with the cream disc, fall back to the fixed
+  // dark outline colour instead of the washed-out hull tone.
+  Color _legibleOn(Color color) =>
+      color.computeLuminance() > 0.5 ? AppColors.outline : color;
+
   @override
   Widget build(BuildContext context) {
-    Widget dot(Color color, int count) => Container(
-          width: 16,
-          height: 16,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: AppColors.cream,
-            border: Border.all(color: color, width: 3),
-          ),
-          child: Center(
-            child: Text(
-              '$count',
-              style: TextStyle(
-                fontSize: 8.5,
-                fontWeight: FontWeight.w900,
-                color: color,
-                height: 1,
-              ),
+    Widget dot(Color color, int count) {
+      final ink = _legibleOn(color);
+      return Container(
+        width: 16,
+        height: 16,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: AppColors.cream,
+          border: Border.all(color: ink, width: 3),
+        ),
+        child: Center(
+          child: Text(
+            '$count',
+            style: TextStyle(
+              fontSize: 8.5,
+              fontWeight: FontWeight.w900,
+              color: ink,
+              height: 1,
             ),
           ),
-        );
+        ),
+      );
+    }
+
     return Container(
       width: 34,
       padding: const EdgeInsets.symmetric(vertical: 6),
