@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -623,6 +625,88 @@ class _CannonsTab extends StatelessWidget {
   }
 }
 
+/// A cannon exactly as it behaves on the battle screen — idle bob, ground
+/// shadow, reload sweep and muzzle flash/smoke — looping on its own so the
+/// store shows the gun the way it will actually be fired, not a flat
+/// render of it. `CannonWidget` already draws all of this; the only reason
+/// the shop cards didn't have it is that they drove it with a cannon
+/// permanently `enabled: false` at a fixed `cooldownFraction: 1`, which is
+/// the one state combination where none of that ever plays. This drives
+/// the same widget through a real reload cycle instead: charge from
+/// empty, sit at "ready" long enough for the idle pulse to read, fire,
+/// smoke, repeat.
+class _LiveCannonPreview extends StatefulWidget {
+  final CannonSkin skin;
+  final double size;
+
+  const _LiveCannonPreview({required this.skin, required this.size});
+
+  @override
+  State<_LiveCannonPreview> createState() => _LiveCannonPreviewState();
+}
+
+class _LiveCannonPreviewState extends State<_LiveCannonPreview>
+    with SingleTickerProviderStateMixin {
+  // Charge for 1.6s, then hold "ready" (idle pulse visible) for 0.9s
+  // before firing and starting over — long enough to actually see the
+  // reload sweep travel, not just flicker past.
+  static const _charge = Duration(milliseconds: 1600);
+  static const _hold = Duration(milliseconds: 900);
+
+  late final AnimationController _cycle;
+  final _fire = StreamController<void>.broadcast();
+  final _ready = StreamController<void>.broadcast();
+  Timer? _fireTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Stagger each card's cycle a little off the others (keyed off the
+    // skin id) so a whole list of cards doesn't visibly fire in lockstep.
+    final jitter = (widget.skin.id.hashCode % 400);
+    _cycle = AnimationController(vsync: this, duration: _charge)
+      ..addStatusListener(_onStatus);
+    Future.delayed(Duration(milliseconds: jitter), () {
+      if (mounted) _cycle.forward();
+    });
+  }
+
+  void _onStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    _ready.add(null);
+    _fireTimer = Timer(_hold, () {
+      if (!mounted) return;
+      _fire.add(null);
+      _cycle.forward(from: 0);
+    });
+  }
+
+  @override
+  void dispose() {
+    _fireTimer?.cancel();
+    _cycle.dispose();
+    _fire.close();
+    _ready.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _cycle,
+      builder: (context, _) => CannonWidget(
+        skin: widget.skin,
+        cooldownFraction: _cycle.value,
+        enabled: true,
+        label: '',
+        size: widget.size,
+        fireTrigger: _fire.stream,
+        readyTrigger: _ready.stream,
+      ),
+    );
+  }
+}
+
 class _CannonCard extends StatelessWidget {
   final ProfileStore profile;
   final CannonSkin cannon;
@@ -657,38 +741,60 @@ class _CannonCard extends StatelessWidget {
             // that is half of what you are buying — showing the gun
             // alone would hide it until the first shot. The disc takes
             // the family's own water and accent for the same reason.
-            Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: family?.board.deck ?? AppColors.water,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: family?.accent ?? AppColors.cellBorder,
-                      width: 2,
+            SizedBox(
+              // Fixed disc footprint — matches the design's 86×86 badge so
+              // every card in the tab lines up, family gun or legacy gun.
+              width: 86,
+              height: 86,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Container(
+                    width: 86,
+                    height: 86,
+                    decoration: BoxDecoration(
+                      color: family?.board.deck ?? AppColors.water,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: family?.accent ?? AppColors.cellBorder,
+                        width: 2,
+                      ),
                     ),
                   ),
-                  child: CannonWidget(
-                    skin: cannon,
-                    cooldownFraction: 1,
-                    enabled: false,
-                    label: '',
-                    size: 70,
-                  ),
-                ),
-                if (family != null)
-                  Positioned(
-                    right: -8,
-                    bottom: -4,
-                    child: SizedBox(
-                      width: 30,
-                      height: 33,
-                      child: CustomPaint(painter: _ShellPreviewPainter(family)),
+                  if (family != null)
+                    // A family gun is drawn end to end — mount, barrel and
+                    // muzzle — at its own authored proportions, which read
+                    // bigger than the 86px badge behind it. The design
+                    // deliberately lets it overflow the disc (see
+                    // `ThemedCannon` at size 66 sitting in an 86 badge,
+                    // offset left -8.85/top -26.8) rather than squeezing
+                    // the whole gun down to fit inside — a barrel shrunk
+                    // to stay inside its own badge stopped reading as the
+                    // actual weapon on the battle screen.
+                    Positioned(
+                      left: -8.85,
+                      top: -26.8,
+                      child: _LiveCannonPreview(skin: cannon, size: 104),
+                    )
+                  else
+                    // The nine original guns were authored to fit their
+                    // badge exactly, so they stay centred and contained.
+                    Center(
+                      child: _LiveCannonPreview(skin: cannon, size: 70),
                     ),
-                  ),
-              ],
+                  if (family != null)
+                    Positioned(
+                      right: -10,
+                      bottom: -6,
+                      child: SizedBox(
+                        width: 34,
+                        height: 37,
+                        child:
+                            CustomPaint(painter: _ShellPreviewPainter(family)),
+                      ),
+                    ),
+                ],
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -875,8 +981,11 @@ class _MatchedSetCard extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(10),
                 child: SizedBox(
-                  width: 86,
-                  height: 86,
+                  // Matches the design's 104×104 board preview — was 86,
+                  // which made the set's own battlefield read smaller than
+                  // the single-board cards further down the same tab.
+                  width: 104,
+                  height: 104,
                   child: CustomPaint(
                     painter: _BoardPreviewPainter.family(family),
                   ),
@@ -888,20 +997,38 @@ class _MatchedSetCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     SizedBox(
-                      height: 44,
+                      height: 56,
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
+                          // Same "gun bigger than its slot" treatment as
+                          // the CANNONS tab: the design draws this at
+                          // size 56 (≈88×86) inside a 62×56 slot, offset
+                          // left -14/top -22, rather than squashing the
+                          // whole gun down to fit flush.
                           SizedBox(
-                            width: 44,
-                            height: 44,
-                            child: CustomPaint(
-                              painter: _CannonPreviewPainter(family),
+                            width: 62,
+                            height: 56,
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                Positioned(
+                                  left: -14,
+                                  top: -22,
+                                  child: SizedBox(
+                                    width: 88,
+                                    height: 86,
+                                    child: CustomPaint(
+                                      painter: _CannonPreviewPainter(family),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                           SizedBox(
-                            width: 24,
-                            height: 27,
+                            width: 30,
+                            height: 33,
                             child: CustomPaint(
                               painter: _ShellPreviewPainter(family),
                             ),
@@ -909,8 +1036,8 @@ class _MatchedSetCard extends StatelessWidget {
                           AnimatedShip(
                             spec: kFleet[1],
                             skin: Catalog.shipById(key),
-                            width: 62,
-                            height: 26,
+                            width: 72,
+                            height: 30,
                           ),
                         ],
                       ),

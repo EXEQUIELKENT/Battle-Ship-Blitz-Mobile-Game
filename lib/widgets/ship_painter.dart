@@ -115,21 +115,25 @@ class ShipPainter extends CustomPainter {
         break;
     }
 
-    // Hit damage marks: little dark X craters, one per actually-hit cell,
-    // positioned at THAT cell's spot along the hull rather than counted
-    // in from the bow.
+    // Hit damage: a scorched crater with radiating cracks and a
+    // smouldering ember, one per actually-hit cell, positioned at THAT
+    // cell's spot along the hull rather than counted in from the bow.
+    // REDESIGN: this used to be a thin crossed-line "X" stamped on top of
+    // the hull — legible, but it read as a UI tag rather than an actual
+    // wound. A crater with jagged cracks running out into the surrounding
+    // plating reads as "the hull is broken here" instead.
     if (hitIndices.isNotEmpty) {
-      final crater = Paint()
-        ..color = AppColors.outline.withValues(alpha: 0.85)
-        ..strokeWidth = 3
-        ..strokeCap = StrokeCap.round;
+      final cellSize = math.min(h, w / spec.size);
       for (final i in hitIndices) {
         if (i < 0 || i >= spec.size) continue;
         final cx = w * (0.18 + 0.64 * (i / math.max(1, spec.size - 1)));
         final cy = h * 0.5 + (i.isOdd ? h * 0.12 : -h * 0.12);
-        const d = 4.5;
-        canvas.drawLine(Offset(cx - d, cy - d), Offset(cx + d, cy + d), crater);
-        canvas.drawLine(Offset(cx - d, cy + d), Offset(cx + d, cy - d), crater);
+        _drawDamageMark(
+          canvas,
+          Offset(cx, cy),
+          cellSize,
+          spec.kind.index * 31 + i,
+        );
       }
     }
 
@@ -148,25 +152,118 @@ class ShipPainter extends CustomPainter {
     canvas.restore();
   }
 
-  /// The same dark X craters the flat skins get.
+  /// The same scorched-crater damage the flat skins get — see
+  /// [_drawDamageMark]. Kept in step with `paint`'s copy above.
   ///
   /// Damage is deliberately NOT themed: a player has to read "this hull
   /// has been hit" at a glance on an opponent's board, and making that
   /// signal depend on which fleet they happen to have bought would put a
   /// gameplay read behind a cosmetic. The ships change; the wounds don't.
   void _familyDamage(Canvas canvas, double w, double h) {
-    final crater = Paint()
-      ..color = AppColors.outline.withValues(alpha: 0.85)
-      ..strokeWidth = 3
-      ..strokeCap = StrokeCap.round;
+    final cellSize = math.min(h, w / spec.size);
     for (final i in hitIndices) {
       if (i < 0 || i >= spec.size) continue;
       final cx = w * (0.18 + 0.64 * (i / math.max(1, spec.size - 1)));
       final cy = h * 0.5 + (i.isOdd ? h * 0.12 : -h * 0.12);
-      const d = 4.5;
-      canvas.drawLine(Offset(cx - d, cy - d), Offset(cx + d, cy + d), crater);
-      canvas.drawLine(Offset(cx - d, cy + d), Offset(cx + d, cy - d), crater);
+      _drawDamageMark(
+        canvas,
+        Offset(cx, cy),
+        cellSize,
+        spec.kind.index * 31 + i,
+      );
     }
+  }
+
+  /// One hit cell's damage: a jittered, dark scorch crater with a couple
+  /// of cracks running out past its own edge into the surrounding hull,
+  /// plus a small smouldering ember at the centre — the one bit of colour
+  /// in an otherwise dark mark.
+  ///
+  /// [seed] is derived from the ship kind and cell index (not the hit's
+  /// wall-clock time), so a given cell's crater keeps exactly the same
+  /// jitter across repaints instead of reshuffling every time the ship
+  /// widget rebuilds (e.g. on the next shot landing elsewhere on the same
+  /// hull).
+  static void _drawDamageMark(
+    Canvas canvas,
+    Offset center,
+    double cellSize,
+    int seed,
+  ) {
+    final rng = math.Random(seed);
+    final r = cellSize * 0.30;
+    const char = Color(0xFF14181C);
+
+    // Soft dark halo so the mark reads as a scorched dent rather than a
+    // flat sticker sitting on top of the hull.
+    canvas.drawCircle(
+      center,
+      r * 1.4,
+      Paint()..color = Colors.black.withValues(alpha: 0.16),
+    );
+
+    // Irregular crater — a jittered polygon rather than a perfect circle,
+    // so it reads as an actual burst rather than a UI icon.
+    const sides = 8;
+    final points = <Offset>[
+      for (var i = 0; i < sides; i++)
+        center +
+            Offset(
+              math.cos(2 * math.pi / sides * i),
+              math.sin(2 * math.pi / sides * i),
+            ) *
+                r *
+                (0.72 + rng.nextDouble() * 0.4),
+    ];
+    final crater = Path()..addPolygon(points, true);
+    canvas.drawPath(crater, Paint()..color = char.withValues(alpha: 0.72));
+    canvas.drawPath(
+      crater,
+      Paint()
+        ..color = char
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..strokeJoin = StrokeJoin.round,
+    );
+
+    // Cracks running past the crater's own rim into the surrounding
+    // plating — this is what actually sells "the hull is broken here"
+    // rather than "something was stamped on top of it".
+    final crackPaint = Paint()
+      ..color = char.withValues(alpha: 0.6)
+      ..strokeWidth = 1.4
+      ..strokeCap = StrokeCap.round;
+    final crackCount = 3 + rng.nextInt(2);
+    for (var i = 0; i < crackCount; i++) {
+      final a = rng.nextDouble() * 2 * math.pi;
+      final len = r * (1.1 + rng.nextDouble() * 0.6);
+      final dir = Offset(math.cos(a), math.sin(a));
+      final perp = Offset(-dir.dy, dir.dx) *
+          r *
+          0.18 *
+          (rng.nextBool() ? 1 : -1);
+      final mid = center + dir * len * 0.55 + perp;
+      final end = center + dir * len;
+      canvas.drawPath(
+        Path()
+          ..moveTo(center.dx, center.dy)
+          ..lineTo(mid.dx, mid.dy)
+          ..lineTo(end.dx, end.dy),
+        crackPaint,
+      );
+    }
+
+    // A small ember still glowing at the centre of the crater.
+    canvas.drawCircle(
+      center,
+      r * 0.32,
+      Paint()..color = const Color(0xFFE86A2C).withValues(alpha: 0.55),
+    );
+    canvas.drawCircle(
+      center,
+      r * 0.15,
+      Paint()..color = const Color(0xFFFFC24C).withValues(alpha: 0.65),
+    );
   }
 
   void _drawHull(Canvas canvas, double w, double h, Paint fill, Paint outline) {
