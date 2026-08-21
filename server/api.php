@@ -1,0 +1,599 @@
+<?php
+/**
+ * Battleship Blitz — online play backend.
+ *
+ * One front controller. Every request is POST with a JSON body carrying
+ * an `a` (action) field; every response is JSON. server/README.md has the
+ * endpoint list, the setup steps and the design notes.
+ *
+ * The design in one line: this server does account/friends/presence work
+ * itself, and for the match itself it is nothing but a post box. The two
+ * clients exchange exactly the same JSON lines they would have written to
+ * a TCP socket in a hotspot match — the relay stores them and hands them
+ * back in order, so the entire game protocol (mode vote, fleet exchange,
+ * firing, manoeuvres, reconnect, rematch) works over the internet without
+ * a single change to the game logic on either end.
+ */
+
+declare(strict_types=1);
+
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store');
+// The game is a native app, not a browser page, so CORS is not strictly
+// needed — but the Flutter web build talks to this too, and allowing it
+// costs nothing here.
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Headers: Content-Type');
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
+
+$config = require __DIR__ . '/config.php';
+
+// ---------------------------------------------------------------- helpers
+
+function respond(array $payload, int $status = 200): void
+{
+    http_response_code($status);
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+function fail(string $message, int $status = 400): void
+{
+    respond(['ok' => false, 'error' => $message], $status);
+}
+
+function db(array $config): PDO
+{
+    static $pdo = null;
+    if ($pdo instanceof PDO) {
+        return $pdo;
+    }
+    $dsn = sprintf(
+        'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+        $config['db_host'],
+        (int) $config['db_port'],
+        $config['db_name']
+    );
+    try {
+        $pdo = new PDO($dsn, $config['db_user'], $config['db_pass'], [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+        ]);
+    } catch (PDOException $e) {
+        // Deliberately vague to the client, specific in the server log:
+        // a connection string is not something to hand out.
+        error_log('battleship_blitz: DB connect failed: ' . $e->getMessage());
+        fail('The game server cannot reach its database.', 503);
+    }
+    return $pdo;
+}
+
+function body(): array
+{
+    $raw = file_get_contents('php://input');
+    if ($raw === false || $raw === '') {
+        return [];
+    }
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function str_field(array $in, string $key, int $max, string $default = ''): string
+{
+    $value = isset($in[$key]) && is_scalar($in[$key]) ? trim((string) $in[$key]) : $default;
+    if ($value === '') {
+        $value = $default;
+    }
+    // mb_substr keeps a multi-byte name from being cut mid-character.
+    return mb_substr($value, 0, $max);
+}
+
+function int_field(array $in, string $key, int $default = 0): int
+{
+    return isset($in[$key]) && is_numeric($in[$key]) ? (int) $in[$key] : $default;
+}
+
+/** A short, unambiguous friend code. No O/0/I/1 — these get read aloud. */
+function make_tag(PDO $pdo): string
+{
+    $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    for ($attempt = 0; $attempt < 40; $attempt++) {
+        $tag = '';
+        for ($i = 0; $i < 6; $i++) {
+            $tag .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
+        $stmt = $pdo->prepare('SELECT 1 FROM players WHERE tag = ?');
+        $stmt->execute([$tag]);
+        if (!$stmt->fetchColumn()) {
+            return $tag;
+        }
+    }
+    fail('Could not allocate a friend code — try again.', 503);
+}
+
+/**
+ * Resolves the caller from their token and stamps `last_seen`.
+ *
+ * That stamp is the entire presence system: any request at all counts as
+ * "I am here", so the heartbeat the friends screen already makes keeps a
+ * player visibly online without a second mechanism, and a player who
+ * force-quits simply stops stamping and fades out on their friends'
+ * screens once the window lapses.
+ */
+function require_player(PDO $pdo, array $in): array
+{
+    $token = str_field($in, 'token', 128);
+    if ($token === '') {
+        fail('Not signed in.', 401);
+    }
+    $hash = hash('sha256', $token);
+    $stmt = $pdo->prepare('SELECT * FROM players WHERE token_hash = ?');
+    $stmt->execute([$hash]);
+    $player = $stmt->fetch();
+    if (!$player) {
+        fail('Not signed in.', 401);
+    }
+    $pdo->prepare('UPDATE players SET last_seen = NOW() WHERE id = ?')
+        ->execute([$player['id']]);
+    return $player;
+}
+
+/** The public shape of a player — never includes the token hash. */
+function public_player(array $row, int $onlineWindow): array
+{
+    return [
+        'id'          => (int) $row['id'],
+        'tag'         => $row['tag'],
+        'name'        => $row['name'],
+        'rp'          => (int) $row['rp'],
+        'wins'        => (int) $row['wins'],
+        'losses'      => (int) $row['losses'],
+        'bestStreak'  => (int) $row['best_streak'],
+        'ship'        => $row['ship_skin'],
+        'shipChosen'  => ((int) $row['ship_chosen']) === 1,
+        'cannon'      => $row['cannon_skin'],
+        'theme'       => $row['theme'],
+        'online'      => isset($row['seconds_since_seen'])
+            ? ((int) $row['seconds_since_seen']) <= $onlineWindow
+            : false,
+        'lastSeenAgo' => isset($row['seconds_since_seen'])
+            ? (int) $row['seconds_since_seen']
+            : null,
+    ];
+}
+
+// ----------------------------------------------------------------- routing
+
+$in     = body();
+$action = str_field($in, 'a', 32);
+$pdo    = db($config);
+$window = (int) $config['online_window_seconds'];
+
+switch ($action) {
+
+    // ------------------------------------------------------------ health
+    case 'ping':
+        respond(['ok' => true, 'service' => 'battleship-blitz', 'version' => 1]);
+
+    // ---------------------------------------------------------- register
+    //
+    // Creates an account for this installation and returns the token the
+    // app stores locally. Called once, on first entry to the online
+    // screen; after that the app just reuses its saved token.
+    case 'register': {
+        $name = str_field($in, 'name', 32, 'Captain');
+        $token = bin2hex(random_bytes(32));
+        $tag = make_tag($pdo);
+        $stmt = $pdo->prepare(
+            'INSERT INTO players (tag, name, token_hash, last_seen, created_at)
+             VALUES (?, ?, ?, NOW(), NOW())'
+        );
+        $stmt->execute([$tag, $name, hash('sha256', $token)]);
+        $id = (int) $pdo->lastInsertId();
+        respond(['ok' => true, 'id' => $id, 'tag' => $tag, 'token' => $token]);
+    }
+
+    // -------------------------------------------------------------- sync
+    //
+    // Pushes this device's local profile up so friends see current stats.
+    // The game stays entirely playable offline, so the device's own copy
+    // is the authority here — the server is a mirror for other people to
+    // read, not a scoreboard to be defended.
+    case 'sync': {
+        $me = require_player($pdo, $in);
+        $stmt = $pdo->prepare(
+            'UPDATE players SET name = ?, rp = ?, wins = ?, losses = ?,
+                    best_streak = ?, ship_skin = ?, ship_chosen = ?,
+                    cannon_skin = ?, theme = ?
+             WHERE id = ?'
+        );
+        $stmt->execute([
+            str_field($in, 'name', 32, $me['name']),
+            max(0, int_field($in, 'rp', (int) $me['rp'])),
+            max(0, int_field($in, 'wins', (int) $me['wins'])),
+            max(0, int_field($in, 'losses', (int) $me['losses'])),
+            max(0, int_field($in, 'bestStreak', (int) $me['best_streak'])),
+            str_field($in, 'ship', 24, $me['ship_skin']),
+            !empty($in['shipChosen']) ? 1 : 0,
+            str_field($in, 'cannon', 24, $me['cannon_skin']),
+            str_field($in, 'theme', 24, $me['theme']),
+            $me['id'],
+        ]);
+        respond(['ok' => true]);
+    }
+
+    // -------------------------------------------------------------- poll
+    //
+    // The friends screen's heartbeat. One request returns everything that
+    // screen shows — friends with live presence and stats, incoming and
+    // outgoing requests, and any invitation waiting — so presence costs
+    // no extra traffic beyond what the UI already needs.
+    case 'poll': {
+        $me = require_player($pdo, $in);
+
+        // Every placeholder is distinct even where the value repeats:
+        // native (non-emulated) prepares will not let one named parameter
+        // be bound to several positions.
+        $stmt = $pdo->prepare(
+            "SELECT p.*, TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) AS seconds_since_seen,
+                    f.status, f.requester_id
+             FROM friendships f
+             JOIN players p
+               ON p.id = IF(f.requester_id = :me_side, f.addressee_id, f.requester_id)
+             WHERE f.requester_id = :me_req OR f.addressee_id = :me_addr
+             ORDER BY (TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) <= :win) DESC, p.name ASC"
+        );
+        $stmt->execute([
+            'me_side' => $me['id'],
+            'me_req'  => $me['id'],
+            'me_addr' => $me['id'],
+            'win'     => $window,
+        ]);
+
+        $friends = [];
+        $incoming = [];
+        $outgoing = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $entry = public_player($row, $window);
+            if ($row['status'] === 'accepted') {
+                $friends[] = $entry;
+            } elseif ((int) $row['requester_id'] === (int) $me['id']) {
+                $outgoing[] = $entry;
+            } else {
+                $incoming[] = $entry;
+            }
+        }
+
+        // Any live match involving me — an invitation I have been sent, one
+        // I have sent, or a game already under way.
+        $stmt = $pdo->prepare(
+            "SELECT m.*, h.name AS host_name, g.name AS guest_name
+             FROM matches m
+             JOIN players h ON h.id = m.host_id
+             JOIN players g ON g.id = m.guest_id
+             WHERE (m.host_id = ? OR m.guest_id = ?) AND m.status <> 'done'
+             ORDER BY m.id DESC LIMIT 1"
+        );
+        $stmt->execute([$me['id'], $me['id']]);
+        $matchRow = $stmt->fetch();
+
+        $match = null;
+        if ($matchRow) {
+            $iAmHost = ((int) $matchRow['host_id']) === ((int) $me['id']);
+            $match = [
+                'id'       => (int) $matchRow['id'],
+                'status'   => $matchRow['status'],
+                'youAreHost' => $iAmHost,
+                'peerId'   => $iAmHost ? (int) $matchRow['guest_id'] : (int) $matchRow['host_id'],
+                'peerName' => $iAmHost ? $matchRow['guest_name'] : $matchRow['host_name'],
+            ];
+        }
+
+        respond([
+            'ok'       => true,
+            'me'       => public_player(
+                $me + ['seconds_since_seen' => 0],
+                $window
+            ),
+            'friends'  => $friends,
+            'incoming' => $incoming,
+            'outgoing' => $outgoing,
+            'match'    => $match,
+        ]);
+    }
+
+    // -------------------------------------------------------------- find
+    case 'find': {
+        require_player($pdo, $in);
+        $tag = strtoupper(str_field($in, 'tag', 8));
+        if ($tag === '') {
+            fail('Enter a friend code.');
+        }
+        $stmt = $pdo->prepare(
+            'SELECT *, TIMESTAMPDIFF(SECOND, last_seen, NOW()) AS seconds_since_seen
+             FROM players WHERE tag = ?'
+        );
+        $stmt->execute([$tag]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            fail('No captain with that code.', 404);
+        }
+        respond(['ok' => true, 'player' => public_player($row, $window)]);
+    }
+
+    // ----------------------------------------------------------- request
+    case 'request': {
+        $me = require_player($pdo, $in);
+        $tag = strtoupper(str_field($in, 'tag', 8));
+        $stmt = $pdo->prepare('SELECT id FROM players WHERE tag = ?');
+        $stmt->execute([$tag]);
+        $otherId = (int) ($stmt->fetchColumn() ?: 0);
+        if ($otherId === 0) {
+            fail('No captain with that code.', 404);
+        }
+        if ($otherId === (int) $me['id']) {
+            fail('That is your own friend code.');
+        }
+
+        // If they already asked us, accept instead of creating a mirrored
+        // pending row — otherwise two people adding each other at the same
+        // time would sit forever, each waiting on the other.
+        $stmt = $pdo->prepare(
+            'SELECT id, status, requester_id FROM friendships
+             WHERE (requester_id = ? AND addressee_id = ?)
+                OR (requester_id = ? AND addressee_id = ?)'
+        );
+        $stmt->execute([$me['id'], $otherId, $otherId, $me['id']]);
+        $existing = $stmt->fetch();
+
+        if ($existing) {
+            if ($existing['status'] === 'accepted') {
+                respond(['ok' => true, 'status' => 'accepted']);
+            }
+            if ((int) $existing['requester_id'] === $otherId) {
+                $pdo->prepare("UPDATE friendships SET status = 'accepted' WHERE id = ?")
+                    ->execute([$existing['id']]);
+                respond(['ok' => true, 'status' => 'accepted']);
+            }
+            respond(['ok' => true, 'status' => 'pending']);
+        }
+
+        $pdo->prepare(
+            'INSERT INTO friendships (requester_id, addressee_id, status, created_at)
+             VALUES (?, ?, ?, NOW())'
+        )->execute([$me['id'], $otherId, 'pending']);
+        respond(['ok' => true, 'status' => 'pending']);
+    }
+
+    // ----------------------------------------------------------- respond
+    case 'respond': {
+        $me = require_player($pdo, $in);
+        $otherId = int_field($in, 'playerId');
+        $accept = !empty($in['accept']);
+        // Only the ADDRESSEE may accept: answering your own request would
+        // let anyone friend anybody unilaterally.
+        $stmt = $pdo->prepare(
+            "SELECT id FROM friendships
+             WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'"
+        );
+        $stmt->execute([$otherId, $me['id']]);
+        $id = (int) ($stmt->fetchColumn() ?: 0);
+        if ($id === 0) {
+            fail('That request is no longer waiting.', 404);
+        }
+        if ($accept) {
+            $pdo->prepare("UPDATE friendships SET status = 'accepted' WHERE id = ?")
+                ->execute([$id]);
+        } else {
+            $pdo->prepare('DELETE FROM friendships WHERE id = ?')->execute([$id]);
+        }
+        respond(['ok' => true]);
+    }
+
+    // ---------------------------------------------------------- unfriend
+    case 'unfriend': {
+        $me = require_player($pdo, $in);
+        $otherId = int_field($in, 'playerId');
+        $pdo->prepare(
+            'DELETE FROM friendships
+             WHERE (requester_id = ? AND addressee_id = ?)
+                OR (requester_id = ? AND addressee_id = ?)'
+        )->execute([$me['id'], $otherId, $otherId, $me['id']]);
+        respond(['ok' => true]);
+    }
+
+    // ------------------------------------------------------------ invite
+    //
+    // The inviter becomes the match HOST, which is what makes them the red
+    // fleet and gives them the opening shot — the same thing hosting a
+    // hotspot room does.
+    case 'invite': {
+        $me = require_player($pdo, $in);
+        $friendId = int_field($in, 'playerId');
+
+        $stmt = $pdo->prepare(
+            "SELECT 1 FROM friendships
+             WHERE status = 'accepted'
+               AND ((requester_id = ? AND addressee_id = ?)
+                 OR (requester_id = ? AND addressee_id = ?))"
+        );
+        $stmt->execute([$me['id'], $friendId, $friendId, $me['id']]);
+        if (!$stmt->fetchColumn()) {
+            fail('You can only invite friends.', 403);
+        }
+
+        // One live match per player. Clearing ours first means a stale
+        // invitation nobody ever answered can't wedge the button forever.
+        $pdo->prepare(
+            "UPDATE matches SET status = 'done', updated_at = NOW()
+             WHERE (host_id = ? OR guest_id = ?) AND status <> 'done'"
+        )->execute([$me['id'], $me['id']]);
+
+        $stmt = $pdo->prepare(
+            "SELECT 1 FROM matches
+             WHERE (host_id = ? OR guest_id = ?) AND status = 'active'"
+        );
+        $stmt->execute([$friendId, $friendId]);
+        if ($stmt->fetchColumn()) {
+            fail('That captain is already in a battle.', 409);
+        }
+
+        $pdo->prepare(
+            "INSERT INTO matches (host_id, guest_id, status, created_at, updated_at)
+             VALUES (?, ?, 'inviting', NOW(), NOW())"
+        )->execute([$me['id'], $friendId]);
+        respond(['ok' => true, 'matchId' => (int) $pdo->lastInsertId()]);
+    }
+
+    // ---------------------------------------------------- invite_respond
+    case 'invite_respond': {
+        $me = require_player($pdo, $in);
+        $matchId = int_field($in, 'matchId');
+        $accept = !empty($in['accept']);
+        $stmt = $pdo->prepare(
+            "SELECT * FROM matches WHERE id = ? AND guest_id = ? AND status = 'inviting'"
+        );
+        $stmt->execute([$matchId, $me['id']]);
+        if (!$stmt->fetch()) {
+            fail('That invitation has expired.', 404);
+        }
+        $pdo->prepare('UPDATE matches SET status = ?, updated_at = NOW() WHERE id = ?')
+            ->execute([$accept ? 'active' : 'done', $matchId]);
+        respond(['ok' => true]);
+    }
+
+    // --------------------------------------------------------- match_end
+    case 'match_end': {
+        $me = require_player($pdo, $in);
+        $matchId = int_field($in, 'matchId');
+        $pdo->prepare(
+            "UPDATE matches SET status = 'done', updated_at = NOW()
+             WHERE id = ? AND (host_id = ? OR guest_id = ?)"
+        )->execute([$matchId, $me['id'], $me['id']]);
+        respond(['ok' => true]);
+    }
+
+    // -------------------------------------------------------- relay_send
+    //
+    // Posts one or more protocol lines into the match. Batched because the
+    // game happily sends two or three in the same frame (a vote plus a
+    // tick, a fleet plus a hello) and one round trip is plenty.
+    case 'relay_send': {
+        $me = require_player($pdo, $in);
+        $matchId = int_field($in, 'matchId');
+        $lines = isset($in['lines']) && is_array($in['lines']) ? $in['lines'] : [];
+
+        $stmt = $pdo->prepare(
+            'SELECT * FROM matches WHERE id = ? AND (host_id = ? OR guest_id = ?)'
+        );
+        $stmt->execute([$matchId, $me['id'], $me['id']]);
+        if (!$stmt->fetch()) {
+            fail('Not in that match.', 403);
+        }
+
+        $insert = $pdo->prepare(
+            'INSERT INTO match_msgs (match_id, sender_id, body, created_at)
+             VALUES (?, ?, ?, NOW())'
+        );
+        foreach ($lines as $line) {
+            if (!is_string($line) || $line === '') {
+                continue;
+            }
+            // A protocol line is a single JSON object; anything larger is
+            // not something this game sends.
+            $insert->execute([$matchId, $me['id'], mb_substr($line, 0, 65535)]);
+        }
+        $pdo->prepare('UPDATE matches SET updated_at = NOW() WHERE id = ?')
+            ->execute([$matchId]);
+        respond(['ok' => true]);
+    }
+
+    // -------------------------------------------------------- relay_poll
+    //
+    // Long poll: returns immediately if the opponent has said anything
+    // since `since`, otherwise holds the connection open for up to
+    // `poll_hold_seconds` waiting for them to. That keeps a turn-based
+    // match feeling close to instant without the client hammering the
+    // server several times a second.
+    case 'relay_poll': {
+        $me = require_player($pdo, $in);
+        $matchId = int_field($in, 'matchId');
+        $since = int_field($in, 'since');
+
+        $stmt = $pdo->prepare(
+            'SELECT * FROM matches WHERE id = ? AND (host_id = ? OR guest_id = ?)'
+        );
+        $stmt->execute([$matchId, $me['id'], $me['id']]);
+        $match = $stmt->fetch();
+        if (!$match) {
+            fail('Not in that match.', 403);
+        }
+        $peerId = ((int) $match['host_id']) === ((int) $me['id'])
+            ? (int) $match['guest_id']
+            : (int) $match['host_id'];
+
+        // Don't keep working on a poll whose client has already hung up.
+        ignore_user_abort(false);
+        @set_time_limit((int) $config['poll_hold_seconds'] + 10);
+
+        $fetch = $pdo->prepare(
+            'SELECT seq, body FROM match_msgs
+             WHERE match_id = ? AND sender_id = ? AND seq > ?
+             ORDER BY seq ASC LIMIT 200'
+        );
+        $peerSeen = $pdo->prepare(
+            'SELECT TIMESTAMPDIFF(SECOND, last_seen, NOW()) FROM players WHERE id = ?'
+        );
+        $matchState = $pdo->prepare('SELECT status FROM matches WHERE id = ?');
+
+        $deadline = microtime(true) + (float) $config['poll_hold_seconds'];
+        $rows = [];
+        while (true) {
+            $fetch->execute([$matchId, $peerId, $since]);
+            $rows = $fetch->fetchAll();
+            if ($rows || microtime(true) >= $deadline) {
+                break;
+            }
+            // 100ms: fast enough that a shot lands promptly (measured
+            // end-to-end delivery is ~250ms including both round trips),
+            // slow enough that a held connection isn't spinning the
+            // database.
+            usleep(100000);
+        }
+
+        $peerSeen->execute([$peerId]);
+        $peerAgo = $peerSeen->fetchColumn();
+        $matchState->execute([$matchId]);
+        $status = (string) $matchState->fetchColumn();
+
+        $maxSeq = $since;
+        $out = [];
+        foreach ($rows as $row) {
+            $out[] = $row['body'];
+            $maxSeq = max($maxSeq, (int) $row['seq']);
+        }
+
+        respond([
+            'ok'         => true,
+            'seq'        => $maxSeq,
+            'lines'      => $out,
+            'status'     => $status,
+            // "Have they touched the server recently" doubles as the
+            // opponent-dropped signal the reconnect grace window needs.
+            // The raw age goes along with it because a match wants a
+            // tighter, faster threshold than a friends list does: both
+            // players poll continuously while playing, so a few seconds
+            // of silence already means something is wrong.
+            'peerOnline' => $peerAgo !== false && ((int) $peerAgo) <= $window,
+            'peerAgo'    => $peerAgo === false ? null : (int) $peerAgo,
+        ]);
+    }
+
+    default:
+        fail('Unknown action.', 404);
+}

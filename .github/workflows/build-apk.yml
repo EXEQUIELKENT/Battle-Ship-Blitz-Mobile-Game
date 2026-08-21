@@ -21,6 +21,34 @@ jobs:
           channel: 'stable'
           cache: true
 
+      # Sign with the SAME key local builds use, so an APK from here can
+      # be installed straight over one built on the dev machine (and vice
+      # versa) instead of being rejected for a signature mismatch.
+      #
+      # Without these secrets the build still succeeds — it just falls
+      # back to the debug keystore, which the CI runner generates fresh
+      # for itself, so the resulting APK will NOT install over any other
+      # build. See docs/RELEASE_SIGNING.md for the one-time setup.
+      - name: Restore release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set — this APK will be"
+            echo "::warning::signed with a throwaway debug key and will NOT install"
+            echo "::warning::over a build made anywhere else."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release-key.jks
+          {
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyPassword=$KEY_PASSWORD"
+            echo "keyAlias=${KEY_ALIAS:-battleshipblitz}"
+          } > android/app/key.properties
+
       - name: Install dependencies
         run: flutter pub get
 

@@ -13,6 +13,7 @@ import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import '../widgets/ship_painter.dart';
 import 'customize_screen.dart';
+import 'friends_screen.dart';
 import 'multiplayer_screen.dart';
 import 'placement_screen.dart';
 
@@ -84,6 +85,9 @@ class _HomeScreenState extends State<HomeScreen>
   void _startLocal() {
     final controller = context.read<GameController>();
     controller.mode = GameMode.local;
+    // Both seats start on the device owner's own gear; each player can
+    // then swap to anything the profile owns on their deployment screen.
+    controller.resetLocalLoadouts();
     controller.startPlacement();
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const PlacementScreen()),
@@ -222,6 +226,23 @@ class _HomeScreenState extends State<HomeScreen>
                               ),
                             ),
                           ],
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: NeonButton(
+                            label: 'FRIENDS — PLAY ONLINE',
+                            icon: Icons.people_alt,
+                            color: AppColors.seafoam,
+                            onPressed: () {
+                              SoundService.instance.click();
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const FriendsScreen(),
+                                ),
+                              );
+                            },
+                          ),
                         ),
                         const SizedBox(height: 12),
                         SizedBox(

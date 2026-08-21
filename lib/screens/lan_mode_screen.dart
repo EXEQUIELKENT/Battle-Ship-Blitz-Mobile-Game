@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
@@ -98,10 +99,36 @@ class _LanModeScreenState extends State<LanModeScreen> {
     Navigator.pop(context);
   }
 
-  // The host always commands the red fleet, the joiner the blue one —
-  // the same identity mapping the placement and battle screens use.
-  Color get _myColor => _net.isHost ? AppColors.shipRed : AppColors.shipBlue;
-  Color get _peerColor => _net.isHost ? AppColors.shipBlue : AppColors.shipRed;
+  /// How each captain reads on screen. The host commands the red fleet
+  /// and the joiner the blue one — unless one of them equipped a hull of
+  /// their own in the shipyard, in which case that is their colour here
+  /// too. Same shared rule the deployment screen and the battle grid use
+  /// (`fleet_identity.dart`), so the colour a player is introduced with
+  /// on this screen is the colour they actually sail.
+  FleetLook get _myLook {
+    final p = context.read<ProfileStore>();
+    return fleetLook(
+      isRedSide: _net.isHost,
+      equippedShipSkinId: p.shipSkinId,
+      chosen: p.shipSkinChosen,
+    );
+  }
+
+  FleetLook get _peerLook => fleetLook(
+        isRedSide: !_net.isHost,
+        equippedShipSkinId: _net.peerShipSkinId,
+        chosen: _net.peerShipSkinChosen,
+      );
+
+  /// One icon per mode. MANOEUVRE used to share TURN BASED's icon, which
+  /// made the two cards read as the same thing at a glance — the very
+  /// distinction the card is there to draw. The "move" cross is what the
+  /// mode is actually about: a fleet that can still be dragged around.
+  static IconData _modeIcon(LanBattleMode mode) => switch (mode) {
+        LanBattleMode.chaos => Icons.whatshot,
+        LanBattleMode.turns => Icons.swap_vert_circle,
+        LanBattleMode.rearrange => Icons.open_with,
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -153,7 +180,7 @@ class _LanModeScreenState extends State<LanModeScreen> {
                           _CaptainChip(
                             name: myName.toUpperCase(),
                             role: net.isHost ? 'HOST' : 'CHALLENGER',
-                            color: _myColor,
+                            look: _myLook,
                           ),
                           const SizedBox(width: 10),
                           Text('VS', style: AppText.label(size: 11)),
@@ -161,7 +188,7 @@ class _LanModeScreenState extends State<LanModeScreen> {
                           _CaptainChip(
                             name: net.peerName.toUpperCase(),
                             role: net.isHost ? 'CHALLENGER' : 'HOST',
-                            color: _peerColor,
+                            look: _peerLook,
                           ),
                         ],
                       ),
@@ -218,12 +245,17 @@ class _LanModeScreenState extends State<LanModeScreen> {
     final isWinner = locked == mode;
     final lostOut = locked != null && !isWinner;
 
+    final me = _myLook;
+    final peer = _peerLook;
+    // The card's highlight is the colour of whoever picked it, taken from
+    // the same place their hulls are — so a captain in Arctic Storm gets
+    // a pale border with dark ink on their badge, not a red one.
     final accent = isWinner
         ? AppColors.seafoam
         : myPick
-            ? _myColor
+            ? me.color
             : peerPick
-                ? _peerColor
+                ? peer.color
                 : AppColors.outline;
 
     return Opacity(
@@ -252,10 +284,12 @@ class _LanModeScreenState extends State<LanModeScreen> {
               Row(
                 children: [
                   Icon(
-                    mode == LanBattleMode.chaos
-                        ? Icons.whatshot
-                        : Icons.swap_vert_circle,
-                    color: accent == AppColors.outline
+                    _modeIcon(mode),
+                    // The card body is cream, so a near-white hull colour
+                    // would vanish on it — fall back to the outline ink
+                    // for very pale identities.
+                    color: accent == AppColors.outline ||
+                            accent.computeLuminance() > 0.7
                         ? AppColors.navy
                         : accent,
                     size: 22,
@@ -286,13 +320,11 @@ class _LanModeScreenState extends State<LanModeScreen> {
                   children: [
                     if (myPick)
                       _VoterBadge(
-                          label: '${myName.toUpperCase()} (YOU)',
-                          color: _myColor),
+                          label: '${myName.toUpperCase()} (YOU)', look: me),
                     if (myPick && peerPick) const SizedBox(width: 8),
                     if (peerPick)
                       _VoterBadge(
-                          label: net.peerName.toUpperCase(),
-                          color: _peerColor),
+                          label: net.peerName.toUpperCase(), look: peer),
                     if (!myPick && !peerPick)
                       Text('NO VOTES YET',
                           style: AppText.label(
@@ -405,10 +437,10 @@ class _LanModeScreenState extends State<LanModeScreen> {
 class _CaptainChip extends StatelessWidget {
   final String name;
   final String role;
-  final Color color;
+  final FleetLook look;
 
   const _CaptainChip(
-      {required this.name, required this.role, required this.color});
+      {required this.name, required this.role, required this.look});
 
   @override
   Widget build(BuildContext context) {
@@ -416,19 +448,20 @@ class _CaptainChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: color,
+          color: look.color,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: AppColors.outline, width: 2.5),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Ink picked from the fill's own brightness. Hull colours run
+            // from Midnight Ops to Arctic Storm, so a fixed cream label
+            // is unreadable on a good third of the catalogue.
             Text(name,
                 overflow: TextOverflow.ellipsis,
-                style: AppText.label(size: 11)),
-            Text(role,
-                style: AppText.label(
-                    size: 8, color: AppColors.cream.withValues(alpha: 0.8))),
+                style: AppText.label(size: 11, color: look.ink)),
+            Text(role, style: AppText.label(size: 8, color: look.inkSoft)),
           ],
         ),
       ),
@@ -446,15 +479,18 @@ class _VoteTally extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final on = votes > 0;
+    final fill = on ? accent : AppColors.miss;
+    final ink =
+        fill.computeLuminance() > 0.5 ? AppColors.outline : AppColors.cream;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
       decoration: BoxDecoration(
-        color: on ? accent : AppColors.miss,
+        color: fill,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: AppColors.outline, width: 2),
       ),
       child: Text(votes == 1 ? '1 VOTE' : '$votes VOTES',
-          style: AppText.label(size: 9)),
+          style: AppText.label(size: 9, color: ink)),
     );
   }
 }
@@ -462,9 +498,9 @@ class _VoteTally extends StatelessWidget {
 /// Badge showing that a specific captain voted for the card it sits on.
 class _VoterBadge extends StatelessWidget {
   final String label;
-  final Color color;
+  final FleetLook look;
 
-  const _VoterBadge({required this.label, required this.color});
+  const _VoterBadge({required this.label, required this.look});
 
   @override
   Widget build(BuildContext context) {
@@ -472,19 +508,19 @@ class _VoterBadge extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-          color: color,
+          color: look.color,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: AppColors.outline, width: 2.5),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.how_to_vote, size: 12, color: AppColors.cream),
+            Icon(Icons.how_to_vote, size: 12, color: look.ink),
             const SizedBox(width: 5),
             Flexible(
               child: Text(label,
                   overflow: TextOverflow.ellipsis,
-                  style: AppText.label(size: 9.5)),
+                  style: AppText.label(size: 9.5, color: look.ink)),
             ),
           ],
         ),

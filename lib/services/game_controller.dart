@@ -71,6 +71,38 @@ class GameController extends ChangeNotifier {
   /// the returning player out of their own guns for a few seconds.
   bool resumedMidMatch = false;
 
+  /// Per-seat gear for LOCAL pass-and-play: index 0 is Player 1, index 1
+  /// is Player 2.
+  ///
+  /// Two people share one device and therefore one saved profile, but
+  /// they still each get to sail the hull, gun and battlefield they
+  /// picked — same as a hotspot match, where the two loadouts simply
+  /// arrive from two different profiles. Each player chooses theirs on
+  /// their own deployment screen (nobody can see the other's yet, which
+  /// is the natural moment for it), and both are seeded from the device
+  /// owner's equipped gear so a player who changes nothing gets exactly
+  /// what they had before.
+  ///
+  /// Only ever read while [mode] is [GameMode.local].
+  List<Loadout> localLoadouts = const [Loadout(), Loadout()];
+
+  /// Points both seats back at the profile's own equipped gear. Called at
+  /// the top of every local match so one match's picks can't leak into
+  /// the next.
+  void resetLocalLoadouts() {
+    final mine = Loadout.of(profile);
+    localLoadouts = [mine, mine];
+  }
+
+  void setLocalLoadout(int seat, Loadout loadout) {
+    if (seat < 0 || seat > 1) return;
+    localLoadouts = [
+      seat == 0 ? loadout : localLoadouts[0],
+      seat == 1 ? loadout : localLoadouts[1],
+    ];
+    notifyListeners();
+  }
+
   AIDifficulty difficulty = AIDifficulty.normal;
   BattlePhase phase = BattlePhase.idle;
   final List<Board> boards = [Board(), Board()];

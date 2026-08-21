@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
@@ -618,45 +619,57 @@ class _BattleScreenState extends State<BattleScreen>
   // from network play there is only one profile, so everything falls back
   // to it.
 
-  /// The skin a half's fleet is drawn in.
+  /// Whose gear paints a given half.
   ///
-  /// A captain who has actually equipped a ship skin sails it, and their
-  /// opponent sees it too. A captain who has NOT keeps their side colour
-  /// — red for the host, blue for the challenger.
+  ///  * LAN — your own profile on the bottom, and the loadout the
+  ///    opponent sent in the handshake on top. Both devices therefore
+  ///    draw the same two fleets the same way.
+  ///  * LOCAL pass-and-play — one device, one saved profile, but two
+  ///    people, each of whom picked their own gear on the deployment
+  ///    screen. The controller keeps a loadout per seat.
+  ///  * VS AI — one human owns the whole screen, so their gear is used
+  ///    throughout (the AI has no shipyard of its own).
+  Loadout _loadoutFor(bool halfIsP1) {
+    if (_lan) {
+      if (halfIsP1) return Loadout.of(context.read<ProfileStore>());
+      final net = context.read<NetworkService>();
+      return Loadout(
+        shipSkinId: net.peerShipSkinId,
+        cannonSkinId: net.peerCannonSkinId,
+        themeId: net.peerThemeId,
+        shipChosen: net.peerShipSkinChosen,
+      );
+    }
+    if (context.read<GameController>().mode == GameMode.local) {
+      return context.read<GameController>().localLoadouts[halfIsP1 ? 0 : 1];
+    }
+    return Loadout.of(context.read<ProfileStore>());
+  }
+
+  /// How a half's fleet reads on screen — hull colour, chrome colour and
+  /// readable ink — resolved by the shared rule in `fleet_identity.dart`
+  /// so this screen, the deployment screen and the mode vote can never
+  /// disagree about what colour a captain is.
   ///
-  /// That fallback matters: the catalogue's starting hull is a neutral
-  /// grey, so treating "equipped" as "always use the catalogue skin" put
-  /// two untouched profiles into two identical grey fleets and threw away
-  /// the only thing distinguishing the sides. Skins are an override on
-  /// top of the red/blue identity, not a replacement for it. Away from
-  /// network play the flat red/blue is used throughout, exactly as it
-  /// always has been.
-  ShipSkin _shipSkinFor(bool halfIsP1) {
-    final sideSkin = _fleetIsRed(halfIsP1) ? _redStatusSkin : _blueStatusSkin;
-    if (!_lan) return sideSkin;
-    final equipped = halfIsP1
-        ? context.read<ProfileStore>().shipSkinId
-        : context.read<NetworkService>().peerShipSkinId;
-    if (equipped == _kDefaultShipSkinId) return sideSkin;
-    return Catalog.shipById(equipped);
+  /// Skins only override the plain red/blue where two different people
+  /// are actually choosing gear. Against the AI both fleets belong to one
+  /// player, so there is no identity to express and the flat red/blue is
+  /// kept exactly as it always was.
+  FleetLook _lookFor(bool halfIsP1) {
+    final lo = _loadoutFor(halfIsP1);
+    return fleetLook(
+      isRedSide: _fleetIsRed(halfIsP1),
+      equippedShipSkinId: lo.shipSkinId,
+      chosen: lo.shipChosen,
+      skinsApply: _lan || context.read<GameController>().mode == GameMode.local,
+    );
   }
 
-  /// The ship skin every profile starts on. Having this equipped means
-  /// "I never picked one", so it defers to the side colour above.
-  static const String _kDefaultShipSkinId = 'steel';
+  ShipSkin _shipSkinFor(bool halfIsP1) => _lookFor(halfIsP1).skin;
 
-  CannonSkin _cannonSkinFor(bool halfIsP1) {
-    final profile = context.read<ProfileStore>();
-    if (!_lan || halfIsP1) return profile.cannonSkin;
-    return Catalog.cannonById(context.read<NetworkService>().peerCannonSkinId);
-  }
+  CannonSkin _cannonSkinFor(bool halfIsP1) => _loadoutFor(halfIsP1).cannonSkin;
 
-  GameplayTheme _themeFor(bool halfIsP1) {
-    final profile = context.read<ProfileStore>();
-    if (!_lan || halfIsP1) return profile.gameplayTheme;
-    return Catalog
-        .gameplayThemeById(context.read<NetworkService>().peerThemeId);
-  }
+  GameplayTheme _themeFor(bool halfIsP1) => _loadoutFor(halfIsP1).theme;
 
   // ------------------------------------------------ MANOEUVRE ACTIONS ---
 
@@ -730,17 +743,27 @@ class _BattleScreenState extends State<BattleScreen>
   /// since every trajectory is derived from this same value (see
   /// `_cannonMouth`), that is also where their cannonballs launch from.
   ///
-  ///  * CHAOS — there are no turns to mark in the first place.
-  ///  * MANOEUVRE — a cannon parked in the middle of its owner's grid
-  ///    sits directly on top of the fleet they are supposed to be
-  ///    dragging around, hiding the very ships the mode is about. That
-  ///    applies to BOTH cannons on BOTH devices: your opponent's gun
-  ///    sliding onto their board blocks your view of the water you are
-  ///    aiming at just as badly. The turn is signalled by dimming the
-  ///    grid you cannot act on instead — see `dimThisHalf` in
-  ///    `_buildHalf`.
+  ///  * CHAOS pins BOTH cannons at the back — there are no turns to mark
+  ///    in the first place.
+  ///
+  ///  * MANOEUVRE pins only the cannon on YOUR OWN half, and only on
+  ///    your own device. Parked in the middle of your grid it sits
+  ///    directly on top of the fleet this mode is entirely about
+  ///    dragging around, hiding the ships you are trying to move. The
+  ///    opponent's cannon has no such problem — you never rearrange
+  ///    anything on their water — so it still slides out to mark their
+  ///    turn, which is what makes whose-turn-it-is readable without
+  ///    getting in anyone's way.
+  ///
+  ///    The consequence is that the two devices deliberately draw the
+  ///    SAME cannon differently, and that is the point rather than a
+  ///    desync: your gun is parked at the back from where you sit, while
+  ///    your opponent watches it roll out to the middle of your grid and
+  ///    fire from there. Each end only ever pins the gun that would be
+  ///    covering its own fleet.
   double _slideFor(bool halfIsP1) {
-    if (_chaos || _manoeuvre) return 0.0;
+    if (_chaos) return 0.0;
+    if (_manoeuvre && halfIsP1) return 0.0;
     return halfIsP1 ? _slideCtrl.value : 1 - _slideCtrl.value;
   }
 
@@ -1118,7 +1141,12 @@ class _BattleScreenState extends State<BattleScreen>
     // and their opponent in blue. `_fleetIsRed` keys off the network role
     // instead (host red, joiner blue), so the two devices now agree on
     // who is which colour.
-    final accent = _fleetIsRed(halfIsP1) ? AppColors.hit : AppColors.blue;
+    // …and every piece of chrome belonging to that half — the turn scrim
+    // tint and the cannon's ready glow — is tinted with the SAME identity
+    // colour the hulls are painted in, so a captain wearing Emerald Tide
+    // doesn't command green ships behind a red highlight.
+    final look = _lookFor(halfIsP1);
+    final accent = look.color;
     // Each half is painted in ITS OWNER's battlefield theme, so the
     // customisation a player paid for is what they sail on — and their
     // opponent sees it too, on the same half, on both devices.
@@ -1165,11 +1193,13 @@ class _BattleScreenState extends State<BattleScreen>
       // No active side at all — nothing to signal.
       dimThisHalf = false;
     } else if (_manoeuvre) {
-      // The cannon no longer marks whose turn it is (it stays at the back
-      // so it can't sit on top of the fleet being rearranged), so the
-      // scrim takes that job — over the ENEMY grid, while you can't shoot
-      // at it. Never over your own board: that is the one you need to see
-      // and work on, and it stays lit whichever turn it is.
+      // The scrim goes over the ENEMY grid while you can't shoot at it —
+      // never over your own board, which is the one you need to see and
+      // work on, and which stays lit whichever turn it is. (Your own
+      // cannon is parked at the back in this mode so it can't sit on top
+      // of the fleet you're rearranging — see `_slideFor` — so your half
+      // carries no turn cue at all. Theirs carries both: their gun slides
+      // out AND the scrim lifts.)
       dimThisHalf = !halfIsP1 && _p2Active;
     } else {
       // Spotlight: dim the firing player's own (inert) board so attention
@@ -1191,7 +1221,7 @@ class _BattleScreenState extends State<BattleScreen>
     // "here's where everything was" recap before heading to the result
     // screen, instead of the empty-grid secrecy rule that applies mid-game.
     final gameOver = controller.phase == BattlePhase.finished;
-    final fleetSkin = _shipSkinFor(halfIsP1);
+    final fleetSkin = look.skin;
 
     // Whether this half's fleet is drawn on the board at all.
     //
@@ -1547,15 +1577,11 @@ class _BattleScreenState extends State<BattleScreen>
             child: _DotsBadge(
               topLeft: 5 - topBoard.sunkCount,
               bottomLeft: 5 - bottomBoard.sunkCount,
-              // Follows the same host-red / joiner-blue identity as the
-              // fleets themselves, so the badge can't disagree with the
-              // ships it's counting.
-              topColor: _fleetIsRed(topIsP1Fleet)
-                  ? AppColors.hit
-                  : AppColors.blue,
-              bottomColor: _fleetIsRed(bottomIsP1Fleet)
-                  ? AppColors.hit
-                  : AppColors.blue,
+              // Takes its colour from the same place the hulls do, so the
+              // badge can't disagree with the ships it's counting —
+              // whether that's the plain side colour or a skin.
+              topColor: _lookFor(topIsP1Fleet).color,
+              bottomColor: _lookFor(bottomIsP1Fleet).color,
             ),
           ),
           Positioned(
@@ -1568,11 +1594,6 @@ class _BattleScreenState extends State<BattleScreen>
       ),
     );
   }
-
-  static const ShipSkin _redStatusSkin =
-      ShipSkin('p1', 'P1', AppColors.shipRed, AppColors.shipRedDark, 0);
-  static const ShipSkin _blueStatusSkin =
-      ShipSkin('p2', 'P2', AppColors.shipBlue, AppColors.shipBlueDark, 0);
 
   /// Whether the fleet on a given half flies RED colours.
   ///

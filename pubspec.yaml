@@ -16,7 +16,11 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+# Bump the +N build number on EVERY release you want to install over an
+# existing one: Android refuses to install an APK whose versionCode is
+# lower than the one already on the device, and treats an equal one as a
+# reinstall rather than an update.
+version: 1.1.0+2
 
 environment:
   sdk: ^3.9.2

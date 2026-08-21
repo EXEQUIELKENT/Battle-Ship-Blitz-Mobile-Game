@@ -5,11 +5,13 @@ import 'package:provider/provider.dart';
 import '../core/theme.dart';
 import '../services/game_controller.dart';
 import '../services/network_service.dart';
+import '../services/online_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'battle_screen.dart';
+import 'friends_screen.dart';
 import 'lan_mode_screen.dart';
 
 /// Hotspot (LAN) + Online matchmaking lobby — cartoon style.
@@ -24,18 +26,18 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tab;
   final _ipCtrl = TextEditingController();
-  final _codeCtrl = TextEditingController();
+  final _serverCtrl = TextEditingController();
   bool _hosting = false;
   bool _connecting = false;
-  bool _onlineChecked = false;
-  bool _onlineOk = false;
 
   @override
   void initState() {
     super.initState();
     _tab = TabController(length: 2, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
       final net = context.read<NetworkService>();
+      final online = context.read<OnlineService>();
       final profile = context.read<ProfileStore>();
       net.setSelfName(profile.playerName);
       // Announce what we have equipped so the opponent's device can draw
@@ -44,21 +46,19 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         shipSkinId: profile.shipSkinId,
         cannonSkinId: profile.cannonSkinId,
         themeId: profile.gameplayThemeId,
+        shipChosen: profile.shipSkinChosen,
       );
-      final ok = await net.onlineAvailable();
-      if (mounted) {
-        setState(() {
-          _onlineChecked = true;
-          _onlineOk = ok;
-        });
-      }
+      _serverCtrl.text = online.baseUrl;
+      // Quietly re-establish an existing account so the ONLINE tab is
+      // already usable if this device has been online before.
+      if (online.configured) await online.ensureAccount(profile);
     });
   }
 
   @override
   void dispose() {
     _ipCtrl.dispose();
-    _codeCtrl.dispose();
+    _serverCtrl.dispose();
     _tab.dispose();
     super.dispose();
   }
@@ -73,29 +73,28 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     );
   }
 
-  Future<void> _host(NetMode mode) async {
+  /// Opens a hotspot room and waits for someone on the same network to
+  /// walk into it. (Internet play is invitation-based instead — see the
+  /// ONLINE tab and `FriendsScreen`.)
+  Future<void> _host() async {
     final net = context.read<NetworkService>();
     final profile = context.read<ProfileStore>();
     setState(() => _hosting = true);
     SoundService.instance.click();
 
-    final code = mode == NetMode.hotspot
-        ? await net.hostHotspot(playerName: profile.playerName)
-        : await net.hostOnline(playerName: profile.playerName);
-
+    final code = await net.hostHotspot(playerName: profile.playerName);
     if (code == null) {
       setState(() => _hosting = false);
       return;
     }
 
-    // Wait for connection, then proceed to placement
+    // Wait for connection, then proceed to the mode vote.
     void listener() {
       if (net.connected) {
         net.removeListener(listener);
         if (!mounted) return;
         setState(() => _hosting = false);
-        _enterModeVote(
-            mode == NetMode.hotspot ? GameMode.hotspot : GameMode.online);
+        _enterModeVote(GameMode.hotspot);
       }
     }
 
@@ -160,31 +159,26 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     );
   }
 
-  Future<void> _joinOnline() async {
-    final net = context.read<NetworkService>();
+  /// Points the app at a game server and signs in, registering this
+  /// installation the first time. Everything else on the online tab needs
+  /// this to have succeeded.
+  Future<void> _connectOnline() async {
+    final online = context.read<OnlineService>();
     final profile = context.read<ProfileStore>();
-    final code = _codeCtrl.text.trim().toUpperCase();
-    if (code.length != 4) {
-      _toast('Enter the 4-letter room code');
-      return;
-    }
-    setState(() => _connecting = true);
-    final ok = await net.joinOnline(code, playerName: profile.playerName);
-    if (ok && mounted) {
-      void listener() {
-        if (net.connected) {
-          net.removeListener(listener);
-          if (!mounted) return;
-          setState(() => _connecting = false);
-          _enterModeVote(GameMode.online);
-        }
-      }
+    SoundService.instance.click();
+    await online.setBaseUrl(_serverCtrl.text.trim());
+    final ok = await online.ensureAccount(profile);
+    if (!mounted) return;
+    _toast(ok
+        ? 'Connected — your friend code is ${online.myTag}'
+        : (online.lastError ?? 'Could not reach that server.'));
+  }
 
-      net.addListener(listener);
-    } else {
-      setState(() => _connecting = false);
-      if (mounted && net.statusMessage.isNotEmpty) _toast(net.statusMessage);
-    }
+  void _openFriends() {
+    SoundService.instance.click();
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const FriendsScreen()),
+    );
   }
 
   void _toast(String msg) {
@@ -256,7 +250,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   controller: _tab,
                   children: [
                     _buildHotspotTab(net),
-                    _buildOnlineTab(net),
+                    _buildOnlineTab(context.watch<OnlineService>()),
                   ],
                 ),
               ),
@@ -337,7 +331,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   label: _hosting ? 'HOSTING…' : 'HOST GAME',
                   icon: Icons.anchor,
                   color: AppColors.ember,
-                  onPressed: _hosting ? null : () => _host(NetMode.hotspot),
+                  onPressed: _hosting ? null : () => _host(),
                 ),
             ],
           ),
@@ -462,13 +456,13 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
 
   // ------------------------------------------------------------ ONLINE TAB ---
 
-  Widget _buildOnlineTab(NetworkService net) {
-    final relayReady = _onlineChecked && _onlineOk;
+  Widget _buildOnlineTab(OnlineService online) {
+    final ready = online.signedIn && online.reachable;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         _card(
-          title: 'ONLINE MATCHMAKING',
+          title: 'PLAY OVER THE INTERNET',
           icon: Icons.public,
           color: AppColors.green,
           child: Column(
@@ -477,71 +471,79 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
               Row(
                 children: [
                   Icon(
-                    relayReady ? Icons.check_circle : Icons.warning_amber,
+                    ready
+                        ? Icons.check_circle
+                        : online.configured
+                            ? Icons.warning_amber
+                            : Icons.settings_ethernet,
                     size: 16,
-                    color: relayReady ? AppColors.green : AppColors.ember,
+                    color: ready ? AppColors.green : AppColors.ember,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      !_onlineChecked
-                          ? 'Checking relay…'
-                          : relayReady
-                              ? 'Relay online — play with anyone, anywhere!'
-                              : 'Relay offline. Online mode uses the same room system as hotspot: host and share your IP, or play over hotspot instead.',
-                      style:
-                          AppText.body(size: 11, color: AppColors.inkSoft),
+                      ready
+                          ? 'Signed in as ${online.myTag} — invite a friend to a battle.'
+                          : online.configured
+                              ? (online.lastError ??
+                                  'Cannot reach that server yet.')
+                              : 'Online play needs the game server. Enter its '
+                                  'address below — see server/README.md for how '
+                                  'to start it.',
+                      style: AppText.body(size: 11, color: AppColors.inkSoft),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 14),
-              NeonButton(
-                label: _hosting ? 'HOSTING…' : 'HOST ONLINE GAME',
-                icon: Icons.public,
-                color: AppColors.green,
-                onPressed: _hosting ? null : () => _host(NetMode.online),
+              Text('GAME SERVER ADDRESS',
+                  style: AppText.label(size: 9, color: AppColors.inkSoft)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _serverCtrl,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                style: AppText.body(size: 12.5, color: AppColors.navy),
+                decoration: _inputDeco('http://192.168.1.5/bbz/server'),
               ),
-              if (net.roomCode.isNotEmpty && _hosting) ...[
-                const SizedBox(height: 10),
-                Center(
-                  child: Text('ROOM CODE: ${net.roomCode}',
-                      style: AppText.title(size: 22, color: AppColors.green)),
-                ),
-                Center(
-                  child: Text('Share this code with your friend!',
-                      style:
-                          AppText.label(size: 9, color: AppColors.inkSoft)),
-                ),
-              ],
-              const SizedBox(height: 14),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   Expanded(
-                    child: TextField(
-                      controller: _codeCtrl,
-                      textCapitalization: TextCapitalization.characters,
-                      maxLength: 4,
-                      style: AppText.body(size: 14, color: AppColors.navy),
-                      decoration: _inputDeco('ROOM CODE'),
+                    child: NeonButton(
+                      label: online.busy ? 'CONNECTING…' : 'CONNECT',
+                      icon: Icons.link,
+                      color: AppColors.blue,
+                      onPressed: online.busy ? null : _connectOnline,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  NeonButton(
-                    label: _connecting ? '…' : 'JOIN',
-                    color: AppColors.ember,
-                    compact: true,
-                    onPressed: _connecting ? null : _joinOnline,
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: NeonButton(
+                      label: 'FRIENDS',
+                      icon: Icons.people,
+                      color: ready ? AppColors.green : AppColors.inkSoft,
+                      onPressed: ready ? _openFriends : null,
+                    ),
                   ),
                 ],
               ),
-              if (net.statusMessage.isNotEmpty && !_hosting) ...[
-                const SizedBox(height: 8),
-                Text(net.statusMessage,
-                    style: AppText.label(size: 9, color: AppColors.inkSoft),
-                    textAlign: TextAlign.center),
-              ],
             ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _card(
+          title: 'HOW ONLINE PLAY WORKS',
+          icon: Icons.help_outline,
+          color: AppColors.ember,
+          child: Text(
+            'Every device that connects gets its own 6-character friend '
+            'code. Swap codes with someone, add each other, and whoever is '
+            'online can be invited straight into a battle — same modes, '
+            'same rules, same reconnect window as hotspot play.\n\n'
+            'Whoever sends the invitation hosts, and so commands the red '
+            'fleet and fires first.',
+            style: AppText.body(size: 11.5, color: AppColors.inkSoft),
           ),
         ),
       ],

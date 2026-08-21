@@ -11,6 +11,7 @@ import 'core/theme.dart';
 import 'screens/home_screen.dart';
 import 'services/game_controller.dart';
 import 'services/network_service.dart';
+import 'services/online_service.dart';
 import 'services/sound_service.dart';
 import 'services/storage_service.dart';
 
@@ -94,11 +95,40 @@ Future<void> main() async {
     network: network,
   );
 
+  final online = OnlineService();
+  await online.load();
+
+  // Whichever way a match ends — played out, surrendered, abandoned, or
+  // simply backed out of — it funnels through `NetworkService.stop()`,
+  // which drops the mode back to `none`. That is the one reliable place
+  // to free the seat on the online server, so neither player is later
+  // told they are "already in a battle" over a game that finished ten
+  // minutes ago. Wiring it here rather than inside NetworkService keeps
+  // that class unaware of accounts and friends, which it has no other
+  // reason to know about.
+  //
+  // It has to be a TRANSITION out of online play, not merely "the mode is
+  // none": `startRelayMatch` begins by calling `stop()` to clear out any
+  // previous match, so a bare `mode == none` check fires in the middle of
+  // starting a match and ends the one just being set up.
+  var wasOnline = false;
+  network.addListener(() {
+    if (network.mode == NetMode.online) {
+      wasOnline = true;
+      return;
+    }
+    if (wasOnline && network.mode == NetMode.none) {
+      wasOnline = false;
+      unawaited(online.endMatch());
+    }
+  });
+
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: profile),
         ChangeNotifierProvider.value(value: network),
+        ChangeNotifierProvider.value(value: online),
         ChangeNotifierProvider.value(value: controller),
       ],
       child: const BattleshipBlitzApp(),

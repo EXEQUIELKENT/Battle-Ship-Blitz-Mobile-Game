@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
@@ -13,31 +14,6 @@ import '../widgets/battle_grid.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ship_painter.dart';
 import 'battle_screen.dart';
-
-/// Red / blue flat skins matching the 1:1 gameplay video.
-///
-/// Which one a player gets is decided by their SIDE, not by the screen
-/// they're on: local pass-and-play gives red to Player 1 and blue to
-/// Player 2, and a hotspot/online match gives red to the host and blue to
-/// whoever joined — see `isBlueFleet` in `build()`.
-const _redPlaceSkin = ShipSkin(
-  'p1v',
-  'P1',
-  AppColors.shipRed,
-  AppColors.shipRedDark,
-  0,
-);
-const _bluePlaceSkin = ShipSkin(
-  'p2v',
-  'P2',
-  AppColors.shipBlue,
-  AppColors.shipBlueDark,
-  0,
-);
-
-/// The ship skin every profile starts on — having it equipped means the
-/// player never picked one, so their side colour is used instead.
-const String _kDefaultShipSkinId = 'steel';
 
 /// "Deploy your ships" — reference-style placement:
 /// drag ships from the top dock onto the grid (or tap an empty cell),
@@ -52,6 +28,10 @@ class PlacementScreen extends StatefulWidget {
 }
 
 class _PlacementScreenState extends State<PlacementScreen> {
+  /// Which seat this screen belongs to in local pass-and-play — the index
+  /// into `GameController.localLoadouts`.
+  int get _seat => widget.isPlayer2 ? 1 : 0;
+
   late Board _board;
   ShipKind? _selected; // currently chosen dock ship
   bool _showHandoff = false;
@@ -404,6 +384,34 @@ class _PlacementScreenState extends State<PlacementScreen> {
     return MediaQuery.of(context).size.width / kBoardSize;
   }
 
+  /// Pass-and-play gear picker for THIS seat.
+  ///
+  /// Presented as a centred dialog rather than a bottom sheet on purpose:
+  /// Player 2's whole placement screen is drawn inside a 180° `RotatedBox`,
+  /// but a sheet or dialog lives in the app's overlay, above that rotation
+  /// — so it has to be turned right way up for them here, and a centred
+  /// panel reads correctly either way up while a sheet would slide in from
+  /// what is, from Player 2's seat, the top of the screen.
+  Future<void> _openGear(GameController controller, FleetLook look) async {
+    SoundService.instance.click();
+    final profile = context.read<ProfileStore>();
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (_) => RotatedBox(
+        quarterTurns: widget.isPlayer2 ? 2 : 0,
+        child: _GearDialog(
+          profile: profile,
+          seatLabel: widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1',
+          isRedSide: look.isRedSide,
+          current: controller.localLoadouts[_seat],
+          onChanged: (lo) => controller.setLocalLoadout(_seat, lo),
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = context.read<GameController>();
@@ -420,30 +428,34 @@ class _PlacementScreenState extends State<PlacementScreen> {
     // commands blue. Non-network modes keep their existing P1/P2 meaning.
     final isBlueFleet =
         isLan ? !controller.network.isHost : widget.isPlayer2;
+    final isLocal = controller.mode == GameMode.local;
 
-    // Side colour by default; a captain who has actually equipped a ship
-    // skin deploys in that instead, so the fleet they lay out here is the
-    // fleet they'll see on the battle grid. Matches `_shipSkinFor` in
-    // battle_screen.dart — including the rule that the catalogue's
-    // starting hull counts as "no skin chosen" and defers to red/blue.
-    final sideSkin = isBlueFleet ? _bluePlaceSkin : _redPlaceSkin;
-    final equippedShipSkinId = context.watch<ProfileStore>().shipSkinId;
-    final wearingSkin = isLan && equippedShipSkinId != _kDefaultShipSkinId;
-    final skin =
-        wearingSkin ? Catalog.shipById(equippedShipSkinId) : sideSkin;
+    // Which gear this captain is deploying with. In pass-and-play the two
+    // seats have separate loadouts (see `GameController.localLoadouts`)
+    // that each player sets from the GEAR button below; everywhere else
+    // it's simply the device owner's own.
+    final profile = context.watch<ProfileStore>();
+    final loadout =
+        isLocal ? controller.localLoadouts[_seat] : Loadout.of(profile);
 
-    // Name what the player is actually looking at: their side's colour
-    // normally, or the skin itself once they're wearing one — telling a
-    // captain in Emerald Tide that they command the "RED FLEET" would
-    // just be wrong.
-    final fleetLabel =
-        wearingSkin ? skin.name.toUpperCase() : '${isBlueFleet ? 'BLUE' : 'RED'} FLEET';
-    final playerLabel = controller.mode == GameMode.local
-        ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
+    // Side colour by default; a captain who has actually equipped a hull
+    // deploys in that instead, so the fleet they lay out here is the
+    // fleet they'll see on the battle grid. One shared rule, in
+    // `fleet_identity.dart`, so this screen can't drift out of step with
+    // the mode vote or the battle grid.
+    final look = fleetLook(
+      isRedSide: !isBlueFleet,
+      equippedShipSkinId: loadout.shipSkinId,
+      chosen: loadout.shipChosen,
+      skinsApply: isLan || isLocal,
+    );
+    final skin = look.skin;
+    final fleetLabel = look.label;
+    final playerLabel = isLocal
+        ? '${widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1'} — $fleetLabel'
         : isLan
-            ? '${context.watch<ProfileStore>().playerName.toUpperCase()}'
-                ' — $fleetLabel'
-            : context.watch<ProfileStore>().playerName.toUpperCase();
+            ? '${profile.playerName.toUpperCase()} — $fleetLabel'
+            : profile.playerName.toUpperCase();
     final cellSize = _cellSize(context);
 
     if (_showHandoff) {
@@ -511,6 +523,19 @@ class _PlacementScreenState extends State<PlacementScreen> {
                               style: AppText.title(size: 24),
                             ),
                           ),
+                          // Pass-and-play only: this is the one moment
+                          // each of the two players is alone with the
+                          // device, so it's where they pick their own
+                          // gear. In a network match your gear is already
+                          // whatever you equipped in the shipyard, and
+                          // there's only one of you here.
+                          if (isLocal) ...[
+                            _GearButton(
+                              color: look.color,
+                              onTap: () => _openGear(controller, look),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
                           _ExitButton(onTap: () => Navigator.pop(context)),
                         ],
                       ),
@@ -925,6 +950,296 @@ class HandoffScreen extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Header button that opens the pass-and-play gear picker. Wears the
+/// seat's own fleet colour so it doubles as a reminder of whose screen
+/// this is.
+class _GearButton extends StatelessWidget {
+  final Color color;
+  final VoidCallback onTap;
+
+  const _GearButton({required this.color, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final ink =
+        color.computeLuminance() > 0.5 ? AppColors.outline : AppColors.cream;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: cartoonBox(color, radius: 12),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.palette, size: 15, color: ink),
+            const SizedBox(width: 5),
+            Text('GEAR', style: AppText.label(size: 10, color: ink)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Per-seat customization for local pass-and-play.
+///
+/// Only offers gear the profile actually OWNS: the shipyard is still the
+/// only place anything gets bought, out of one shared wallet. This is
+/// purely the two people sharing the device dividing up what is already
+/// unlocked, so each of them sails something they picked rather than both
+/// inheriting whatever the device owner last equipped.
+class _GearDialog extends StatefulWidget {
+  final ProfileStore profile;
+  final String seatLabel;
+  final bool isRedSide;
+  final Loadout current;
+  final ValueChanged<Loadout> onChanged;
+
+  const _GearDialog({
+    required this.profile,
+    required this.seatLabel,
+    required this.isRedSide,
+    required this.current,
+    required this.onChanged,
+  });
+
+  @override
+  State<_GearDialog> createState() => _GearDialogState();
+}
+
+class _GearDialogState extends State<_GearDialog> {
+  late Loadout _lo = widget.current;
+
+  void _set(Loadout next) {
+    SoundService.instance.click();
+    setState(() => _lo = next);
+    widget.onChanged(next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ships =
+        Catalog.shipSkins.where((s) => widget.profile.owns(s.id)).toList();
+    final cannons =
+        Catalog.cannonSkins.where((c) => widget.profile.owns(c.id)).toList();
+    final themes =
+        Catalog.gameplayThemes.where((t) => widget.profile.owns(t.id)).toList();
+    final sideSkin = widget.isRedSide ? kRedFleetSkin : kBlueFleetSkin;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 40),
+      child: Container(
+        decoration: cartoonBox(AppColors.navy, radius: 20),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text('${widget.seatLabel} GEAR',
+                      style: AppText.title(size: 18)),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    SoundService.instance.click();
+                    Navigator.pop(context);
+                  },
+                  child: const Icon(Icons.close, color: AppColors.cream),
+                ),
+              ],
+            ),
+            const SizedBox(height: 2),
+            Text('EVERYTHING THE SHIPYARD HAS UNLOCKED — PICK YOURS',
+                style: AppText.label(
+                    size: 9, color: AppColors.cream.withValues(alpha: 0.7))),
+            const SizedBox(height: 14),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  _section('HULL'),
+                  SizedBox(
+                    height: 76,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        // Opting back out of skins entirely: the plain
+                        // side colour is a legitimate choice, not merely
+                        // the absence of one.
+                        _hullChip(
+                          skin: sideSkin,
+                          label: widget.isRedSide ? 'RED FLEET' : 'BLUE FLEET',
+                          selected: !_lo.shipChosen,
+                          onTap: () => _set(_lo.copyWith(shipChosen: false)),
+                        ),
+                        for (final s in ships)
+                          _hullChip(
+                            skin: s,
+                            label: s.name.toUpperCase(),
+                            selected: _lo.shipChosen && _lo.shipSkinId == s.id,
+                            onTap: () => _set(
+                                _lo.copyWith(shipSkinId: s.id, shipChosen: true)),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _section('CANNON'),
+                  SizedBox(
+                    height: 64,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        for (final c in cannons)
+                          _swatchChip(
+                            top: c.barrel,
+                            bottom: c.projectile,
+                            label: c.name.toUpperCase(),
+                            selected: _lo.cannonSkinId == c.id,
+                            onTap: () => _set(_lo.copyWith(cannonSkinId: c.id)),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _section('BATTLEFIELD'),
+                  SizedBox(
+                    height: 64,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        for (final t in themes)
+                          _swatchChip(
+                            top: t.grid,
+                            bottom: t.deck,
+                            label: t.name.toUpperCase(),
+                            selected: _lo.themeId == t.id,
+                            onTap: () => _set(_lo.copyWith(themeId: t.id)),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            NeonButton(
+              label: 'DONE',
+              icon: Icons.check,
+              color: AppColors.seafoam,
+              onPressed: () {
+                SoundService.instance.click();
+                Navigator.pop(context);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _section(String title) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Text(title, style: AppText.label(size: 10)),
+      );
+
+  Widget _hullChip({
+    required ShipSkin skin,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 94,
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
+        decoration: BoxDecoration(
+          color: AppColors.navyDeep,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? AppColors.gold : AppColors.outline,
+            width: selected ? 3 : 2,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: 32,
+              width: 78,
+              child: CustomPaint(
+                painter: ShipPainter(
+                  spec: kFleet[2], // cruiser — reads clearly at this size
+                  skin: skin,
+                ),
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: AppText.label(size: 8)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _swatchChip({
+    required Color top,
+    required Color bottom,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 94,
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
+        decoration: BoxDecoration(
+          color: AppColors.navyDeep,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? AppColors.gold : AppColors.outline,
+            width: selected ? 3 : 2,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              height: 22,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: AppColors.outline, width: 1.5),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [top, bottom],
+                ),
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: AppText.label(size: 8)),
+          ],
         ),
       ),
     );

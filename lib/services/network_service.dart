@@ -6,18 +6,14 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 
 import '../models/game_models.dart';
+import 'online_api.dart';
+import 'relay_link.dart';
 
 /// Network modes supported by the game.
 enum NetMode { none, hotspot, online }
 
 /// TCP port used for hotspot (LAN) matches.
 const int kGamePort = 45678;
-
-/// Public rendezvous relay. When reachable, "online" matches work
-/// between any two devices connected to the internet; otherwise the
-/// game gracefully falls back to LAN play.
-const String kRelayHost = 'tcp.ngrok.io';
-const int kRelayPort = 0; // 0 = relay unavailable (LAN fallback)
 
 /// Hotspot game room advertised to other players.
 class RoomInfo {
@@ -38,8 +34,25 @@ class RoomInfo {
   });
 }
 
-/// Low-level line-based JSON protocol over a socket.
-class _Protocol {
+/// A duplex channel carrying the game's JSON messages to the opponent.
+///
+/// The whole match protocol — the mode vote, the fleet exchange, firing,
+/// MANOEUVRE moves, the mid-match resume snapshot, the rematch handshake
+/// — is just objects going back and forth over one of these. Keeping that
+/// behind an interface is what let internet play be added without
+/// touching any of it: [SocketLink] carries it over a direct TCP socket
+/// on a shared hotspot, [RelayLink] carries the identical messages over
+/// HTTP through the online server, and nothing above this line can tell
+/// which one it is talking to.
+abstract class GameLink {
+  Stream<Map<String, dynamic>> get messages;
+  void send(Map<String, dynamic> msg);
+  Future<void> close();
+}
+
+/// Line-based JSON protocol over a TCP socket — hotspot / same-network
+/// play, where the two devices can reach each other directly.
+class SocketLink implements GameLink {
   final Socket socket;
   final _in = StreamController<Map<String, dynamic>>.broadcast();
   StreamSubscription? _sub;
@@ -53,7 +66,7 @@ class _Protocol {
   /// hangs off (see [NetworkService._onPeerDisconnected]).
   final void Function()? onClosed;
 
-  _Protocol(this.socket, {this.onClosed}) {
+  SocketLink(this.socket, {this.onClosed}) {
     _sub = socket
         .cast<List<int>>()
         .transform(utf8.decoder)
@@ -73,14 +86,17 @@ class _Protocol {
     }
   }
 
+  @override
   void send(Map<String, dynamic> msg) {
     try {
       socket.write('${jsonEncode(msg)}\n');
     } catch (_) {/* socket closed */}
   }
 
+  @override
   Stream<Map<String, dynamic>> get messages => _in.stream;
 
+  @override
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
@@ -113,6 +129,13 @@ class NetworkService extends ChangeNotifier {
   String peerShipSkinId = 'steel';
   String peerCannonSkinId = 'mk1';
   String peerThemeId = 'classic';
+
+  /// Whether the opponent actually picked their hull or is still on the
+  /// starter one — the difference between showing their skin and showing
+  /// their side's plain red/blue. Sent because the id alone can't say:
+  /// Steel Fleet is both the default and a real, choosable skin. See
+  /// `ProfileStore.shipSkinChosen`.
+  bool peerShipSkinChosen = false;
 
   // ------------------------------------------- MATCH LIFECYCLE / DROPS ---
 
@@ -159,7 +182,7 @@ class NetworkService extends ChangeNotifier {
 
   ServerSocket? _server;
   RawDatagramSocket? _udp;
-  _Protocol? _proto;
+  GameLink? _link;
   Timer? _beaconTimer;
   Timer? _scanTimer;
   Timer? _voteTimer;
@@ -170,20 +193,6 @@ class NetworkService extends ChangeNotifier {
   static const _magic = 'BBLZ1';
 
   bool get _networkAvailable => !kIsWeb;
-
-  /// Whether true online (internet) play can be attempted right now.
-  Future<bool> onlineAvailable() async {
-    if (!_networkAvailable) return false;
-    if (kRelayPort == 0) return false;
-    try {
-      final s = await Socket.connect(kRelayHost, kRelayPort,
-          timeout: const Duration(seconds: 3));
-      await s.close();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
 
   Future<String> _localIp() async {
     try {
@@ -249,16 +258,16 @@ class NetworkService extends ChangeNotifier {
 
   void _acceptSocket(Socket socket) {
     // One seat, first come first served.
-    if (_proto != null) {
+    if (_link != null) {
       socket.destroy();
       return;
     }
     try {
       socket.setOption(SocketOption.tcpNoDelay, true);
     } catch (_) {}
-    _proto = _Protocol(socket, onClosed: _onPeerDisconnected);
+    _link = SocketLink(socket, onClosed: _onPeerDisconnected);
     _stopBeacon();
-    _proto!.messages.listen(_handleIncoming);
+    _link!.messages.listen(_handleIncoming);
     statusMessage = 'Opponent connecting…';
     notifyListeners();
   }
@@ -365,9 +374,9 @@ class NetworkService extends ChangeNotifier {
       try {
         socket.setOption(SocketOption.tcpNoDelay, true);
       } catch (_) {}
-      _proto = _Protocol(socket, onClosed: _onPeerDisconnected);
-      _proto!.messages.listen(_handleIncoming);
-      _proto!.send(_helloPayload(rejoin: resuming));
+      _link = SocketLink(socket, onClosed: _onPeerDisconnected);
+      _link!.messages.listen(_handleIncoming);
+      _link!.send(_helloPayload(rejoin: resuming));
       return true;
     } catch (e) {
       statusMessage = 'Connection failed: ${_friendlyError(e)}';
@@ -384,6 +393,7 @@ class NetworkService extends ChangeNotifier {
         'type': 'hello',
         'name': _selfName,
         'ship': _selfShipSkinId,
+        'shipPicked': _selfShipChosen ? 1 : 0,
         'cannon': _selfCannonSkinId,
         'theme': _selfThemeId,
         'room': roomCode,
@@ -409,58 +419,54 @@ class NetworkService extends ChangeNotifier {
     return s;
   }
 
-  /// Joins an online match via the relay (falls back message when offline).
-  Future<bool> joinOnline(String code, {required String playerName}) async {
-    if (!_networkAvailable || kRelayPort == 0) {
-      statusMessage =
-          'Online relay unreachable — use Hotspot mode on the same network.';
+  // ---------------------------------------------------------- ONLINE ---
+
+  /// Starts (or rejoins) an internet match that the online lobby has
+  /// already set up — two friends have agreed to play and the server has
+  /// given the match an id.
+  ///
+  /// From here on this is an ordinary match. The only difference from a
+  /// hotspot game is the [GameLink] underneath: a [RelayLink] posting the
+  /// same JSON through the server instead of a socket on the same Wi-Fi.
+  /// Everything downstream — the mode vote, deployment, firing,
+  /// manoeuvres, the reconnect window, rematch — is the identical code
+  /// path, which is why online play arrived without the game rules
+  /// gaining a single "if online" branch.
+  ///
+  /// [asHost] comes from who sent the invitation, which makes them the
+  /// red fleet with the opening shot exactly as hosting a room does.
+  Future<bool> startRelayMatch({
+    required OnlineApi api,
+    required int matchId,
+    required bool asHost,
+    required String playerName,
+    bool rejoin = false,
+  }) async {
+    if (!_networkAvailable) {
+      statusMessage = 'Online play needs a phone or desktop build.';
       notifyListeners();
       return false;
     }
     await stop();
     mode = NetMode.online;
-    _isHost = false;
-    try {
-      final socket = await Socket.connect(kRelayHost, kRelayPort,
-          timeout: const Duration(seconds: 5));
-      _proto = _Protocol(socket);
-      _proto!.messages.listen(_handleIncoming);
-      _proto!.send({'type': 'join_room', 'code': code, 'name': playerName});
-      return true;
-    } catch (e) {
-      statusMessage = 'Online connection failed: $e';
-      notifyListeners();
-      return false;
-    }
+    _isHost = asHost;
+    _selfName = playerName;
+    joiningResumable = rejoin;
+    _link = RelayLink(
+      api: api,
+      matchId: matchId,
+      onClosed: _onLinkClosed,
+      onPeerPresence: _onRelayPeerPresence,
+    );
+    _link!.messages.listen(_handleIncoming);
+    // Both ends greet unprompted. On a socket the joiner greets and the
+    // accepting side answers, because only one of them knows the other is
+    // there; over the relay both know from the moment the match exists.
+    _link!.send(_helloPayload(rejoin: rejoin));
+    statusMessage = 'Waiting for ${rejoin ? 'the match' : 'your opponent'}…';
+    notifyListeners();
+    return true;
   }
-
-  /// Hosts an online match via the relay.
-  Future<String?> hostOnline({required String playerName}) async {
-    if (!_networkAvailable || kRelayPort == 0) {
-      statusMessage =
-          'Online relay unreachable — use Hotspot mode on the same network.';
-      notifyListeners();
-      return null;
-    }
-    await stop();
-    mode = NetMode.online;
-    _isHost = true;
-    try {
-      final socket = await Socket.connect(kRelayHost, kRelayPort,
-          timeout: const Duration(seconds: 5));
-      _proto = _Protocol(socket);
-      _proto!.messages.listen(_handleIncoming);
-      roomCode = _newCode();
-      _proto!.send({'type': 'host_room', 'code': roomCode, 'name': playerName});
-      return roomCode;
-    } catch (e) {
-      statusMessage = 'Online connection failed: $e';
-      notifyListeners();
-      return null;
-    }
-  }
-
-  // ------------------------------------------------------------- SHARED ---
 
   /// The peer's fleet, retained from the moment it arrives.
   ///
@@ -488,6 +494,7 @@ class NetworkService extends ChangeNotifier {
     if (msg['type'] == 'hello') {
       peerName = (msg['name'] as String?) ?? 'Opponent';
       peerShipSkinId = (msg['ship'] as String?) ?? 'steel';
+      peerShipSkinChosen = msg['shipPicked'] == 1;
       peerCannonSkinId = (msg['cannon'] as String?) ?? 'mk1';
       peerThemeId = (msg['theme'] as String?) ?? 'classic';
       connected = true;
@@ -503,7 +510,7 @@ class NetworkService extends ChangeNotifier {
       if (roomCode.isEmpty && theirRoom != null && theirRoom.isNotEmpty) {
         roomCode = theirRoom;
       }
-      if (_server != null) _proto?.send(_helloPayload());
+      if (_server != null) _link?.send(_helloPayload());
 
       final rejoining = (msg['rejoin'] == 1 || peerLost) && !peerGone;
       if (rejoining && inMatch) {
@@ -545,10 +552,43 @@ class NetworkService extends ChangeNotifier {
   /// which the match is held open and re-advertised on the LAN, so the
   /// player who dropped can find it again under SCAN FOR GAMES and walk
   /// back into exactly the position they left.
-  void _onPeerDisconnected() {
-    _proto = null;
+  void _onPeerDisconnected() => _onLinkClosed();
+
+  /// The transport itself died — a socket closed, or the relay gave up on
+  /// our own connection after repeated failures. Either way there is no
+  /// channel left, so a returning opponent has to arrive over a NEW one.
+  void _onLinkClosed() {
+    _link = null;
     connected = false;
-    if (!inMatch || peerGone) {
+    // Only a hotspot match can hold its own door open: re-listening and
+    // re-advertising over UDP means nothing on the internet, where the
+    // server is the rendezvous point and the match id is already known
+    // to both players.
+    _openGraceWindow(reopenLan: mode == NetMode.hotspot);
+  }
+
+  /// Relay transport: the opponent has stopped talking to the server.
+  ///
+  /// Unlike a socket close this leaves OUR link intact and polling, which
+  /// is what lets the same channel notice them coming back — their fresh
+  /// `hello` arrives on the connection we already have, and the ordinary
+  /// rejoin path in [_handleIncoming] takes it from there.
+  void _onRelayPeerPresence(bool present) {
+    if (present) {
+      // Their return is confirmed by the `hello` they send on arriving,
+      // not merely by them touching the server, so there is nothing to do
+      // here — see the `rejoining` branch in [_handleIncoming].
+      return;
+    }
+    connected = false;
+    _openGraceWindow(reopenLan: false);
+  }
+
+  /// Opens the reconnect window, if a running match is what just lost its
+  /// opponent. Idempotent: a relay match can report the peer missing on
+  /// several consecutive polls, and that must not restart the clock.
+  void _openGraceWindow({required bool reopenLan}) {
+    if (!inMatch || peerGone || peerLost) {
       notifyListeners();
       return;
     }
@@ -556,7 +596,7 @@ class NetworkService extends ChangeNotifier {
     graceSecondsLeft = kReconnectGraceSeconds;
     // Hold the seat open: re-listen and re-advertise. The survivor does
     // this whichever side they were, so a dropped host can rejoin too.
-    unawaited(_reopenForReturn());
+    if (reopenLan) unawaited(_reopenForReturn());
     _graceTimer?.cancel();
     _graceTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       graceSecondsLeft--;
@@ -615,7 +655,7 @@ class NetworkService extends ChangeNotifier {
 
   /// Sends the full mid-match state to a player who just rejoined.
   void sendResume(Map<String, dynamic> snapshot) =>
-      _proto?.send({'type': 'resume', ...snapshot});
+      _link?.send({'type': 'resume', ...snapshot});
 
   // ------------------------------------------- LAN GAME-MODE VOTE ---
 
@@ -659,7 +699,7 @@ class NetworkService extends ChangeNotifier {
     if (lockedMode != null) return;
     if (myVote == mode) return;
     myVote = mode;
-    _proto?.send({'type': 'vote', 'm': mode.index});
+    _link?.send({'type': 'vote', 'm': mode.index});
     _maybeStartVoteCountdown();
     notifyListeners();
   }
@@ -711,7 +751,7 @@ class NetworkService extends ChangeNotifier {
         _voteTimer?.cancel();
         _voteTimer = null;
         voteCountdown = null;
-        _proto?.send({'type': 'vote_tick', 'n': null});
+        _link?.send({'type': 'vote_tick', 'n': null});
       }
       return;
     }
@@ -719,14 +759,14 @@ class NetworkService extends ChangeNotifier {
     if (_voteTimer != null) return; // already counting on an agreed pick
 
     voteCountdown = kVoteCountdownSeconds;
-    _proto?.send({'type': 'vote_tick', 'n': voteCountdown});
+    _link?.send({'type': 'vote_tick', 'n': voteCountdown});
     notifyListeners();
 
     _voteTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       final next = (voteCountdown ?? 1) - 1;
       voteCountdown = next;
       if (next > 0) {
-        _proto?.send({'type': 'vote_tick', 'n': next});
+        _link?.send({'type': 'vote_tick', 'n': next});
         notifyListeners();
         return;
       }
@@ -737,7 +777,7 @@ class NetworkService extends ChangeNotifier {
       // the two ends can never disagree about what was agreed.
       final winner = myVote ?? LanBattleMode.turns;
       lockedMode = winner;
-      _proto?.send({'type': 'mode_locked', 'm': winner.index});
+      _link?.send({'type': 'mode_locked', 'm': winner.index});
       notifyListeners();
     });
   }
@@ -757,6 +797,7 @@ class NetworkService extends ChangeNotifier {
 
   String _selfName = 'Captain';
   String _selfShipSkinId = 'steel';
+  bool _selfShipChosen = false;
   String _selfCannonSkinId = 'mk1';
   String _selfThemeId = 'classic';
 
@@ -779,19 +820,21 @@ class NetworkService extends ChangeNotifier {
     required String shipSkinId,
     required String cannonSkinId,
     required String themeId,
+    bool shipChosen = false,
   }) {
     _selfShipSkinId = shipSkinId;
+    _selfShipChosen = shipChosen;
     _selfCannonSkinId = cannonSkinId;
     _selfThemeId = themeId;
   }
 
-  void sendFire(int r, int c) => _proto?.send({'type': 'fire', 'r': r, 'c': c});
+  void sendFire(int r, int c) => _link?.send({'type': 'fire', 'r': r, 'c': c});
 
-  void sendBoard(Board board) => _proto?.send({'type': 'board', 'b': board.toJson()});
+  void sendBoard(Board board) => _link?.send({'type': 'board', 'b': board.toJson()});
 
   /// MANOEUVRE mode: tells the opponent one of our ships has moved, so
   /// their copy of our fleet stays in step with ours.
-  void sendMove(ShipKind kind, int r, int c, bool horizontal) => _proto?.send({
+  void sendMove(ShipKind kind, int r, int c, bool horizontal) => _link?.send({
         'type': 'move',
         'k': kind.index,
         'r': r,
@@ -803,14 +846,14 @@ class NetworkService extends ChangeNotifier {
   /// sides have asked for it.
   void sendRematch() {
     myRematch = true;
-    _proto?.send({'type': 'rematch'});
+    _link?.send({'type': 'rematch'});
     notifyListeners();
   }
 
   /// Leaving for the main menu after a match. Tells the opponent not to
   /// keep waiting on a rematch that is never coming.
   void sendLeaveMatch() {
-    _proto?.send({'type': 'leave'});
+    _link?.send({'type': 'leave'});
     peerGone = true;
     notifyListeners();
   }
@@ -823,7 +866,7 @@ class NetworkService extends ChangeNotifier {
   }
 
   void sendResult(int r, int c, ShotResult result, {String? sunkShip}) {
-    _proto?.send({
+    _link?.send({
       'type': 'result',
       'r': r,
       'c': c,
@@ -832,7 +875,7 @@ class NetworkService extends ChangeNotifier {
     });
   }
 
-  void sendSurrender() => _proto?.send({'type': 'surrender'});
+  void sendSurrender() => _link?.send({'type': 'surrender'});
 
   Future<void> stop() async {
     _scanTimer?.cancel();
@@ -859,9 +902,9 @@ class NetworkService extends ChangeNotifier {
     _resumeMsg = null;
     _stopBeacon();
     try {
-      await _proto?.close();
+      await _link?.close();
     } catch (_) {}
-    _proto = null;
+    _link = null;
     try {
       await _server?.close();
     } catch (_) {}
@@ -870,6 +913,7 @@ class NetworkService extends ChangeNotifier {
     isSearching = false;
     foundRooms = [];
     peerShipSkinId = 'steel';
+    peerShipSkinChosen = false;
     peerCannonSkinId = 'mk1';
     peerThemeId = 'classic';
     _peerBoardMsg = null; // never carry a fleet into the next match

@@ -49,3 +49,9 @@ android/key.properties
 android/app/key.properties
 android/release-key.jks
 android/app/release-key.jks
+
+# One-time paste-into-GitHub blob for the release key — not for commit
+docs/.keystore-base64.txt
+
+# Online server: local DB credentials, never committed
+server/config.local.php

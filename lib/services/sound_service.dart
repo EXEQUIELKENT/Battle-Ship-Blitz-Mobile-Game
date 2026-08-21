@@ -190,7 +190,25 @@ class SoundService {
         await pool.rebuild();
       }
       if (_menuMusicWanted) {
-        await _attemptMenuMusicPlay();
+        // Coming back from a pause we did ourselves, resume rather than
+        // replay: `play()` restarts an AssetSource from position zero, so
+        // glancing at a notification would send the track back to its
+        // opening bar every time. `resume()` picks it up mid-phrase where
+        // the player left it. If it fails (the OS reclaimed the player
+        // while we were away, which is exactly what the pool rebuild
+        // above exists for) fall through to a normal play attempt.
+        var resumed = false;
+        if (_menuMusicPausedByLifecycle) {
+          _menuMusicPausedByLifecycle = false;
+          final player = _menuMusicPlayer;
+          if (player != null) {
+            try {
+              await player.resume();
+              resumed = player.state == PlayerState.playing;
+            } catch (_) {/* fall through to a fresh play below */}
+          }
+        }
+        if (!resumed) await _attemptMenuMusicPlay();
         _scheduleMenuMusicAutoRetry();
       }
     } finally {
@@ -200,14 +218,40 @@ class SoundService {
 
   bool _rebuildingPool = false;
 
-  /// Companion to [onAppResumed]: just stops the menu-music auto-retry
-  /// burst (if one happens to be running) so it doesn't spin pointlessly
-  /// while backgrounded. There's nothing else to proactively tear down —
-  /// pooled players clean themselves up on completion regardless of
-  /// lifecycle state, and [onAppResumed] fully rebuilds every pool anyway.
+  /// Companion to [onAppResumed], called the moment the app stops being
+  /// the thing on screen — locked, switched away from, taking a call,
+  /// notification shade pulled down.
+  ///
+  /// Silences the music for as long as the player isn't actually in the
+  /// game. Our audio session is deliberately NON-exclusive
+  /// (`AndroidAudioFocus.none` / `mixWithOthers` — see [_sfxAudioContext])
+  /// so that our own overlapping sound effects can't native-pause each
+  /// other. The flip side of never asking for audio focus is that the OS
+  /// never takes it away either, so a looping menu track otherwise plays
+  /// happily out of a backgrounded app, on top of whatever the player
+  /// switched to. Pausing it here is what makes the music behave the way
+  /// every other app's does.
+  ///
+  /// Pause, not stop: [onAppResumed] picks the track back up from the
+  /// same position, so a two-second glance at a notification doesn't
+  /// send it back to its opening bar.
+  ///
+  /// Sound EFFECTS need no equivalent — they're one-shots, and the
+  /// longest of them rings out in well under a second.
   void onAppPaused() {
     _menuMusicRetryTimer?.cancel();
+    final player = _menuMusicPlayer;
+    if (player != null && player.state == PlayerState.playing) {
+      _menuMusicPausedByLifecycle = true;
+      unawaited(player.pause());
+    }
   }
+
+  /// Set only when [onAppPaused] is what stopped the music, so
+  /// [onAppResumed] knows to RESUME rather than restart — and, just as
+  /// importantly, so it never revives music that was stopped for an
+  /// ordinary in-game reason like walking into a battle.
+  bool _menuMusicPausedByLifecycle = false;
 
   Future<void> _play(String key, {double volume = 1.0}) async {
     if (!enabled) return;
@@ -308,6 +352,9 @@ class SoundService {
 
   Future<void> stopMenuMusic() async {
     _menuMusicWanted = false;
+    // Whatever the app-lifecycle pause was holding, it no longer applies:
+    // this is a deliberate stop, and there is now no player to resume.
+    _menuMusicPausedByLifecycle = false;
     _menuMusicRetryTimer?.cancel();
     _menuMusicRetryTimer = null;
     final player = _menuMusicPlayer;
