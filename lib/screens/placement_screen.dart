@@ -452,6 +452,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
     GameController controller,
     FleetLook look, {
     required bool isLocal,
+    required bool announceToOpponent,
   }) async {
     SoundService.instance.click();
     final profile = context.read<ProfileStore>();
@@ -471,24 +472,32 @@ class _PlacementScreenState extends State<PlacementScreen> {
               : Loadout.of(profile),
           onChanged: (lo) => isLocal
               ? controller.setLocalLoadout(_seat, lo)
-              : _equipForNetworkMatch(controller, lo),
+              : _equipFromGearDialog(controller, lo,
+                  announceToOpponent: announceToOpponent),
         ),
       ),
     );
     if (mounted) setState(() {});
   }
 
-  /// Applies a gear change made on a hotspot/online deployment screen.
+  /// Applies a gear change made on a vsAI or hotspot/online deployment
+  /// screen — anywhere a single device owner (not a pass-and-play seat)
+  /// is picking their own gear.
   ///
-  /// Two things have to happen that pass-and-play doesn't need. It is
-  /// written to the PROFILE, because in a network match "your loadout" is
-  /// simply what you have equipped — there is no second seat on this
-  /// device to keep it separate from, and a change made here should still
-  /// be equipped next time you play. And it is announced to the opponent,
-  /// because they are drawing your fleet from the gear you sent in the
-  /// handshake; without this they would keep rendering the hull you
-  /// arrived in for the whole match.
-  void _equipForNetworkMatch(GameController controller, Loadout lo) {
+  /// Always written to the PROFILE, because outside pass-and-play "your
+  /// loadout" is simply what you have equipped — there is no second seat
+  /// on this device to keep it separate from, and a change made here
+  /// should still be equipped next time you play. Only announced to an
+  /// opponent when [announceToOpponent] is set (hotspot/online): they are
+  /// drawing your fleet from the gear you sent in the handshake, so
+  /// without this they would keep rendering the hull you arrived in for
+  /// the whole match. There is no opponent device to tell against the AI,
+  /// so that step is skipped there.
+  void _equipFromGearDialog(
+    GameController controller,
+    Loadout lo, {
+    required bool announceToOpponent,
+  }) {
     final profile = context.read<ProfileStore>();
     // The dialog only ever offers gear this player already owns, so
     // these can't spend RP — but they're still the equip path rather
@@ -497,12 +506,14 @@ class _PlacementScreenState extends State<PlacementScreen> {
     profile.equipShipSkin(Catalog.shipById(lo.shipSkinId));
     profile.equipCannonSkin(Catalog.cannonById(lo.cannonSkinId));
     profile.equipGameplayTheme(Catalog.gameplayThemeById(lo.themeId));
-    controller.network.announceLoadout(
-      shipSkinId: lo.shipSkinId,
-      cannonSkinId: lo.cannonSkinId,
-      themeId: lo.themeId,
-      shipChosen: true,
-    );
+    if (announceToOpponent) {
+      controller.network.announceLoadout(
+        shipSkinId: lo.shipSkinId,
+        cannonSkinId: lo.cannonSkinId,
+        themeId: lo.themeId,
+        shipChosen: true,
+      );
+    }
   }
 
   @override
@@ -526,6 +537,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
     final isBlueFleet =
         isLan ? !controller.network.isHost : widget.isPlayer2;
     final isLocal = controller.mode == GameMode.local;
+    final isVsAI = controller.mode == GameMode.vsAI;
 
     // Which gear this captain is deploying with. In pass-and-play the two
     // seats have separate loadouts (see `GameController.localLoadouts`)
@@ -641,15 +653,21 @@ class _PlacementScreenState extends State<PlacementScreen> {
                           // are live, and it's where you can see your
                           // fleet laid out — so it's the natural place to
                           // change what you're taking in, whoever you're
-                          // playing. In pass-and-play it writes to this
-                          // seat's own loadout; in a network match it
-                          // re-equips your profile and tells the opponent
-                          // (see `_equipForNetworkMatch`).
-                          if (isLocal || isLan) ...[
+                          // playing: pass-and-play, vs the AI, or a
+                          // hotspot/online match. In pass-and-play it
+                          // writes to this seat's own loadout; everywhere
+                          // else it re-equips your profile, additionally
+                          // telling the opponent when there's a live one
+                          // to tell (see `_equipFromGearDialog`).
+                          if (isLocal || isVsAI || isLan) ...[
                             _GearButton(
                               color: look.color,
-                              onTap: () =>
-                                  _openGear(controller, look, isLocal: isLocal),
+                              onTap: () => _openGear(
+                                controller,
+                                look,
+                                isLocal: isLocal,
+                                announceToOpponent: isLan,
+                              ),
                             ),
                             const SizedBox(width: 8),
                           ],

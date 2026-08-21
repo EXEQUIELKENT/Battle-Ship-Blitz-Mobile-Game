@@ -473,22 +473,53 @@ class _FamilyHullCard extends StatelessWidget {
             // The design's acceptance test, on the card: five classes,
             // five different shapes. A family that only changed the
             // carrier would be caught here by eye.
+            //
+            // Two rows of two rather than one row of four: four hulls
+            // squeezed across this card's width left almost no breathing
+            // room between them. Splitting battleship+cruiser from
+            // submarine+destroyer gives every silhouette its own space
+            // while keeping the same "five classes, five shapes" proof.
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: Column(
                 children: [
-                  for (final spec in kFleet.skip(1))
-                    AnimatedShip(
-                      spec: spec,
-                      skin: skin,
-                      width: 7.0 * spec.size + 6,
-                      height: 19,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      for (final spec in kFleet.skip(1).take(2))
+                        AnimatedShip(
+                          spec: spec,
+                          skin: skin,
+                          width: 7.0 * spec.size + 6,
+                          height: 19,
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      for (final spec in kFleet.skip(3))
+                        AnimatedShip(
+                          spec: spec,
+                          skin: skin,
+                          width: 7.0 * spec.size + 6,
+                          height: 19,
+                        ),
+                    ],
+                  ),
                 ],
               ),
             ),
-            const Spacer(),
+            // A small fixed gap instead of a flex `Spacer` here — that
+            // Spacer used to swallow all of the card's leftover height,
+            // shoving the name well below the hull previews. Any height
+            // left over once the name/pill are laid out is now absorbed
+            // by the `Spacer` AFTER the pill instead, so the name sits
+            // right under the previews and the slack shows up as a bit of
+            // breathing room at the bottom of the card rather than a gap
+            // in the middle.
+            const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6),
               child: Text(
@@ -499,15 +530,14 @@ class _FamilyHullCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 5),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _statusPill(
-                owned: owned,
-                equipped: equipped,
-                affordable: affordable,
-                cost: skin.cost,
-              ),
+            _statusPill(
+              owned: owned,
+              equipped: equipped,
+              affordable: affordable,
+              cost: skin.cost,
             ),
+            const SizedBox(height: 10),
+            const Spacer(),
           ],
         ),
       ),

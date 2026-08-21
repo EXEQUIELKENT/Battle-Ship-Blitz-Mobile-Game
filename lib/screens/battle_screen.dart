@@ -205,6 +205,20 @@ class _BattleScreenState extends State<BattleScreen>
   final Map<bool, Set<String>> _sunkNamesCache = {};
   final Map<bool, List<PlacedShip>> _destroyedShipsCache = {};
 
+  /// Own-fleet ships as they should be DRAWN, per half — same [PlacedShip]s
+  /// as `controller.boards[...].ships` but with `hitIndices` limited to
+  /// cells whose shot has actually landed (`impactAt` set), instead of the
+  /// raw model set which flips the instant the shot is REGISTERED (tap
+  /// time / AI decision time / network-result time). Without this, a
+  /// damage crater (and, once every cell is hit, the sunk graphic) could
+  /// pop onto a player's own ship well before that shot's cannonball had
+  /// actually flown across the screen and struck the grid cell — the same
+  /// "logically decided vs visually confirmed" gate `_destroyedShipsCache`
+  /// already applies to the enemy-side wreck reveal, just applied to the
+  /// live ship art shown on one's OWN board (vsAI / hotspot / online —
+  /// see `showOwnFleet`).
+  final Map<bool, List<PlacedShip>> _visibleOwnShipsCache = {};
+
   /// Bumped every time a [CombatEvent.impactAt] is actually set (a ball
   /// visually lands) — see `_resolveImpact` and the overlapping-shot
   /// branch in `_onUpdate`. `controller.revision` does NOT change when
@@ -1102,6 +1116,27 @@ class _BattleScreenState extends State<BattleScreen>
       _shotsCache[halfIsP1] = List.of(cache);
       _sunkNamesCache[halfIsP1] = sunkNames;
 
+      // Build the landed-only view of this half's own ships from the same
+      // `cache` grid — `cache[r][c] == 2` means a shot on that cell has
+      // both been registered AND had its cannonball land (see the loop
+      // above, which only fills `cache` from events with `impactAt` set).
+      // Reusing it here keeps the ship damage crater and the grid's own
+      // hit marker flipping to "hit" at exactly the same moment.
+      final boardForVisible = halfIsP1 ? controller.boards[0] : controller.boards[1];
+      _visibleOwnShipsCache[halfIsP1] = [
+        for (final s in boardForVisible.ships)
+          PlacedShip(
+            spec: s.spec,
+            row: s.row,
+            col: s.col,
+            horizontal: s.horizontal,
+            hitIndices: {
+              for (var i = 0; i < s.cells.length; i++)
+                if (cache[s.cells[i][0]][s.cells[i][1]] == 2) i,
+            },
+          ),
+      ];
+
       // PERF (this is the big one): `_StaticGridPainter.shouldRepaint`
       // compares `destroyedShips` by IDENTITY. This list used to be built
       // as a fresh literal inside `_buildHalf` on every single build, so
@@ -1258,8 +1293,14 @@ class _BattleScreenState extends State<BattleScreen>
     // Local pass-and-play still hides both fleets, because there the two
     // players really are looking at the same screen.
     final showOwnFleet = (_lan || controller.mode == GameMode.vsAI) && halfIsP1;
-    final shipsOnGrid =
-        gameOver ? board.ships : (showOwnFleet ? board.ships : null);
+    // Mid-match, draw the LANDED-only view (see `_visibleOwnShipsCache`) so
+    // a hit crater / sunk graphic never appears on your own ship ahead of
+    // its cannonball actually reaching the grid. Once the match is over
+    // there's no more incoming fire to animate, so the raw board (both
+    // fleets, fully revealed) is shown directly.
+    final shipsOnGrid = gameOver
+        ? board.ships
+        : (showOwnFleet ? (_visibleOwnShipsCache[halfIsP1] ?? board.ships) : null);
 
     // Only show markers whose cannonball has already landed. (PERF: these
     // come from the per-frame cache refreshed once in build() — see
