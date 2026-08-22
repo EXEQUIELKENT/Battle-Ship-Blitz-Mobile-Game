@@ -1123,10 +1123,7 @@ class HandoffScreen extends StatelessWidget {
                   NeonButton(
                     label: buttonLabel,
                     color: AppColors.seafoam,
-                    onPressed: () {
-                      SoundService.instance.click();
-                      onReady();
-                    },
+                    onPressed: onReady,
                   ),
                 ],
               ),
@@ -1348,10 +1345,7 @@ class _GearDialogState extends State<_GearDialog> {
               label: 'DONE',
               icon: Icons.check,
               color: AppColors.seafoam,
-              onPressed: () {
-                SoundService.instance.click();
-                Navigator.pop(context);
-              },
+              onPressed: () => Navigator.pop(context),
             ),
           ],
         ),

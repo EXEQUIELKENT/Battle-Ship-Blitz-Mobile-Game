@@ -216,7 +216,6 @@ class _HomeScreenState extends State<HomeScreen>
                                 color: AppColors.ember,
                                 compact: true,
                                 onPressed: () {
-                                  SoundService.instance.click();
                                   Navigator.of(context).push(
                                     MaterialPageRoute(
                                       builder: (_) =>
@@ -236,7 +235,6 @@ class _HomeScreenState extends State<HomeScreen>
                             icon: Icons.people_alt,
                             color: AppColors.seafoam,
                             onPressed: () {
-                              SoundService.instance.click();
                               Navigator.of(context).push(
                                 MaterialPageRoute(
                                   builder: (_) => const FriendsScreen(),

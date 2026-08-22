@@ -241,7 +241,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
   }
 
   Future<void> _add(OnlinePlayer p) async {
-    SoundService.instance.click();
     final ok = await _online.requestById(p.id);
     if (!mounted) return;
     if (ok) {
@@ -258,7 +257,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
   }
 
   Future<void> _invite(OnlinePlayer friend) async {
-    SoundService.instance.click();
     final ok = await _online.invite(friend.id);
     if (!mounted) return;
     if (!ok) {
@@ -444,7 +442,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
   }
 
   Future<void> _retryConnect() async {
-    SoundService.instance.click();
     final profile = context.read<ProfileStore>();
     await _online.connectAuto(profile);
     if (!mounted) return;
@@ -490,7 +487,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   label: 'ACCEPT',
                   color: AppColors.seafoam,
                   onPressed: () async {
-                    SoundService.instance.click();
                     await _online.respondToInvite(match.id, true);
                   },
                 ),
@@ -501,7 +497,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   label: 'DECLINE',
                   color: AppColors.hit,
                   onPressed: () async {
-                    SoundService.instance.click();
                     await _online.respondToInvite(match.id, false);
                   },
                 ),
@@ -565,7 +560,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
             icon: Icons.sailing,
             color: AppColors.seafoam,
             onPressed: () {
-              SoundService.instance.click();
               _launching = true;
               unawaited(_enterMatch(match, rejoin: true));
             },
@@ -887,7 +881,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
                 icon: Icons.person_remove,
                 color: AppColors.hit,
                 onPressed: () async {
-                  SoundService.instance.click();
                   Navigator.pop(context);
                   await _online.unfriend(p.id);
                 },

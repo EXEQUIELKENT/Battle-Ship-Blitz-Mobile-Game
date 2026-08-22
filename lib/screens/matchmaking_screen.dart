@@ -214,7 +214,6 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
   }
 
   Future<void> _accept(OnlineMatch match) async {
-    SoundService.instance.click();
     await _online.acceptMatch(match.id);
   }
 
@@ -222,7 +221,6 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
   /// reports neither queue nor match, which [_onOnline] reads as a
   /// release — tagged self-inflicted — and the search resumes.
   Future<void> _decline(OnlineMatch match) async {
-    SoundService.instance.click();
     _selfDeclined = true;
     await _online.leaveQueue();
   }

@@ -83,7 +83,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     final net = context.read<NetworkService>();
     final profile = context.read<ProfileStore>();
     setState(() => _hosting = true);
-    SoundService.instance.click();
 
     final code = await net.hostHotspot(playerName: profile.playerName);
     if (code == null) {
@@ -112,7 +111,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     final net = context.read<NetworkService>();
     final profile = context.read<ProfileStore>();
     setState(() => _connecting = true);
-    SoundService.instance.click();
 
     final ok = await net.joinHotspot(
       host,
@@ -170,7 +168,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   Future<void> _reconnectOnline() async {
     final online = context.read<OnlineService>();
     final profile = context.read<ProfileStore>();
-    SoundService.instance.click();
     final ok = await online.connectAuto(profile);
     if (!mounted) return;
     _toast(
@@ -193,7 +190,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       _toast('Enter the server address first', type: AppNoticeType.error);
       return;
     }
-    SoundService.instance.click();
     await online.setBaseUrl(addr);
     final ok = await online.ensureAccount(profile);
     if (!mounted) return;
@@ -207,7 +203,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   }
 
   void _openFriends() {
-    SoundService.instance.click();
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const FriendsScreen()),
     );
@@ -215,7 +210,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
 
   /// Random matchmaking: search queue → loading → both captains accept.
   void _findMatch() {
-    SoundService.instance.click();
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const MatchmakingScreen()),
     );
@@ -387,7 +381,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                 onPressed: net.isSearching
                     ? null
                     : () {
-                        SoundService.instance.click();
                         net.scanRooms();
                       },
               ),
