@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../core/theme.dart';
 import '../services/game_controller.dart';
 import '../services/network_service.dart';
+import '../services/online_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
@@ -43,6 +45,24 @@ class _ResultScreenState extends State<ResultScreen>
     }
     _net = context.read<NetworkService>();
     _net.addListener(_onNet);
+
+    // Log this result into the ONLINE tab's captain's log — internet
+    // matches only, since that's the one mode where the opponent has a
+    // server-side id an ADD button can actually friend. An abandoned
+    // match (opponent walked out and never came back) is deliberately
+    // excluded, matching `GameController.abandonMatch`'s own "no result
+    // recorded" rule: nobody lost that match, so it shouldn't clutter
+    // either the win/loss record or the history log. Runs exactly once —
+    // `initState` only fires on the first build of a freshly pushed
+    // screen, and a rematch pushes a brand new one for its own result
+    // later rather than reusing this one.
+    final controller = context.read<GameController>();
+    if (controller.mode == GameMode.online && !controller.matchAbandoned) {
+      unawaited(context.read<OnlineService>().recordMatchResult(
+            won: controller.iWon,
+            rpDelta: controller.rpDelta,
+          ));
+    }
   }
 
   late final NetworkService _net;

@@ -587,6 +587,10 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
             ],
           ),
         ),
+        if (ready && online.history.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          _historyCard(online),
+        ],
         const SizedBox(height: 16),
         _card(
           title: 'HOW ONLINE PLAY WORKS',
@@ -605,6 +609,118 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         ),
       ],
     );
+  }
+
+  // ---------------------------------------------------------- HISTORY ---
+
+  /// A captain's log of recent internet matches — who was played, who
+  /// won, and how RP moved — with an ADD button on each row so a
+  /// stranger met through FIND A MATCH doesn't have to be tracked down
+  /// again just to send them a friend request.
+  Widget _historyCard(OnlineService online) {
+    return _card(
+      title: 'MATCH HISTORY',
+      icon: Icons.history,
+      color: AppColors.blue,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final entry in online.history) _historyRow(online, entry),
+        ],
+      ),
+    );
+  }
+
+  Widget _historyRow(OnlineService online, MatchHistoryEntry entry) {
+    final won = entry.won;
+    final resultColor = won ? AppColors.green : AppColors.hit;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: cartoonBox(AppColors.coralLight, radius: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: resultColor,
+              shape: BoxShape.circle,
+              border: Border.all(color: AppColors.outline, width: 2),
+            ),
+            child: Text(
+              won ? 'W' : 'L',
+              style: AppText.label(size: 13, color: AppColors.cream),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.opponentName.toUpperCase(),
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.label(size: 11.5, color: AppColors.navy),
+                ),
+                Text(
+                  '${entry.rpDelta == 0 ? 'NO CHANGE' : '${entry.rpDelta > 0 ? '+' : ''}${entry.rpDelta} RP'}'
+                  ' · ${_timeAgo(entry.when)}',
+                  style: AppText.body(size: 9.5, color: AppColors.inkSoft),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          _historyAddButton(online, entry),
+        ],
+      ),
+    );
+  }
+
+  /// ADD when this opponent isn't a friend yet, PENDING once a request
+  /// is already out, or a plain FRIENDS label once they are one — so the
+  /// row never offers to re-send a request that would just bounce.
+  Widget _historyAddButton(OnlineService online, MatchHistoryEntry entry) {
+    if (online.isFriend(entry.opponentId)) {
+      return Text('FRIENDS',
+          style: AppText.label(size: 8.5, color: AppColors.inkSoft));
+    }
+    if (online.hasOutgoingRequest(entry.opponentId)) {
+      return Text('PENDING',
+          style: AppText.label(size: 8.5, color: AppColors.inkSoft));
+    }
+    return NeonButton(
+      label: 'ADD',
+      icon: Icons.person_add,
+      color: AppColors.green,
+      compact: true,
+      onPressed: () => _addFromHistory(online, entry),
+    );
+  }
+
+  Future<void> _addFromHistory(
+      OnlineService online, MatchHistoryEntry entry) async {
+    final ok = await online.requestById(entry.opponentId);
+    if (!mounted) return;
+    _toast(
+      ok
+          ? 'Request sent to ${entry.opponentName}.'
+          : (online.lastError ?? 'Could not send that request.'),
+      type: ok ? AppNoticeType.success : AppNoticeType.error,
+    );
+  }
+
+  /// "3M AGO" / "5H AGO" / "2D AGO" — same granularity as
+  /// `OnlinePlayer.presenceLabel`, so the whole ONLINE tab reads times
+  /// the same way.
+  String _timeAgo(DateTime when) {
+    final ago = DateTime.now().difference(when);
+    if (ago.inMinutes < 1) return 'JUST NOW';
+    if (ago.inMinutes < 60) return '${ago.inMinutes}M AGO';
+    if (ago.inHours < 24) return '${ago.inHours}H AGO';
+    return '${ago.inDays}D AGO';
   }
 
   Widget _card({

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -124,6 +125,53 @@ class OnlineMatch {
   bool get isOutgoingInvite => isInvitation && youAreHost;
 }
 
+/// One finished online match, kept on this device so the ONLINE tab can
+/// show "who did I just play" — a captain's log of recent opponents,
+/// win/loss and RP, with a way to add a stranger met through matchmaking
+/// as a friend before their name is forgotten.
+///
+/// Deliberately local-only, the same way [ProfileStore.wins]/[losses]
+/// are: the server is the post box for the match itself, not a system of
+/// record for history, so there is nothing to fetch and nothing that can
+/// disagree with what this device saw happen.
+class MatchHistoryEntry {
+  /// The opponent's server-side player id — what [OnlineService.requestById]
+  /// needs to send them a friend request.
+  final int opponentId;
+  final String opponentName;
+  final bool won;
+
+  /// RP change from this result. Can be 0 if RP was somehow not awarded.
+  final int rpDelta;
+  final DateTime when;
+
+  const MatchHistoryEntry({
+    required this.opponentId,
+    required this.opponentName,
+    required this.won,
+    required this.rpDelta,
+    required this.when,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'opponentId': opponentId,
+        'opponentName': opponentName,
+        'won': won,
+        'rpDelta': rpDelta,
+        'when': when.toIso8601String(),
+      };
+
+  factory MatchHistoryEntry.fromJson(Map<String, dynamic> j) =>
+      MatchHistoryEntry(
+        opponentId: (j['opponentId'] as num?)?.toInt() ?? 0,
+        opponentName: (j['opponentName'] as String?) ?? 'Captain',
+        won: j['won'] == true,
+        rpDelta: (j['rpDelta'] as num?)?.toInt() ?? 0,
+        when: DateTime.tryParse((j['when'] as String?) ?? '') ??
+            DateTime.now(),
+      );
+}
+
 /// Accounts, friends, presence and invitations for internet play.
 ///
 /// Deliberately separate from `NetworkService`, which owns the match
@@ -141,6 +189,12 @@ class OnlineService extends ChangeNotifier {
   static const _kToken = 'online.token';
   static const _kTag = 'online.tag';
   static const _kId = 'online.id';
+  static const _kHistory = 'online.history';
+
+  /// How many recent matches the captain's log keeps. Old enough entries
+  /// just fall off the end — this is a recap, not permanent record
+  /// keeping (the server-side `wins`/`losses` counters are that).
+  static const _maxHistory = 25;
 
   final OnlineApi api = OnlineApi();
 
@@ -157,6 +211,19 @@ class OnlineService extends ChangeNotifier {
   List<OnlinePlayer> incomingRequests = const [];
   List<OnlinePlayer> outgoingRequests = const [];
   OnlineMatch? match;
+
+  /// Recent finished online matches, most recent first. See
+  /// [MatchHistoryEntry] for why this lives on the device instead of the
+  /// server.
+  List<MatchHistoryEntry> history = const [];
+
+  /// The opponent of the match currently being played — captured at
+  /// [noteMatchStarted] time, since by the time the match ends `match`
+  /// itself has long gone stale (polling stops the moment a battle
+  /// starts; see [noteMatchStarted]'s own doc). Consumed and cleared by
+  /// [recordMatchResult].
+  int? _activeOpponentId;
+  String? _activeOpponentName;
 
   /// True while this player is standing in the find-a-match queue. The
   /// matchmaking screen reads it to tell "still searching" apart from
@@ -185,7 +252,26 @@ class OnlineService extends ChangeNotifier {
     api.token = p.getString(_kToken);
     myTag = p.getString(_kTag) ?? '';
     myId = p.getInt(_kId) ?? 0;
+    history = _loadHistory(p);
     notifyListeners();
+  }
+
+  List<MatchHistoryEntry> _loadHistory(SharedPreferences p) {
+    final raw = p.getString(_kHistory);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return const [];
+      return list
+          .whereType<Map>()
+          .map((m) => MatchHistoryEntry.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } catch (_) {
+      // A future version wrote a shape this one doesn't understand, or
+      // the value is simply corrupt — an empty log beats crashing on
+      // startup over what is, worst case, a cosmetic feature.
+      return const [];
+    }
   }
 
   Future<void> _persist() async {
@@ -214,6 +300,15 @@ class OnlineService extends ChangeNotifier {
     outgoingRequests = const [];
     match = null;
     searching = false;
+    // Opponent ids in the log are only meaningful against the server
+    // that issued them — a different server's player #7 is somebody
+    // else entirely, so carrying the log over would risk the ADD button
+    // friending the wrong captain.
+    history = const [];
+    _activeOpponentId = null;
+    _activeOpponentName = null;
+    final p = _prefs;
+    if (p != null) await p.remove(_kHistory);
     await _persist();
     notifyListeners();
   }
@@ -510,7 +605,15 @@ class OnlineService extends ChangeNotifier {
   /// ones that unwind straight back to the main menu.
   int? _activeMatchId;
 
-  void noteMatchStarted(int matchId) => _activeMatchId = matchId;
+  /// [opponentId]/[opponentName] are who this match is against — captured
+  /// here (rather than read back off [match] once the battle is over,
+  /// which is stale by then, see above) purely so [recordMatchResult] has
+  /// someone to attach the result to for the ONLINE tab's history.
+  void noteMatchStarted(int matchId, {int? opponentId, String? opponentName}) {
+    _activeMatchId = matchId;
+    _activeOpponentId = opponentId;
+    _activeOpponentName = opponentName;
+  }
 
   bool get hasActiveMatch => _activeMatchId != null;
 
@@ -520,6 +623,14 @@ class OnlineService extends ChangeNotifier {
   Future<void> endMatch() async {
     final id = _activeMatchId ?? match?.id;
     _activeMatchId = null;
+    // The captured opponent belongs to this match session — cleared here,
+    // when the player actually leaves it, rather than the first time a
+    // result gets logged. A rematch reuses the SAME relay/matchId without
+    // calling [noteMatchStarted] again (see its own doc), so clearing
+    // eagerly would have made every result after the first one in a
+    // rematch streak silently fail to log.
+    _activeOpponentId = null;
+    _activeOpponentName = null;
     if (id == null) return;
     try {
       await api.call('match_end', args: {'matchId': id});
@@ -529,6 +640,55 @@ class OnlineService extends ChangeNotifier {
     match = null;
     notifyListeners();
   }
+
+  /// Adds the just-finished online match to this device's captain's log
+  /// — see [MatchHistoryEntry]. Called once per finished game from the
+  /// result screen, for matches that actually reached a decided outcome
+  /// (not one abandoned by a dropped opponent — see
+  /// [GameController.abandonMatch], which deliberately records no result
+  /// there either). Safe to call again after a rematch: the opponent
+  /// captured by [noteMatchStarted] is only cleared in [endMatch], once
+  /// the player actually leaves the match session, not here.
+  ///
+  /// A no-op if there's no captured opponent to attach the result to,
+  /// which is the safe default rather than a bug to chase down: it just
+  /// means this match didn't go through [noteMatchStarted] (a hotspot
+  /// match, say, calling this by mistake).
+  Future<void> recordMatchResult({
+    required bool won,
+    required int rpDelta,
+  }) async {
+    final opponentId = _activeOpponentId;
+    final opponentName = _activeOpponentName;
+    if (opponentId == null || opponentId == 0) return;
+
+    final entry = MatchHistoryEntry(
+      opponentId: opponentId,
+      opponentName: opponentName ?? 'Captain',
+      won: won,
+      rpDelta: rpDelta,
+      when: DateTime.now(),
+    );
+    history = [entry, ...history].take(_maxHistory).toList();
+    notifyListeners();
+
+    final p = _prefs;
+    if (p == null) return;
+    await p.setString(
+      _kHistory,
+      jsonEncode(history.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  /// Whether [playerId] is already a friend — the history card uses this
+  /// to swap its ADD button for a FRIENDS label instead of offering to
+  /// re-send a request that would just bounce.
+  bool isFriend(int playerId) => friends.any((f) => f.id == playerId);
+
+  /// Whether a friend request to [playerId] is already sitting out there
+  /// unanswered, so the history card can show PENDING instead of ADD.
+  bool hasOutgoingRequest(int playerId) =>
+      outgoingRequests.any((f) => f.id == playerId);
 
   /// Runs an action, refreshes, and reports whether it worked — the shape
   /// every mutating call above shares.

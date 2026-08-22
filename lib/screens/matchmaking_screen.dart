@@ -202,7 +202,14 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
       _scheduleRejoin(const Duration(seconds: 2));
       return;
     }
-    _online.noteMatchStarted(match.id);
+    // The opponent's id/name ride along, so a decided result can land in
+    // the ONLINE tab's match history — matchmaking is exactly the case
+    // where a captain has no other record of who they just played.
+    _online.noteMatchStarted(
+      match.id,
+      opponentId: match.peerId,
+      opponentName: match.peerName,
+    );
     // From here the relay carries everything; polls would only fight it.
     _online.stopHeartbeat();
 

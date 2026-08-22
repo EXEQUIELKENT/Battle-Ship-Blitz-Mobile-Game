@@ -878,12 +878,42 @@ class _BattleScreenState extends State<BattleScreen>
     // players are sharing this screen — see `_mirrorTopHalf`.
     const bottomIsP1 = true;
 
+    // BUGFIX (classic deck leaking through on notches / non-edge-to-edge
+    // screens): the Scaffold body used to be one Container painted a
+    // fixed `AppColors.coralVideo` — which is the CLASSIC theme's deck
+    // colour by value, restated as a named constant — sitting BEHIND the
+    // SafeArea. On a fully edge-to-edge phone the two halves' own themed
+    // backgrounds always cover it completely, so nobody ever saw it. But
+    // SafeArea deliberately does NOT paint into a display cutout, a
+    // status bar, or a gesture/home-indicator strip — it leaves that
+    // margin for whatever is behind it to show through. On a phone with
+    // a notch (or any device that isn't rendering true edge-to-edge),
+    // that margin IS this Container, so the strip right behind the
+    // cannon at the top of the board — and the strip along the bottom —
+    // stayed hard-coded to the classic look no matter what deck theme
+    // was actually equipped. Each half already wears its OWN captain's
+    // theme everywhere else on this screen (see the middle band below),
+    // so the fix is the same idea applied to the one spot that was still
+    // flat classic: split this background top/bottom to match.
+    final topIsP1Fleet = !bottomIsP1;
+    final bottomIsP1Fleet = bottomIsP1;
+    final topDeckColor = _themeFor(topIsP1Fleet).deck;
+    final bottomDeckColor = _themeFor(bottomIsP1Fleet).deck;
+
     return Scaffold(
-      body: Container(
-        color: AppColors.coralVideo,
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, full) {
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Column(
+              children: [
+                Expanded(child: Container(color: topDeckColor)),
+                Expanded(child: Container(color: bottomDeckColor)),
+              ],
+            ),
+          ),
+          SafeArea(
+            child: LayoutBuilder(
+              builder: (context, full) {
               const bandH = 58.0;
               final halfH = (full.maxHeight - bandH) / 2;
               // Shake wrapper: a plain Transform.translate driven by
@@ -984,7 +1014,8 @@ class _BattleScreenState extends State<BattleScreen>
           },
         ),
       ),
-    ),
+        ],
+      ),
     );
   }
 

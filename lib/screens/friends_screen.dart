@@ -166,8 +166,13 @@ class _FriendsScreenState extends State<FriendsScreen> {
     }
     // Remembered so the seat gets freed however the player eventually
     // leaves the battle — including exits that unwind straight past this
-    // screen to the main menu.
-    _online.noteMatchStarted(match.id);
+    // screen to the main menu. The opponent's id/name ride along too, so
+    // a decided result can land in the ONLINE tab's match history.
+    _online.noteMatchStarted(
+      match.id,
+      opponentId: match.peerId,
+      opponentName: match.peerName,
+    );
 
     // The heartbeat's job is done — from here the relay carries
     // everything, and a poll landing mid-battle would only fight with it.
