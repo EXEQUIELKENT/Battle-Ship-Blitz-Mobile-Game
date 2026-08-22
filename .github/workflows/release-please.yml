@@ -88,8 +88,13 @@ jobs:
         run: |
           mkdir -p dist
           tag="${{ needs.release-please.outputs.tag_name }}"
-          cp build/app/outputs/flutter-apk/app-release.apk "dist/battleship-blitz-${tag}.apk"
-          cp build/app/outputs/bundle/release/app-release.aab "dist/battleship-blitz-${tag}.aab"
+          # tag_name is already "battleship_blitz-v1.4.1" (component + version) —
+          # strip the component prefix so we don't repeat it in the filename,
+          # e.g. "battleship-blitz-v1.4.1.apk" instead of
+          # "battleship-blitz-battleship_blitz-v1.4.1.apk".
+          version="${tag#battleship_blitz-}"
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/battleship-blitz-${version}.apk"
+          cp build/app/outputs/bundle/release/app-release.aab "dist/battleship-blitz-${version}.aab"
 
       # The Release itself — tag, title, and changelog body — already
       # exists, written by release-please. This step only attaches the
