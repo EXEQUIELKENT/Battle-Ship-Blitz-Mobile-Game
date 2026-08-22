@@ -233,6 +233,32 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
     Navigator.of(context).pop();
   }
 
+  /// A short server/connection error, shown as a full-width chunky pill
+  /// instead of bare text — this screen has no card behind it here, and
+  /// gold or cream text directly on the coral deck was unreadable.
+  Widget _errorBanner(String message) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: cartoonBox(AppColors.hit, radius: 12),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.warning_amber, color: AppColors.cream, size: 16),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                message,
+                textAlign: TextAlign.center,
+                style: AppText.label(size: 10, color: AppColors.cream),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   String get _elapsedLabel {
     final since = _searchSince;
     if (since == null) return '';
@@ -311,28 +337,36 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
           ),
         ),
         const SizedBox(height: 28),
+        // Dark navy ink, not the default cream — this sits straight on
+        // the light coral deck with no card behind it, and cream-on-coral
+        // (or gold-on-coral, below) is nearly unreadable.
         Text(
           'SEARCHING FOR\nAN OPPONENT…',
           textAlign: TextAlign.center,
-          style: AppText.title(size: 20),
+          style: AppText.title(size: 20, color: AppColors.navy),
         ),
         const SizedBox(height: 10),
         Text(
           'Both captains must accept the match\nbefore it begins.',
           textAlign: TextAlign.center,
-          style: AppText.body(size: 12, color: AppColors.cream),
+          style: AppText.body(size: 12, color: AppColors.inkSoft),
         ),
         if (_elapsedLabel.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          Text(_elapsedLabel,
-              textAlign: TextAlign.center,
-              style: AppText.label(size: 10, color: AppColors.gold)),
+          const SizedBox(height: 16),
+          // The elapsed-time timer itself — a solid navy chip instead of
+          // bare gold text, so it stays legible no matter what's behind
+          // it and reads as a proper HUD readout rather than a caption.
+          Center(
+            child: HudChip(
+              icon: Icons.timer,
+              text: _elapsedLabel,
+              color: AppColors.navy,
+            ),
+          ),
         ],
         if (online.lastError != null) ...[
-          const SizedBox(height: 10),
-          Text(online.lastError!,
-              textAlign: TextAlign.center,
-              style: AppText.label(size: 9.5, color: AppColors.gold)),
+          const SizedBox(height: 12),
+          _errorBanner(online.lastError!),
         ],
         const SizedBox(height: 34),
         NeonButton(
@@ -448,13 +482,11 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
         Text(
           _notice ?? 'BACK IN THE SEARCH…',
           textAlign: TextAlign.center,
-          style: AppText.body(size: 13, color: AppColors.cream),
+          style: AppText.body(size: 13, color: AppColors.navy),
         ),
         if (online.lastError != null) ...[
-          const SizedBox(height: 10),
-          Text(online.lastError!,
-              textAlign: TextAlign.center,
-              style: AppText.label(size: 9.5, color: AppColors.gold)),
+          const SizedBox(height: 12),
+          _errorBanner(online.lastError!),
         ],
         const SizedBox(height: 24),
         const Center(
