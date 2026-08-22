@@ -13,6 +13,7 @@ import '../widgets/ocean_background.dart';
 import 'battle_screen.dart';
 import 'friends_screen.dart';
 import 'lan_mode_screen.dart';
+import 'matchmaking_screen.dart';
 
 /// Hotspot (LAN) + Online matchmaking lobby — cartoon style.
 class MultiplayerScreen extends StatefulWidget {
@@ -26,7 +27,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tab;
   final _ipCtrl = TextEditingController();
-  final _serverCtrl = TextEditingController();
   bool _hosting = false;
   bool _connecting = false;
 
@@ -48,17 +48,16 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         themeId: profile.gameplayThemeId,
         shipChosen: profile.shipSkinChosen,
       );
-      _serverCtrl.text = online.baseUrl;
-      // Quietly re-establish an existing account so the ONLINE tab is
-      // already usable if this device has been online before.
-      if (online.configured) await online.ensureAccount(profile);
+      // Find the game server automatically — remembered address first,
+      // then a sweep of this Wi-Fi — and quietly re-establish the account
+      // so the ONLINE tab is already usable when it succeeds.
+      await online.connectAuto(profile);
     });
   }
 
   @override
   void dispose() {
     _ipCtrl.dispose();
-    _serverCtrl.dispose();
     _tab.dispose();
     super.dispose();
   }
@@ -159,25 +158,32 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     );
   }
 
-  /// Points the app at a game server and signs in, registering this
-  /// installation the first time. Everything else on the online tab needs
-  /// this to have succeeded.
-  Future<void> _connectOnline() async {
+  /// Looks for the game server again and signs in. The automatic attempt
+  /// runs on tab entry; this is the manual retry for when it failed (the
+  /// server was off, or the phone was on the wrong Wi-Fi).
+  Future<void> _reconnectOnline() async {
     final online = context.read<OnlineService>();
     final profile = context.read<ProfileStore>();
     SoundService.instance.click();
-    await online.setBaseUrl(_serverCtrl.text.trim());
-    final ok = await online.ensureAccount(profile);
+    final ok = await online.connectAuto(profile);
     if (!mounted) return;
     _toast(ok
         ? 'Connected — your friend code is ${online.myTag}'
-        : (online.lastError ?? 'Could not reach that server.'));
+        : (online.lastError ?? 'Could not find the game server.'));
   }
 
   void _openFriends() {
     SoundService.instance.click();
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const FriendsScreen()),
+    );
+  }
+
+  /// Random matchmaking: search queue → loading → both captains accept.
+  void _findMatch() {
+    SoundService.instance.click();
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const MatchmakingScreen()),
     );
   }
 
@@ -473,9 +479,9 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   Icon(
                     ready
                         ? Icons.check_circle
-                        : online.configured
-                            ? Icons.warning_amber
-                            : Icons.settings_ethernet,
+                        : online.busy
+                            ? Icons.radar
+                            : Icons.warning_amber,
                     size: 16,
                     color: ready ? AppColors.green : AppColors.ember,
                   ),
@@ -483,51 +489,49 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   Expanded(
                     child: Text(
                       ready
-                          ? 'Signed in as ${online.myTag} — invite a friend to a battle.'
-                          : online.configured
-                              ? (online.lastError ??
-                                  'Cannot reach that server yet.')
-                              : 'Online play needs the game server. Enter its '
-                                  'address below — see server/README.md for how '
-                                  'to start it.',
+                          ? 'Signed in as ${online.myName} (${online.myTag}).'
+                          : online.busy
+                              ? 'Looking for the game server on this '
+                                  'Wi-Fi…'
+                              : (online.lastError ??
+                                  'Not connected to a game server yet.'),
                       style: AppText.body(size: 11, color: AppColors.inkSoft),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 14),
-              Text('GAME SERVER ADDRESS',
-                  style: AppText.label(size: 9, color: AppColors.inkSoft)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _serverCtrl,
-                keyboardType: TextInputType.url,
-                autocorrect: false,
-                style: AppText.body(size: 12.5, color: AppColors.navy),
-                decoration: _inputDeco('http://192.168.1.5/bbz/server'),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: NeonButton(
-                      label: online.busy ? 'CONNECTING…' : 'CONNECT',
-                      icon: Icons.link,
-                      color: AppColors.blue,
-                      onPressed: online.busy ? null : _connectOnline,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: NeonButton(
-                      label: 'FRIENDS',
-                      icon: Icons.people,
-                      color: ready ? AppColors.green : AppColors.inkSoft,
-                      onPressed: ready ? _openFriends : null,
-                    ),
-                  ),
-                ],
-              ),
+              if (!ready && !online.busy) ...[
+                NeonButton(
+                  label: 'TRY AGAIN',
+                  icon: Icons.refresh,
+                  color: AppColors.blue,
+                  onPressed: _reconnectOnline,
+                ),
+                const SizedBox(height: 10),
+              ],
+              if (ready) ...[
+                NeonButton(
+                  label: online.searching ? 'SEARCHING…' : 'FIND A MATCH',
+                  icon: Icons.radar,
+                  color: AppColors.ember,
+                  onPressed: online.busy ? null : _findMatch,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Get paired with another searching captain — you both '
+                  'accept, then you sail.',
+                  textAlign: TextAlign.center,
+                  style: AppText.body(size: 10.5, color: AppColors.inkSoft),
+                ),
+                const SizedBox(height: 12),
+                NeonButton(
+                  label: 'FRIENDS',
+                  icon: Icons.people,
+                  color: AppColors.green,
+                  onPressed: _openFriends,
+                ),
+              ],
             ],
           ),
         ),
@@ -537,12 +541,13 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
           icon: Icons.help_outline,
           color: AppColors.ember,
           child: Text(
-            'Every device that connects gets its own 6-character friend '
-            'code. Swap codes with someone, add each other, and whoever is '
-            'online can be invited straight into a battle — same modes, '
-            'same rules, same reconnect window as hotspot play.\n\n'
-            'Whoever sends the invitation hosts, and so commands the red '
-            'fleet and fires first.',
+            'FIND A MATCH pairs you with another captain who is searching '
+            'at the same moment. The match only starts once BOTH of you '
+            'tap accept — decline and you are back to searching.\n\n'
+            'Or play a friend: add each other by searching your captain '
+            'names in FRIENDS, then invite whoever is online. Whoever '
+            'sends the invitation hosts, commands the red fleet and fires '
+            'first.',
             style: AppText.body(size: 11.5, color: AppColors.inkSoft),
           ),
         ),

@@ -14,6 +14,7 @@
 //
 import 'package:battleship_blitz/services/online_api.dart';
 import 'package:battleship_blitz/services/relay_link.dart';
+import 'package:battleship_blitz/services/server_discovery.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _serverUrl = String.fromEnvironment(
@@ -257,6 +258,188 @@ void main() {
         forged.call('poll'),
         throwsA(isA<OnlineError>()),
       );
+    });
+
+    group('matchmaking — find a match, both must accept', () {
+      // A searcher left standing in the queue stays "online" for half a
+      // minute and would steal the next test's pairing — this suite has
+      // been bitten by exactly that. Clear the seats whatever happens.
+      Future<void> clearSeats() async {
+        for (final api in [alice, bob]) {
+          try {
+            await api.call('queue_leave');
+          } on OnlineError catch (_) {
+            // Not queued / nothing to decline — that is fine too.
+          }
+        }
+      }
+
+      setUp(() async {
+        if (!up) return;
+        await clearSeats();
+        await alice.call('match_end', args: {'matchId': matchId});
+      });
+
+      tearDown(clearSeats);
+
+      test('one searcher alone just waits', () async {
+        if (!up) return;
+        final r = await alice.call('queue_join');
+        expect(r['searching'], isTrue);
+        expect(r['match'], isNull);
+        final poll = await alice.call('poll');
+        expect(poll['searching'], isTrue);
+      });
+
+      test('two searchers pair; the relay opens only on the SECOND yes',
+          () async {
+        if (!up) return;
+        final w = await alice.call('queue_join');
+        expect(w['searching'], isTrue);
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+
+        final r = await bob.call('queue_join');
+        expect(r['searching'], isFalse,
+            reason: 'bob should be paired the moment he asks');
+        final m = r['match'] as Map;
+        expect(m['status'], 'found');
+        // Whoever waited first hosts — red fleet, opening shot.
+        expect(m['youAreHost'], isFalse);
+
+        final pairingId = (m['id'] as num).toInt();
+
+        // Guard against a stray third captain stealing the pairing: what
+        // bob sees must be THE match alice is sitting in.
+        final a = await alice.call('poll');
+        expect(a['searching'], isFalse);
+        expect((a['match'] as Map)['status'], 'found');
+        expect((a['match'] as Map)['id'], pairingId);
+        expect((a['match'] as Map)['youAreHost'], isTrue);
+
+        // One yes alone must NOT open the relay.
+        final first =
+            await alice.call('accept_match', args: {'matchId': pairingId});
+        expect(first['status'], 'found');
+
+        final bMid = await bob.call('poll');
+        expect((bMid['match'] as Map)['peerAccepted'], isTrue);
+        expect((bMid['match'] as Map)['youAccepted'], isFalse);
+
+        // ...the second one does, for both players.
+        final second =
+            await bob.call('accept_match', args: {'matchId': pairingId});
+        expect(second['status'], 'active');
+
+        final aFinal = await alice.call('poll');
+        expect((aFinal['match'] as Map)['status'], 'active');
+      });
+
+      test('declining releases both players back out of matchmaking',
+          () async {
+        if (!up) return;
+        await alice.call('queue_join');
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        final r = await bob.call('queue_join');
+        final pairingId = ((r['match'] as Map)['id'] as num).toInt();
+
+        // bob says no thanks.
+        await bob.call('queue_leave');
+
+        final a = await alice.call('poll');
+        expect(a['searching'], isFalse,
+            reason: 'pairing took alice out of the queue');
+        expect(a['match'], isNull,
+            reason: 'the decline dissolved the pairing');
+        expect(pairingId, isPositive);
+      });
+    });
+
+    group('finding captains by name', () {
+      // Dedicated accounts whose names are unique per RUN: the database
+      // accumulates a "Test Bob" per suite run, and a bare prefix search
+      // capped at twelve results cannot be relied on to surface today's.
+      late OnlineApi seeker;
+      late OnlineApi target;
+      late int seekerId;
+      late int targetId;
+      late String runName;
+
+      setUp(() async {
+        if (!up) return;
+        final run = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+        runName = run;
+        seeker = OnlineApi()..baseUrl = _serverUrl;
+        target = OnlineApi()..baseUrl = _serverUrl;
+
+        final s = await seeker
+            .call('register', args: {'name': 'Seeker$run'}, authed: false);
+        seeker.token = s['token'] as String;
+        seekerId = (s['id'] as num).toInt();
+
+        final t = await target.call('register',
+            args: {'name': 'Findable$run'}, authed: false);
+        target.token = t['token'] as String;
+        targetId = (t['id'] as num).toInt();
+      });
+
+      test('a name prefix finds the captain', () async {
+        if (!up) return;
+        // The full per-run prefix: a bare 'Findable' search competes with
+        // every Findable… account past suite runs for the twelve slots.
+        final r = await seeker.call('find', args: {'q': 'Findable$runName'});
+        final players = (r['players'] as List).cast<Map>();
+        expect(players.map((p) => p['id']), contains(targetId));
+      });
+
+      test('a friend request can be sent straight from a search result',
+          () async {
+        if (!up) return;
+        final r =
+            await seeker.call('find', args: {'q': 'Findable$runName'});
+        final hit = (r['players'] as List)
+            .cast<Map>()
+            .firstWhere((p) => p['id'] == targetId);
+        await seeker.call('request', args: {'playerId': hit['id']});
+
+        final poll = await target.call('poll');
+        expect(
+          (poll['incoming'] as List)
+              .cast<Map>()
+              .map((p) => p['id']),
+          contains(seekerId),
+        );
+      });
+
+      test('an empty search is refused politely', () async {
+        if (!up) return;
+        await expectLater(
+          seeker.call('find', args: {'q': ''}),
+          throwsA(isA<OnlineError>()),
+        );
+      });
+    });
+  });
+
+  group('server auto-discovery', () {
+    test('finds the running server with nothing to go on', () async {
+      if (!up) return;
+      final found = await ServerDiscovery().discover();
+      expect(found, isNotNull);
+      // Whichever alias answered (localhost, 127.0.0.1, …), what matters
+      // is that it genuinely speaks this game's protocol.
+      final api = OnlineApi()..baseUrl = found!;
+      await api.call('ping', authed: false);
+    });
+
+    test('a stale remembered address does not stick — the real '
+        'server is still found behind it', () async {
+      if (!up) return;
+      final found = await ServerDiscovery()
+          .discover(known: 'http://127.0.0.1/definitely-not-here');
+      expect(found, isNotNull);
+      expect(found, isNot(contains('/definitely-not-here')));
+      final api = OnlineApi()..baseUrl = found!;
+      await api.call('ping', authed: false);
     });
   });
 }

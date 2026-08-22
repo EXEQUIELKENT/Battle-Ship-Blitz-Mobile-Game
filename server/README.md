@@ -32,6 +32,13 @@ need to: it isn't refereeing, it's relaying.
    C:\xampp\mysql\bin\mysql.exe -u root < server\schema.sql
    ```
 
+   Already have a database from before matchmaking existed? Run the
+   upgrade instead — it applies just the diff:
+
+   ```
+   C:\xampp\mysql\bin\mysql.exe -u root < server\migrate-matchmaking.sql
+   ```
+
 3. **Check it answers.** If the project sits in `htdocs`, Apache is
    already serving this folder:
 
@@ -42,15 +49,21 @@ need to: it isn't refereeing, it's relaying.
 
    Expect `{"ok":true,"service":"battleship-blitz","version":1}`.
 
-4. **Point the game at it.** Main menu → **FRIENDS — PLAY ONLINE**, and
-   enter the address *without* `api.php`:
+4. **That's it — the game finds it.** Open main menu → **FRIENDS — PLAY
+   ONLINE** (or the FIND A MATCH button on the MULTIPLAYER screen). The
+   app remembers the last address that worked, then sweeps the phone's
+   own Wi-Fi subnet asking every machine `ping` until the game server
+   answers, so no address is ever typed.
 
-   ```
-   http://192.168.1.5/Battle-Ship-Blitz-Mobile-Game/server
-   ```
+   Two requirements follow from how discovery works (a build with the
+   address baked in — see below — skips both):
 
-   Use the **machine's LAN IP**, not `localhost` — a phone reading
-   `localhost` looks at itself. `ipconfig` will tell you which.
+   * The phone must be on the **same network** as the server (same Wi-Fi
+     or hotspot; AP/client isolation must be off).
+   * The folder must keep its name: the app probes exactly
+     `/Battle-Ship-Blitz-Mobile-Game/server/api.php` under any web root.
+     If you deploy under a different path, update `serverPath` in
+     `lib/services/server_discovery.dart` to match.
 
 Non-default MySQL credentials go in `server/config.local.php` (gitignored):
 
@@ -72,17 +85,56 @@ server needs to be reachable from outside, which means either:
 * **Any PHP host.** Upload `server/`, import `schema.sql`, set
   `config.local.php`. Nothing here is XAMPP-specific.
 
-Whichever you pick, both players enter the same address.
+Whichever you pick, both phones discover it the same automatic way —
+tunnels and public hosts answer `ping` like a LAN machine does.
+
+## Shipping the address inside the app (release builds)
+
+Subnet sweeping only finds a server on the *player's own* Wi-Fi, which
+is exactly right for development but useless for an APK handed to
+friends across the internet. For those builds, bake the address into the
+binary at compile time:
+
+```
+flutter build apk --release ^
+  --dart-define=BBZ_SERVER=https://your-tunnel.example/Battle-Ship-Blitz-Mobile-Game/server
+```
+
+The app then pings that one machine first on every launch (see
+`ServerDiscovery.bakedUrl`), so players never see or type an address:
+open the game → FIND A MATCH, or FRIENDS to add someone by captain
+name. LAN discovery still runs as a fallback when the baked server is
+unreachable. Leave `BBZ_SERVER` unset for dev builds and nothing
+changes.
+
+Offline players are told plainly — "You need an internet connection to
+play online…" — both on entering online play (one quick DNS check,
+before any searching) and whenever a request fails mid-session.
 
 ## How a match gets started
 
-1. Both devices connect and each gets a six-character **friend code**.
-2. They add each other by code; one accepts.
-3. Whoever is online can be invited. **The inviter hosts** — so they
-   command the red fleet and fire first, exactly as hosting a hotspot
-   room does.
-4. On accept the match goes `active`, both clients open a `RelayLink`,
-   and the normal flow takes over: mode vote → deployment → battle.
+Two roads lead into a battle:
+
+**Find a match (random matchmaking).**
+
+1. A captain taps **FIND A MATCH** and stands in the search queue — the
+   loading screen is literal: they are a row in `matchmaking`.
+2. The next captain to search is paired with whoever waited longest.
+   The pairing is a match with status `found` — nobody has agreed to
+   anything yet, so no relay exists.
+3. BOTH captains now see "MATCH FOUND" and must tap accept. Each yes
+   sets their flag; only when both are set does the match go `active`
+   and the relay open. Declining — or 30 seconds of silence from either
+   side (`pair_hold_seconds`) — dissolves the pairing and releases both.
+4. Whoever waited first hosts, so they command the red fleet and fire
+   first, exactly as an inviter would.
+
+**Friends.** Players add each other by searching each other's unique
+captain name (`find`); the friend code still works for anyone who has
+one handy. An online friend can be invited; **the inviter hosts** — red
+fleet, opening shot, same as hosting a hotspot room. On accept the match
+goes straight to `active`, both clients open a `RelayLink`, and the
+normal flow takes over: mode vote → deployment → battle.
 
 ## Endpoints
 
@@ -95,16 +147,23 @@ failure `error` carries a sentence written to be shown to a player.
 | `ping` | — | Health check. |
 | `register` | `name` | Creates this installation's account. Returns `id`, `tag`, `token`. |
 | `sync` | profile fields | Mirrors local stats up so friends can see them. |
-| `poll` | — | Friends + requests + presence + any live match. Doubles as the heartbeat. |
-| `find` | `tag` | Look a captain up by friend code. |
-| `request` | `tag` | Send a friend request (auto-accepts a mutual one). |
+| `poll` | — | Friends + requests + presence + any live match + whether searching. Doubles as the heartbeat. |
+| `find` | `q` | Search captains by name prefix (or exact friend code). Returns `players[]`. |
+| `request` | `playerId` or `tag` | Send a friend request (auto-accepts a mutual one). |
 | `respond` | `playerId`, `accept` | Answer a request. |
 | `unfriend` | `playerId` | Remove a friend. |
 | `invite` | `playerId` | Challenge a friend. Returns `matchId`. |
 | `invite_respond` | `matchId`, `accept` | Answer a challenge. |
+| `queue_join` | — | Stand in the find-a-match queue; pairs with the longest-waiting searcher if one exists. |
+| `queue_leave` | — | Stop searching / decline a found pairing. |
+| `accept_match` | `matchId` | Say yes to a found pairing. Second yes makes it active. |
 | `match_end` | `matchId` | Free the seat when leaving. |
 | `relay_send` | `matchId`, `lines[]` | Post protocol lines to the opponent. |
 | `relay_poll` | `matchId`, `since` | Long-poll for theirs. Returns `lines`, `seq`, `peerAgo`, `status`. |
+
+Match statuses: `inviting` (friend challenge waiting) → `active` →
+`done`; matchmaking adds `found` (paired, both must accept, tracked by
+`host_ready`/`guest_ready`).
 
 ### Latency
 
@@ -144,9 +203,11 @@ flutter test test/online_relay_live_test.dart
 ```
 
 It registers throwaway accounts, walks the whole friend → invite →
-relay path against the live server, and checks ordering, large messages
-and the access rules. With no server running it skips itself, so a normal
-`flutter test` never depends on the stack being up.
+relay path against the live server — plus the find-a-match queue with
+its both-captains-must-accept handshake and the name search — and
+checks ordering, large messages and the access rules. With no server
+running it skips itself, so a normal `flutter test` never depends on
+the stack being up.
 
 ## Housekeeping
 
