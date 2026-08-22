@@ -11,33 +11,41 @@ import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/app_notification.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/ocean_background.dart';
 import '../widgets/ship_painter.dart';
 
-/// Shipyard — unlock & equip ship hulls, cannons and battlefields with RP.
+/// Shipyard — unlock & equip ship hulls, cannons, decks and matched
+/// gameplay sets with RP.
 ///
 /// **The store sells the design, not the swatch.** That line from the
 /// "Skin system architecture" design is the whole brief for this screen,
 /// and the shell around it is deliberately unchanged — navy header, gold
-/// RP pill, three tabs, cream cards. What changed is what a card is
+/// RP pill, four tabs, cream cards. What changed is what a card is
 /// allowed to show.
 ///
 /// The old cards were honest about the old skins: one hull drawing in a
 /// pair of tint colours, so a single battleship silhouette said
 /// everything there was to say. A family is not that. It is five bespoke
 /// hull classes, a gun that arrives with its own shell, and a battlefield
-/// that replaces the grid rather than recolouring it — and none of that
-/// survives being reduced to one ship on a blue square. So:
+/// deck that replaces the grid rather than recolouring it — and none of
+/// that survives being reduced to one ship on a blue square. So:
 ///
 ///  * a hull card shows the carrier large and the other four classes as a
 ///    strip beneath it, which is the design's own acceptance test made
 ///    visible: the card proves all five change;
 ///  * a cannon card carries its shell on the disc beside it, so the
 ///    pairing is visible before purchase rather than at the first shot;
-///  * a battlefield card previews the real board, its own markers
-///    included;
-///  * and the matched set is finally buyable, at the top of GAMEPLAY.
+///  * a DECK card previews the real board, its own markers included;
+///  * and the matched set — hull, cannon and deck together — now has a
+///    tab of its own: GAMEPLAY, buyable in one tap.
+///
+/// The matched set used to lead the old GAMEPLAY tab alongside the deck
+/// cards, which made "buy the whole family" and "buy just the board"
+/// read as the same kind of thing. Splitting them into DECK (the board
+/// alone) and GAMEPLAY (the bundle) keeps the one-tap set from getting
+/// lost among the boards it also happens to sell.
 ///
 /// The nine original skins are still here and still equippable — they
 /// just no longer lead, because they are the smaller thing. They sit
@@ -57,7 +65,7 @@ class _CustomizeScreenState extends State<CustomizeScreen>
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 3, vsync: this);
+    _tab = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -136,6 +144,7 @@ class _CustomizeScreenState extends State<CustomizeScreen>
                   tabs: const [
                     Tab(text: 'SHIP HULLS'),
                     Tab(text: 'CANNONS'),
+                    Tab(text: 'DECK'),
                     Tab(text: 'GAMEPLAY'),
                   ],
                 ),
@@ -146,7 +155,8 @@ class _CustomizeScreenState extends State<CustomizeScreen>
                   children: [
                     _ShipsTab(profile: profile),
                     _CannonsTab(profile: profile),
-                    _ThemesTab(profile: profile),
+                    _DeckTab(profile: profile),
+                    _GameplayTab(profile: profile),
                   ],
                 ),
               ),
@@ -164,15 +174,10 @@ class _CustomizeScreenState extends State<CustomizeScreen>
 /// thing the same way.
 void _denied(BuildContext context, int cost) {
   SoundService.instance.denied();
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(
-        'Not enough RP! Need $cost RP.',
-        style: const TextStyle(fontWeight: FontWeight.w800),
-      ),
-      backgroundColor: AppColors.hit,
-      behavior: SnackBarBehavior.floating,
-    ),
+  AppNotification.show(
+    context,
+    'Not enough RP! Need $cost RP.',
+    type: AppNoticeType.error,
   );
 }
 
@@ -480,33 +485,44 @@ class _FamilyHullCard extends StatelessWidget {
             // room between them. Splitting battleship+cruiser from
             // submarine+destroyer gives every silhouette its own space
             // while keeping the same "five classes, five shapes" proof.
+            //
+            // `spaceEvenly` used to stretch the gap between each pair to
+            // fill the whole row, which read as two tiny hulls stranded
+            // at the edges. Centering the pair with a fixed gap keeps
+            // them grouped together, and the bigger size multiplier
+            // gives each hull enough width to actually read as its
+            // silhouette instead of a sliver.
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
               child: Column(
                 children: [
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      for (final spec in kFleet.skip(1).take(2))
+                      for (final spec in kFleet.skip(1).take(2)) ...[
+                        if (spec != kFleet[1]) const SizedBox(width: 14),
                         AnimatedShip(
                           spec: spec,
                           skin: skin,
-                          width: 7.0 * spec.size + 6,
-                          height: 19,
+                          width: 9.5 * spec.size + 10,
+                          height: 22,
                         ),
+                      ],
                     ],
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 8),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      for (final spec in kFleet.skip(3))
+                      for (final spec in kFleet.skip(3)) ...[
+                        if (spec != kFleet[3]) const SizedBox(width: 14),
                         AnimatedShip(
                           spec: spec,
                           skin: skin,
-                          width: 7.0 * spec.size + 6,
-                          height: 19,
+                          width: 9.5 * spec.size + 10,
+                          height: 22,
                         ),
+                      ],
                     ],
                   ),
                 ],
@@ -882,11 +898,15 @@ class _CannonCard extends StatelessWidget {
   }
 }
 
-// -------------------------------------------------------------- GAMEPLAY
+// ------------------------------------------------------------------ DECK
 
-class _ThemesTab extends StatelessWidget {
+/// The battlefield boards on their own shelf — no matched-set pitch
+/// mixed in. Buying just a deck used to sit in the same list as buying
+/// a whole family, which made the one-tap bundle read like one more
+/// board among the boards. See GAMEPLAY, below, for the bundle.
+class _DeckTab extends StatelessWidget {
   final ProfileStore profile;
-  const _ThemesTab({required this.profile});
+  const _DeckTab({required this.profile});
 
   @override
   Widget build(BuildContext context) {
@@ -896,28 +916,10 @@ class _ThemesTab extends StatelessWidget {
     final legacy = Catalog.gameplayThemes
         .where((t) => t.familyKey == null)
         .toList();
-    // A set has nothing left to sell once all three of its pieces are
-    // owned, so it drops off the list rather than sitting there quoting a
-    // price for things you already have.
-    final sets = FleetFamilies.all
-        .where((f) => !profile.ownsFamilySet(f))
-        .toList();
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (sets.isNotEmpty) ...[
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(
-              'MATCHED SETS',
-              style: AppText.label(size: 10, color: AppColors.navyDeep),
-            ),
-          ),
-          for (final family in sets)
-            _MatchedSetCard(profile: profile, family: family),
-          const SizedBox(height: 6),
-        ],
         for (final theme in families)
           _ThemeCard(profile: profile, theme: theme),
         _LegacyShelf(
@@ -939,14 +941,80 @@ class _ThemesTab extends StatelessWidget {
   }
 }
 
+// -------------------------------------------------------------- GAMEPLAY
+
+/// The one-tap matched sets, on a tab of their own.
+///
+/// This used to lead the DECK tab, ahead of the boards it also happens
+/// to sell — which made "buy the whole family" and "buy just the board"
+/// read as the same kind of purchase. Giving it its own tab is the fix:
+/// GAMEPLAY is where you buy a family whole, DECK is where you buy a
+/// board.
+class _GameplayTab extends StatelessWidget {
+  final ProfileStore profile;
+  const _GameplayTab({required this.profile});
+
+  @override
+  Widget build(BuildContext context) {
+    // A set has nothing left to sell once all three of its pieces are
+    // owned, so it drops off the list rather than sitting there quoting a
+    // price for things you already have.
+    final sets = FleetFamilies.all
+        .where((f) => !profile.ownsFamilySet(f))
+        .toList();
+
+    if (sets.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const SizedBox(height: 40),
+          const Icon(Icons.workspace_premium, color: AppColors.gold, size: 48),
+          const SizedBox(height: 12),
+          Text(
+            'Every matched set is already yours — hull, cannon and deck, '
+            'for every family.',
+            textAlign: TextAlign.center,
+            style: AppText.body(size: 13, color: AppColors.cream),
+          ),
+        ],
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'MATCHED SETS',
+            style: AppText.label(size: 10, color: AppColors.navyDeep),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            'Hull, cannon and deck together, in one tap, for less than '
+            'buying the three pieces apart.',
+            style: AppText.body(size: 11, color: AppColors.navyDeep),
+          ),
+        ),
+        for (final family in sets)
+          _MatchedSetCard(profile: profile, family: family),
+        const SizedBox(height: 12),
+      ],
+    );
+  }
+}
+
 /// The design's one-tap matched set: board, cannon, shell and all five
 /// hulls together, for less than the pieces bought singly.
 ///
-/// It leads the GAMEPLAY tab rather than getting a tab of its own because
-/// this is the one place you can see a whole family at once — the board
-/// behind the gun that shoots over it. The quoted price discounts what
-/// you are still missing, not what you already bought, so someone who
-/// picked up the hull last week isn't asked to pay for it twice.
+/// It has its own GAMEPLAY tab, separate from DECK, because this is the
+/// one place you can see a whole family at once — the board behind the
+/// gun that shoots over it — and that is a different purchase than
+/// picking a single board. The quoted price discounts what you are
+/// still missing, not what you already bought, so someone who picked up
+/// the hull last week isn't asked to pay for it twice.
 ///
 /// **Only the button buys.** This is the one card in the shop that
 /// charges for three things at once, and it sits in a list of cards you

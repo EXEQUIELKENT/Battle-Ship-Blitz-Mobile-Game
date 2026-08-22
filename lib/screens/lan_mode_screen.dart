@@ -212,7 +212,11 @@ class _LanModeScreenState extends State<LanModeScreen> {
                         'BOTH CAPTAINS MUST PICK THE SAME MODE.\n'
                         'THE MATCH WILL NOT START ON A SPLIT VOTE.',
                         textAlign: TextAlign.center,
-                        style: AppText.label(size: 10, color: AppColors.cream),
+                        // Sits directly on the coral deck (no card, no
+                        // navy panel behind it) — cream was unreadable
+                        // here, so this uses the same dark navy ink the
+                        // cards below it use.
+                        style: AppText.label(size: 10, color: AppColors.navy),
                       ),
                       const SizedBox(height: 14),
                       // Four modes now, so this scrolls — which it

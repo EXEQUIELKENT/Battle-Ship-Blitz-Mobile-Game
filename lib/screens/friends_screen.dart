@@ -11,18 +11,21 @@ import '../services/network_service.dart';
 import '../services/online_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/app_notification.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'battle_screen.dart';
 import 'lan_mode_screen.dart';
 
-/// The online lobby: your friend code, your friends and their stats,
+/// The online lobby: your captain name, your friends and their stats,
 /// who's online right now, and the invitations that start a match.
 ///
-/// This screen owns everything up to "we've agreed to play". The moment
-/// the server marks a match active, [NetworkService.startRelayMatch]
-/// takes over and the game runs the identical flow a hotspot match does
-/// — mode vote, deployment, battle.
+/// Friends are added by searching each player's unique captain name (the
+/// friend code still works for anyone who has one handy). This screen
+/// owns everything up to "we've agreed to play"; the moment the server
+/// marks a match active, [NetworkService.startRelayMatch] takes over and
+/// the game runs the identical flow a hotspot match does — mode vote,
+/// deployment, battle. Random matchmaking lives in [MatchmakingScreen].
 class FriendsScreen extends StatefulWidget {
   const FriendsScreen({super.key});
 
@@ -33,8 +36,12 @@ class FriendsScreen extends StatefulWidget {
 class _FriendsScreenState extends State<FriendsScreen> {
   late final OnlineService _online;
   late final NetworkService _net;
-  final _codeCtrl = TextEditingController();
-  final _serverCtrl = TextEditingController();
+  final _searchCtrl = TextEditingController();
+
+  /// Captains the last name search turned up, shown under the search box
+  /// with an ADD button each.
+  List<OnlinePlayer> _searchResults = const [];
+  bool _searching = false;
 
   /// True from the moment we start handing a match over to
   /// [NetworkService] until that match is completely finished. Polls keep
@@ -64,7 +71,15 @@ class _FriendsScreenState extends State<FriendsScreen> {
     _net.addListener(_onNet);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final profile = context.read<ProfileStore>();
-      await _online.ensureAccount(profile);
+      // The game server is found automatically (remembered address first,
+      // then a Wi-Fi sweep); this screen only adds the retry path.
+      // Already signed in? Push the current profile up anyway, so a
+      // recent callsign change is what friends see.
+      if (_online.signedIn) {
+        await _online.syncProfile(profile);
+      } else {
+        await _online.connectAuto(profile);
+      }
       // Presence is just "this player keeps talking to the server", so the
       // heartbeat that refreshes this list is also what keeps them shown
       // as online to everyone else.
@@ -77,8 +92,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     _online.removeListener(_onOnline);
     _net.removeListener(_onNet);
     _online.stopHeartbeat();
-    _codeCtrl.dispose();
-    _serverCtrl.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -203,20 +217,43 @@ class _FriendsScreenState extends State<FriendsScreen> {
 
   // -------------------------------------------------------------- ACTIONS
 
-  Future<void> _addByCode() async {
-    final code = _codeCtrl.text.trim().toUpperCase();
-    if (code.length < 4) {
-      _toast('Enter your friend’s 6-character code.');
+  /// Searches captains by name. Every result gets its own ADD button, so
+  /// two players who happened to pick the same name stay tellable-apart
+  /// by the friend code printed on each card.
+  Future<void> _search() async {
+    final q = _searchCtrl.text.trim();
+    if (q.isEmpty) {
+      _toast('Type the name of the captain you want to add.',
+          type: AppNoticeType.error);
       return;
     }
     SoundService.instance.click();
-    final ok = await _online.addFriend(code);
+    setState(() => _searching = true);
+    final results = await _online.search(q);
+    if (!mounted) return;
+    setState(() {
+      _searching = false;
+      _searchResults = results;
+    });
+    if (results.isEmpty && _online.lastError == null) {
+      _toast('No captain named "$q" found.', type: AppNoticeType.error);
+    }
+  }
+
+  Future<void> _add(OnlinePlayer p) async {
+    SoundService.instance.click();
+    final ok = await _online.requestById(p.id);
     if (!mounted) return;
     if (ok) {
-      _codeCtrl.clear();
-      _toast('Request sent.');
+      _toast(
+        p.online
+            ? 'Request sent to ${p.name}.'
+            : 'Request sent — they will see it next time they are online.',
+        type: AppNoticeType.success,
+      );
     } else {
-      _toast(_online.lastError ?? 'Could not send that request.');
+      _toast(_online.lastError ?? 'Could not send that request.',
+          type: AppNoticeType.error);
     }
   }
 
@@ -224,17 +261,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
     SoundService.instance.click();
     final ok = await _online.invite(friend.id);
     if (!mounted) return;
-    if (!ok) _toast(_online.lastError ?? 'Could not send that invitation.');
+    if (!ok) {
+      _toast(_online.lastError ?? 'Could not send that invitation.',
+          type: AppNoticeType.error);
+    }
   }
 
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg, style: const TextStyle(fontWeight: FontWeight.w800)),
-        backgroundColor: AppColors.navy,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+  void _toast(String msg, {AppNoticeType type = AppNoticeType.info}) {
+    AppNotification.show(context, msg, type: type);
   }
 
   // ---------------------------------------------------------------- BUILD
@@ -312,7 +346,12 @@ class _FriendsScreenState extends State<FriendsScreen> {
         ],
         _myCodeCard(online),
         const SizedBox(height: 14),
-        _addCard(online),
+        _searchCard(online),
+        if (_searchResults.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _sectionTitle('SEARCH RESULTS  (${_searchResults.length})'),
+          for (final p in _searchResults) _resultTile(p),
+        ],
         if (online.incomingRequests.isNotEmpty) ...[
           const SizedBox(height: 18),
           _sectionTitle('REQUESTS  (${online.incomingRequests.length})'),
@@ -324,10 +363,11 @@ class _FriendsScreenState extends State<FriendsScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 18),
             child: Text(
-              'No friends yet. Swap friend codes with someone and\n'
-              'add them above — then invite them to a battle.',
+              'No friends yet. Search a captain by their unique name\n'
+              'above, tap ADD, and once they accept you can invite\n'
+              'them to a battle.',
               textAlign: TextAlign.center,
-              style: AppText.body(size: 12, color: AppColors.cream),
+              style: AppText.body(size: 12, color: AppColors.inkSoft),
             ),
           ),
         for (final f in online.friends) _friendTile(f, canInvite: match == null),
@@ -340,18 +380,22 @@ class _FriendsScreenState extends State<FriendsScreen> {
           const SizedBox(height: 18),
           Text(online.lastError!,
               textAlign: TextAlign.center,
-              style: AppText.label(size: 9.5, color: AppColors.gold)),
+              style: AppText.label(size: 9.5, color: AppColors.hit)),
         ],
       ],
     );
   }
 
+  // This list sits directly on the coral deck — no navy panel or card
+  // behind it — so section titles use dark navy ink instead of the
+  // default cream, which all but disappeared here.
   Widget _sectionTitle(String text) => Padding(
         padding: const EdgeInsets.only(bottom: 8),
-        child: Text(text, style: AppText.label(size: 10)),
+        child: Text(text, style: AppText.label(size: 10, color: AppColors.navy)),
       );
 
   Widget _setupCard(OnlineService online) {
+    final busy = online.busy;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -361,52 +405,37 @@ class _FriendsScreenState extends State<FriendsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.cloud_queue, size: 34, color: AppColors.navy),
+              Icon(
+                busy ? Icons.radar : Icons.cloud_off,
+                size: 34,
+                color: busy ? AppColors.blue : AppColors.navy,
+              ),
               const SizedBox(height: 10),
-              Text('CONNECT TO A GAME SERVER',
-                  textAlign: TextAlign.center,
-                  style: AppText.label(size: 12, color: AppColors.navy)),
+              Text(
+                busy ? 'LOOKING FOR YOUR GAME SERVER' : 'NO GAME SERVER FOUND',
+                textAlign: TextAlign.center,
+                style: AppText.label(size: 12, color: AppColors.navy),
+              ),
               const SizedBox(height: 8),
               Text(
-                online.lastError ??
-                    'Online play runs through your own small server. Enter '
-                        'its address to get a friend code — see '
-                        'server/README.md for how to start it.',
+                busy
+                    ? 'Sweeping this Wi-Fi for the game server…'
+                    : (online.lastError ??
+                        'No game server found on this Wi-Fi. Start it '
+                            '(XAMPP: Apache + MySQL), make sure this device '
+                            'is on the same network, then try again.'),
                 textAlign: TextAlign.center,
                 style: AppText.body(size: 12, color: AppColors.inkSoft),
               ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: _serverCtrl,
-                keyboardType: TextInputType.url,
-                autocorrect: false,
-                style: AppText.body(size: 12.5, color: AppColors.navy),
-                decoration: InputDecoration(
-                  hintText: 'http://192.168.1.5/bbz/server',
-                  hintStyle: AppText.body(size: 11, color: AppColors.inkSoft),
-                  filled: true,
-                  fillColor: AppColors.coralLight,
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 10),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        const BorderSide(color: AppColors.outline, width: 2.5),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        const BorderSide(color: AppColors.blue, width: 2.5),
-                  ),
+              if (!busy) ...[
+                const SizedBox(height: 14),
+                NeonButton(
+                  label: 'TRY AGAIN',
+                  icon: Icons.refresh,
+                  color: AppColors.green,
+                  onPressed: _retryConnect,
                 ),
-              ),
-              const SizedBox(height: 12),
-              NeonButton(
-                label: online.busy ? 'CONNECTING…' : 'CONNECT',
-                icon: Icons.link,
-                color: AppColors.green,
-                onPressed: online.busy ? null : _connect,
-              ),
+              ],
             ],
           ),
         ),
@@ -414,17 +443,18 @@ class _FriendsScreenState extends State<FriendsScreen> {
     );
   }
 
-  Future<void> _connect() async {
+  Future<void> _retryConnect() async {
     SoundService.instance.click();
     final profile = context.read<ProfileStore>();
-    await _online.setBaseUrl(_serverCtrl.text.trim());
-    final ok = await _online.ensureAccount(profile);
+    await _online.connectAuto(profile);
     if (!mounted) return;
-    if (ok) {
+    if (_online.signedIn && _online.reachable) {
       _online.startHeartbeat();
-      _toast('Connected — your friend code is ${_online.myTag}');
+      _toast('Connected as ${_online.myName} — code ${_online.myTag}',
+          type: AppNoticeType.success);
     } else {
-      _toast(_online.lastError ?? 'Could not reach that server.');
+      _toast(_online.lastError ?? 'No game server found.',
+          type: AppNoticeType.error);
     }
   }
 
@@ -554,15 +584,16 @@ class _FriendsScreenState extends State<FriendsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('YOUR FRIEND CODE',
+          Text('YOUR CAPTAIN NAME',
               style: AppText.label(size: 10, color: AppColors.inkSoft)),
           const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
                 child: Text(
-                  online.myTag.isEmpty ? '……' : online.myTag,
-                  style: AppText.title(size: 30, color: AppColors.navy),
+                  online.myName.isEmpty ? online.myTag : online.myName,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.title(size: 24, color: AppColors.navy),
                 ),
               ),
               IconButton(
@@ -571,59 +602,107 @@ class _FriendsScreenState extends State<FriendsScreen> {
                     ? null
                     : () {
                         SoundService.instance.click();
-                        Clipboard.setData(ClipboardData(text: online.myTag));
-                        _toast('Friend code copied.');
+                        Clipboard.setData(ClipboardData(text: online.myName));
+                        _toast('Name copied.');
                       },
               ),
             ],
           ),
-          Text('Give this to a friend so they can add you.',
-              style: AppText.body(size: 11, color: AppColors.inkSoft)),
+          Text(
+            'Friends add you by searching this name. '
+            'Your code ${online.myTag.isEmpty ? '……' : online.myTag} '
+            'works too.',
+            style: AppText.body(size: 11, color: AppColors.inkSoft)),
         ],
       ),
     );
   }
 
-  Widget _addCard(OnlineService online) {
+  Widget _searchCard(OnlineService online) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: cartoonBox(AppColors.cream, radius: 18),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: TextField(
-              controller: _codeCtrl,
-              textCapitalization: TextCapitalization.characters,
-              maxLength: 6,
-              style: AppText.body(size: 15, color: AppColors.navy),
-              decoration: InputDecoration(
-                hintText: 'FRIEND CODE',
-                hintStyle: AppText.body(size: 12, color: AppColors.inkSoft),
-                counterText: '',
-                filled: true,
-                fillColor: AppColors.coralLight,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide:
-                      const BorderSide(color: AppColors.outline, width: 2.5),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide:
-                      const BorderSide(color: AppColors.blue, width: 2.5),
+          Text('ADD A FRIEND BY NAME',
+              style: AppText.label(size: 10, color: AppColors.inkSoft)),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _searchCtrl,
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: (_) => _search(),
+                  maxLength: 32,
+                  style: AppText.body(size: 14, color: AppColors.navy),
+                  decoration: InputDecoration(
+                    hintText: 'CAPTAIN NAME',
+                    hintStyle:
+                        AppText.body(size: 12, color: AppColors.inkSoft),
+                    counterText: '',
+                    filled: true,
+                    fillColor: AppColors.coralLight,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(
+                          color: AppColors.outline, width: 2.5),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide:
+                          const BorderSide(color: AppColors.blue, width: 2.5),
+                    ),
+                  ),
                 ),
               ),
+              const SizedBox(width: 10),
+              NeonButton(
+                label: _searching ? '…' : 'SEARCH',
+                icon: Icons.search,
+                color: AppColors.green,
+                compact: true,
+                onPressed: _searching ? null : _search,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One captain a name search found. ADD sends the friend request by
+  /// player id — no codes to copy anywhere.
+  Widget _resultTile(OnlinePlayer p) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: cartoonBox(AppColors.coralLight, radius: 16),
+      child: Row(
+        children: [
+          _presenceDot(p.online),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(p.name.toUpperCase(),
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.label(size: 12, color: AppColors.navy)),
+                Text('${p.tag} · ${p.rankTitle} · ${p.rp} RP',
+                    style: AppText.body(size: 10.5, color: AppColors.inkSoft)),
+              ],
             ),
           ),
-          const SizedBox(width: 10),
           NeonButton(
             label: 'ADD',
             icon: Icons.person_add,
             color: AppColors.green,
             compact: true,
-            onPressed: online.busy ? null : _addByCode,
+            onPressed: _online.busy ? null : () => _add(p),
           ),
         ],
       ),

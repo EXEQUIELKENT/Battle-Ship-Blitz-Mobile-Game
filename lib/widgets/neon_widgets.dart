@@ -126,13 +126,16 @@ class HudChip extends StatelessWidget {
         children: [
           Icon(icon, color: AppColors.cream, size: 15),
           const SizedBox(width: 6),
-          Text(
-            text,
-            style: const TextStyle(
-              fontWeight: FontWeight.w900,
-              fontSize: 12.5,
-              letterSpacing: 0.5,
-              color: AppColors.cream,
+          Flexible(
+            child: Text(
+              text,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontWeight: FontWeight.w900,
+                fontSize: 12.5,
+                letterSpacing: 0.5,
+                color: AppColors.cream,
+              ),
             ),
           ),
         ],
