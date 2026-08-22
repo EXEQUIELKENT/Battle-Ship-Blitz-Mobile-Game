@@ -221,10 +221,22 @@ class GameController extends ChangeNotifier {
         !network.isHost;
     if (isNetworkBattle) network.beginMatch();
     revision++;
-    cooldownMax1 =
-        kCooldownSeconds * profile.cannonSkin.cooldownFactor;
+    // BUGFIX (Player 2 silently inheriting Player 1's cannon reload speed):
+    // this used to read `profile.cannonSkin.cooldownFactor` — the ONE
+    // shared profile's globally-equipped cannon — for `cooldownMax1`, and
+    // then, in local pass-and-play, simply copied that same number
+    // straight into `cooldownMax2`. Neither seat's own pick (see
+    // `GameController.localLoadouts`) was ever actually read, so a fast
+    // reload skin equipped through either player's GEAR dialog silently
+    // gave BOTH cannons that exact same reload time — the appearance of
+    // each gun stayed correctly per-seat (see `_cannonSkinFor` in
+    // battle_screen.dart), only the gameplay timer didn't. Each seat's
+    // own equipped cannon now decides its own seat's reload speed.
+    final myCannon =
+        mode == GameMode.local ? localLoadouts[0].cannonSkin : profile.cannonSkin;
+    cooldownMax1 = kCooldownSeconds * myCannon.cooldownFactor;
     cooldownMax2 = mode == GameMode.local
-        ? cooldownMax1
+        ? kCooldownSeconds * localLoadouts[1].cannonSkin.cooldownFactor
         : kCooldownSeconds.toDouble();
     cooldown1 = 0;
     cooldown2 = 0;

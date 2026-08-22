@@ -98,6 +98,18 @@ const Map<String, ShellPalette> _legacyShellPalettes = {
 ShellPalette legacyShellPalette(String cannonId) =>
     _legacyShellPalettes[cannonId] ?? _legacyShellPalettes['mk1']!;
 
+/// Whether a legacy cannon's shell is a directional "rocket" shape rather
+/// than a round one — see `familyShellIsDirectional` in
+/// `family_shell_art.dart`, which this mirrors for the nine originals.
+/// Phantom Railgun's slug is an ogive dart with tail fins; Venom
+/// Launcher's warhead is a capped drum with a domed nose and spikes —
+/// both have a real front and back. The rest (iron shot, fireball, plasma
+/// orb, gilt shot, kraken shell, sunfire's rays, void's rings) are round
+/// or radially symmetric and read correctly from any angle, so they keep
+/// the classic continuous tumble-spin.
+bool legacyShellIsDirectional(String cannonId) =>
+    cannonId == 'phantom' || cannonId == 'venom';
+
 /// Paints the projectile the original cannon [cannonId] fires. Unknown
 /// ids (there shouldn't be any — every non-family `CannonSkin` in the
 /// catalogue has an entry above) fall back to the MK-I's plain shot

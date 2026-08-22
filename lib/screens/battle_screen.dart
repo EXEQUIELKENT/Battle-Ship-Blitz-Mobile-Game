@@ -132,7 +132,15 @@ class _BattleScreenState extends State<BattleScreen>
   // NORMAL case: both fleets fire the moment their own gun reloads, so
   // balls cross in mid-air constantly. Each side now owns its own slot
   // and both balls fly properly at the same time.
-  static const Duration _projDuration = Duration(milliseconds: 430);
+  // BUGFIX (shots looked like they teleported instead of arcing over):
+  // 430ms was fast enough that a shell crossed the whole board arc —
+  // launch, rise, fall, impact — in under half a second, too quick to
+  // read as a lobbed projectile rather than a snap-to-target effect.
+  // Nothing else times off this exact value (the animation's completion
+  // LISTENER is what actually drives impact resolution/turn-passing, not
+  // a magic duration — see the `addStatusListener` below), so it's safe
+  // to simply slow it down; the accuracy/targeting math is untouched.
+  static const Duration _projDuration = Duration(milliseconds: 750);
   late final _Projectile _projP1; // fired by the bottom half's owner
   late final _Projectile _projP2; // fired by the top half's owner
 
@@ -1008,6 +1016,19 @@ class _BattleScreenState extends State<BattleScreen>
             final shooterSkin = _cannonSkinFor(p.byP1);
             final shellFamily = FleetFamilies.byKey(shooterSkin.familyKey);
             final legacyShellId = shellFamily == null ? shooterSkin.id : null;
+            // BUGFIX (pointy shells "just rotating" in place instead of
+            // flying nose-first): every shell used to get the same
+            // continuous free spin, which reads fine for a round shot
+            // (it's a sphere; any face it shows is the right face) but
+            // looked wrong for the directional rocket/dart shells —
+            // Phantom Railgun's slug, the naval family's MK-IV sabot
+            // shell, and Venom's warhead — which have an actual nose and
+            // tail drawn into the art. Those are now oriented to the
+            // shell's real instantaneous heading along the arc below
+            // instead of spinning freely; round shells are untouched.
+            final isDirectional = shellFamily != null
+                ? familyShellIsDirectional(shellFamily.id)
+                : legacyShellIsDirectional(legacyShellId!);
             // Vertical ARC for the up-and-down lob effect, reused for the
             // ball itself and its trail.
             Offset posAt(double tt) {
@@ -1015,6 +1036,23 @@ class _BattleScreenState extends State<BattleScreen>
               final base = Offset.lerp(p.from, p.to, cl)!;
               final arc = math.sin(cl * math.pi) * p.cell * 3.0;
               return base - Offset(0, arc);
+            }
+
+            // The shell's instantaneous heading along the arc above,
+            // as an angle `Transform.rotate` can use directly to turn the
+            // art's authored nose-up orientation to face it. Derived
+            // analytically from `posAt`'s own velocity (the straight-line
+            // component plus the arc's rate of rise/fall) rather than
+            // sampled by finite differences, so it's exact at every frame
+            // — including the first and last, where a sampled derivative
+            // would need special-casing.
+            double angleAt(double tt) {
+              final cl = tt.clamp(0.0, 1.0);
+              final vx = p.to.dx - p.from.dx;
+              final arcRate = math.pi * p.cell * 3.0 * math.cos(cl * math.pi);
+              final vy = (p.to.dy - p.from.dy) - arcRate;
+              if (vx == 0 && vy == 0) return 0;
+              return math.atan2(vx, -vy);
             }
 
             // Cannonball launches noticeably LARGER than the target cell
@@ -1026,9 +1064,10 @@ class _BattleScreenState extends State<BattleScreen>
 
             final pos = posAt(t);
             final d = diamAt(t);
-            // Continuous spin while airborne, sold by the sphere's
-            // highlight sweeping around it.
-            final spin = t * math.pi * 6;
+            // Round shells keep the classic continuous tumble-spin (sold
+            // by the sphere's highlight sweeping around it); directional
+            // ones face the way they're actually flying.
+            final angle = isDirectional ? angleAt(t) : t * math.pi * 6;
 
             Widget ghost(double dt, double opacity, double scale) {
               final tt = t - dt;
@@ -1040,8 +1079,15 @@ class _BattleScreenState extends State<BattleScreen>
                 top: gp.dy - gd / 2,
                 child: Opacity(
                     opacity: opacity,
-                    child: _cannonball(gd,
-                        family: shellFamily, legacyId: legacyShellId)),
+                    child: Transform.rotate(
+                      // Trailing ghosts of a directional shell face the
+                      // same way the shell itself did at that point along
+                      // the arc; round shells' ghosts were never rotated
+                      // and still aren't.
+                      angle: isDirectional ? angleAt(tt) : 0.0,
+                      child: _cannonball(gd,
+                          family: shellFamily, legacyId: legacyShellId),
+                    )),
               );
             }
 
@@ -1054,7 +1100,7 @@ class _BattleScreenState extends State<BattleScreen>
                   left: pos.dx - d / 2,
                   top: pos.dy - d / 2,
                   child: Transform.rotate(
-                    angle: spin,
+                    angle: angle,
                     child: _cannonball(d,
                         family: shellFamily, legacyId: legacyShellId),
                   ),

@@ -21,6 +21,29 @@ const Rect _shellBox = Rect.fromLTWH(0, 0, 120, 132);
 /// Aspect ratio of the authored box (the design's `size * 1.1`).
 const double kShellBoxAspect = 120 / 132;
 
+/// Whether a family's shell is a directional "rocket" shape — a distinct
+/// nose and tail, like the naval Sabot Shell's ogive point and fins — as
+/// opposed to a round or radially-symmetric shot that reads the same from
+/// every angle.
+///
+/// `battle_screen.dart`'s flight animation uses this to decide how a shell
+/// should turn in the air: a directional shell is oriented to face its
+/// actual direction of travel along the arc (nose first), while a round
+/// one keeps the classic continuous tumble-spin, which never looks wrong
+/// no matter which way it's facing.
+bool familyShellIsDirectional(FleetFamilyId id) {
+  switch (id) {
+    case FleetFamilyId.naval: // Sabot Shell — ogive nose, tail fins.
+    case FleetFamilyId.scifi: // Plasma Bolt — hex prism, trailing tail.
+      return true;
+    case FleetFamilyId.pirate: // Round Shot — a cast-iron sphere.
+    case FleetFamilyId.steam: // Governor Sphere — a geared ball.
+    case FleetFamilyId.arctic: // Rime Shard — a tumbling crystal.
+    case FleetFamilyId.volcanic: // Ember Slug — an irregular, roundish rock.
+      return false;
+  }
+}
+
 void paintFamilyShell(
   Canvas canvas,
   Size size,
