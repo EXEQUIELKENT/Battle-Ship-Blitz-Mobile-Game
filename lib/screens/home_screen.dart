@@ -7,6 +7,7 @@ import '../core/route_observer.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
+import '../services/online_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/neon_widgets.dart';
@@ -495,6 +496,13 @@ class _HomeScreenState extends State<HomeScreen>
             onPressed: () {
               SoundService.instance.click();
               profile.setName(ctrl.text);
+              // A renamed captain must not stay under the old name on the
+              // friends list: push the new one up straight away. Fire and
+              // forget — the dialog closes either way.
+              final online = context.read<OnlineService>();
+              if (online.signedIn) {
+                online.syncProfile(profile);
+              }
               Navigator.pop(ctx);
             },
             child: Text('SAVE', style: AppText.label(color: AppColors.gold)),

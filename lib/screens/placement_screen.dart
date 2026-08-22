@@ -1201,6 +1201,8 @@ class _GearDialogState extends State<_GearDialog> {
         Catalog.cannonSkins.where((c) => widget.profile.ownsCannon(c.id)).toList();
     final themes =
         Catalog.gameplayThemes.where((t) => widget.profile.ownsTheme(t.id)).toList();
+    final sets =
+        FleetFamilies.all.where((f) => widget.profile.ownsFamilySet(f)).toList();
     final sideSkin = widget.isRedSide ? kRedFleetSkin : kBlueFleetSkin;
 
     return Dialog(
@@ -1276,7 +1278,13 @@ class _GearDialogState extends State<_GearDialog> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  _section('BATTLEFIELD'),
+                  // Matches the shipyard's DECK tab — this used to say
+                  // BATTLEFIELD, back when the shipyard's own tab was
+                  // still called GAMEPLAY and covered both the boards
+                  // and the matched sets. Every deployment screen shares
+                  // this one dialog (vs AI, pass-and-play, online,
+                  // hotspot), so the rename only needs to happen here.
+                  _section('DECK'),
                   _ArrowScroller(
                     height: 64,
                     children: [
@@ -1290,6 +1298,37 @@ class _GearDialogState extends State<_GearDialog> {
                         ),
                     ],
                   ),
+                  // Only appears once at least one matched set is fully
+                  // owned — this is a shortcut onto gear already unlocked
+                  // above, not a fourth thing to buy, so an empty shelf
+                  // here would just be dead space. Matches the shipyard's
+                  // GAMEPLAY tab: tapping one of these sets HULL, CANNON
+                  // and DECK together in one go, the same trio
+                  // `ProfileStore.buyFamilySet` equips on purchase.
+                  if (sets.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _section('GAMEPLAY'),
+                    _ArrowScroller(
+                      height: 64,
+                      children: [
+                        for (final family in sets)
+                          _setChip(
+                            family: family,
+                            label: family.fleetName.toUpperCase(),
+                            selected: _lo.shipChosen &&
+                                _lo.shipSkinId == 'f_${family.key}' &&
+                                _lo.cannonSkinId == 'f_${family.key}' &&
+                                _lo.themeId == 'f_${family.key}',
+                            onTap: () => _set(_lo.copyWith(
+                              shipSkinId: 'f_${family.key}',
+                              shipChosen: true,
+                              cannonSkinId: 'f_${family.key}',
+                              themeId: 'f_${family.key}',
+                            )),
+                          ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1393,6 +1432,60 @@ class _GearDialogState extends State<_GearDialog> {
                   end: Alignment.bottomCenter,
                   colors: [top, bottom],
                 ),
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: AppText.label(size: 8)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// A matched-set shortcut chip. Unlike [_hullChip] and [_swatchChip],
+  /// which each preview one piece of gear, this one stands in for three
+  /// at once — so instead of a hull silhouette or a colour swatch it
+  /// just wears the family's own accent and name, the way the shipyard's
+  /// matched-set card does.
+  Widget _setChip({
+    required FleetFamily family,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 94,
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
+        decoration: BoxDecoration(
+          color: AppColors.navyDeep,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? AppColors.gold : AppColors.outline,
+            width: selected ? 3 : 2,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              height: 22,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: AppColors.outline, width: 1.5),
+                color: family.accent,
+              ),
+              child: const Icon(
+                Icons.workspace_premium,
+                color: AppColors.cream,
+                size: 14,
               ),
             ),
             const SizedBox(height: 3),

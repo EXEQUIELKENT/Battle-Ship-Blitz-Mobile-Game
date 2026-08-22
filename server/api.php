@@ -167,6 +167,50 @@ function public_player(array $row, int $onlineWindow): array
     ];
 }
 
+/** The match's shape as the client sees it, from either seat. */
+function match_payload(array $m, int $myId): array
+{
+    $iAmHost = ((int) $m['host_id']) === $myId;
+    // Both captains have to agree before a matchmaking pairing opens the
+    // relay — these two flags are what the "waiting for them" state reads.
+    $iAccepted = $iAmHost
+        ? ((int) $m['host_ready']) === 1
+        : ((int) $m['guest_ready']) === 1;
+    $peerAccepted = $iAmHost
+        ? ((int) $m['guest_ready']) === 1
+        : ((int) $m['host_ready']) === 1;
+    return [
+        'id'           => (int) $m['id'],
+        'status'       => $m['status'],
+        'youAreHost'   => $iAmHost,
+        'peerId'       => $iAmHost ? (int) $m['guest_id'] : (int) $m['host_id'],
+        'peerName'     => $iAmHost ? $m['guest_name'] : $m['host_name'],
+        'youAccepted'  => $iAccepted,
+        'peerAccepted' => $peerAccepted,
+    ];
+}
+
+/**
+ * Housekeeping for the find-a-match queue, safe to call from any request
+ * that touches it: forget searches whose owner has gone quiet, and
+ * release pairings neither captain accepted in time so both players
+ * return to the lobby instead of staring at a dead prompt forever.
+ */
+function sweep_matchmaking(PDO $pdo, int $queueTtl, int $pairTtl): void
+{
+    $pdo->prepare(
+        'DELETE q FROM matchmaking q
+         JOIN players p ON p.id = q.player_id
+         WHERE TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) > ?'
+    )->execute([$queueTtl]);
+
+    $pdo->prepare(
+        "UPDATE matches SET status = 'done', updated_at = NOW()
+         WHERE status = 'found'
+           AND updated_at < NOW() - INTERVAL ? SECOND"
+    )->execute([$pairTtl]);
+}
+
 // ----------------------------------------------------------------- routing
 
 $in     = body();
@@ -270,7 +314,8 @@ switch ($action) {
         }
 
         // Any live match involving me — an invitation I have been sent, one
-        // I have sent, or a game already under way.
+        // I have sent, a matchmaking pairing waiting on accepts, or a game
+        // already under way.
         $stmt = $pdo->prepare(
             "SELECT m.*, h.name AS host_name, g.name AS guest_name
              FROM matches m
@@ -284,60 +329,77 @@ switch ($action) {
 
         $match = null;
         if ($matchRow) {
-            $iAmHost = ((int) $matchRow['host_id']) === ((int) $me['id']);
-            $match = [
-                'id'       => (int) $matchRow['id'],
-                'status'   => $matchRow['status'],
-                'youAreHost' => $iAmHost,
-                'peerId'   => $iAmHost ? (int) $matchRow['guest_id'] : (int) $matchRow['host_id'],
-                'peerName' => $iAmHost ? $matchRow['guest_name'] : $matchRow['host_name'],
-            ];
+            $match = match_payload($matchRow, (int) $me['id']);
         }
 
+        // Am I still standing in the find-a-match queue?
+        $stmt = $pdo->prepare('SELECT 1 FROM matchmaking WHERE player_id = ?');
+        $stmt->execute([$me['id']]);
+        $searching = (bool) $stmt->fetchColumn();
+
         respond([
-            'ok'       => true,
-            'me'       => public_player(
+            'ok'        => true,
+            'me'        => public_player(
                 $me + ['seconds_since_seen' => 0],
                 $window
             ),
-            'friends'  => $friends,
-            'incoming' => $incoming,
-            'outgoing' => $outgoing,
-            'match'    => $match,
+            'friends'   => $friends,
+            'incoming'  => $incoming,
+            'outgoing'  => $outgoing,
+            'match'     => $match,
+            'searching' => $searching,
         ]);
     }
 
     // -------------------------------------------------------------- find
+    //
+    // Search for captains to add as friends. A query matches a player's
+    // NAME — prefix match, so "ken" finds Kent — or, for anyone who still
+    // has an old code handy, their exact friend code. Names are how
+    // players find each other now; codes remain as a fallback.
     case 'find': {
         require_player($pdo, $in);
-        $tag = strtoupper(str_field($in, 'tag', 8));
-        if ($tag === '') {
-            fail('Enter a friend code.');
+        $q = str_field($in, 'q', 32);
+        if ($q === '') {
+            fail('Type a captain\'s name.');
         }
+        // LIKE wildcards in a searched name must stay literal. Exact
+        // matches first, then whoever was seen most recently — an active
+        // captain beats a dormant lookalike from months ago.
+        $prefix = addcslashes($q, '\\%_');
         $stmt = $pdo->prepare(
             'SELECT *, TIMESTAMPDIFF(SECOND, last_seen, NOW()) AS seconds_since_seen
-             FROM players WHERE tag = ?'
+             FROM players
+             WHERE name LIKE ? OR tag = ?
+             ORDER BY (name = ?) DESC, seconds_since_seen ASC, name ASC, id ASC
+             LIMIT 12'
         );
-        $stmt->execute([$tag]);
-        $row = $stmt->fetch();
-        if (!$row) {
-            fail('No captain with that code.', 404);
+        $stmt->execute(["{$prefix}%", strtoupper($q), $q]);
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $out[] = public_player($row, $window);
         }
-        respond(['ok' => true, 'player' => public_player($row, $window)]);
+        respond(['ok' => true, 'players' => $out]);
     }
 
     // ----------------------------------------------------------- request
+    //
+    // The target may be given by id (straight off a search result) or,
+    // for older clients, by friend code.
     case 'request': {
         $me = require_player($pdo, $in);
-        $tag = strtoupper(str_field($in, 'tag', 8));
-        $stmt = $pdo->prepare('SELECT id FROM players WHERE tag = ?');
-        $stmt->execute([$tag]);
-        $otherId = (int) ($stmt->fetchColumn() ?: 0);
+        $otherId = int_field($in, 'playerId');
         if ($otherId === 0) {
-            fail('No captain with that code.', 404);
+            $tag = strtoupper(str_field($in, 'tag', 8));
+            $stmt = $pdo->prepare('SELECT id FROM players WHERE tag = ?');
+            $stmt->execute([$tag]);
+            $otherId = (int) ($stmt->fetchColumn() ?: 0);
+        }
+        if ($otherId === 0) {
+            fail('No captain found.', 404);
         }
         if ($otherId === (int) $me['id']) {
-            fail('That is your own friend code.');
+            fail('That would be adding yourself.');
         }
 
         // If they already asked us, accept instead of creating a mirrored
@@ -436,11 +498,12 @@ switch ($action) {
 
         $stmt = $pdo->prepare(
             "SELECT 1 FROM matches
-             WHERE (host_id = ? OR guest_id = ?) AND status = 'active'"
+             WHERE (host_id = ? OR guest_id = ?)
+               AND status IN ('active', 'found')"
         );
         $stmt->execute([$friendId, $friendId]);
         if ($stmt->fetchColumn()) {
-            fail('That captain is already in a battle.', 409);
+            fail('That captain is already heading into a battle.', 409);
         }
 
         $pdo->prepare(
@@ -465,6 +528,164 @@ switch ($action) {
         $pdo->prepare('UPDATE matches SET status = ?, updated_at = NOW() WHERE id = ?')
             ->execute([$accept ? 'active' : 'done', $matchId]);
         respond(['ok' => true]);
+    }
+
+    // -------------------------------------------------------- queue_join
+    //
+    // "Find a match". Puts this captain in the search queue; if somebody
+    // is already waiting, pairs them on the spot. A pairing is a match in
+    // status 'found' — NEITHER side has agreed yet, and both must accept
+    // (see `accept_match`) before it turns 'active' and the relay opens.
+    //
+    // Pairing runs under a server-wide named lock so two joiners tapping
+    // at the same moment can never both grab the same waiting opponent.
+    case 'queue_join': {
+        $me = require_player($pdo, $in);
+
+        $stmt = $pdo->prepare(
+            "SELECT 1 FROM matches
+             WHERE (host_id = ? OR guest_id = ?) AND status = 'active'"
+        );
+        $stmt->execute([$me['id'], $me['id']]);
+        if ($stmt->fetchColumn()) {
+            fail('You are already in a battle.', 409);
+        }
+
+        // A forgotten invitation or an old pairing nobody answered would
+        // otherwise shadow every poll with stale news.
+        $pdo->prepare(
+            "UPDATE matches SET status = 'done', updated_at = NOW()
+             WHERE (host_id = ? OR guest_id = ?)
+               AND status IN ('inviting', 'found')"
+        )->execute([$me['id'], $me['id']]);
+
+        $gotLock = $pdo->query("SELECT GET_LOCK('bbz_matchmaking', 5)")
+            ->fetchColumn();
+        if (!$gotLock) {
+            fail('Matchmaking is busy — try again.', 503);
+        }
+
+        $matched = null;
+        try {
+            sweep_matchmaking(
+                $pdo,
+                $window + 10,
+                (int) $config['pair_hold_seconds']
+            );
+
+            // The captain who has been searching longest and is still
+            // online — and not already sitting in some other live match.
+            $stmt = $pdo->prepare(
+                'SELECT q.player_id FROM matchmaking q
+                 JOIN players p ON p.id = q.player_id
+                 LEFT JOIN matches m
+                   ON (m.host_id = q.player_id OR m.guest_id = q.player_id)
+                  AND m.status <> \'done\'
+                 WHERE q.player_id <> ?
+                   AND TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) <= ?
+                 GROUP BY q.player_id
+                 HAVING COUNT(m.id) = 0
+                 ORDER BY q.joined_at ASC
+                 LIMIT 1'
+            );
+            $stmt->execute([$me['id'], $window]);
+            $opponentId = (int) ($stmt->fetchColumn() ?: 0);
+
+            if ($opponentId !== 0) {
+                // Whoever waited first hosts — they asked for a battle
+                // before we did, so they take the red fleet and the
+                // opening shot, exactly as an inviter would.
+                $pdo->beginTransaction();
+                $pdo->prepare('DELETE FROM matchmaking WHERE player_id IN (?, ?)')
+                    ->execute([$opponentId, $me['id']]);
+                $pdo->prepare(
+                    "INSERT INTO matches (host_id, guest_id, status,
+                                          host_ready, guest_ready,
+                                          created_at, updated_at)
+                     VALUES (?, ?, 'found', 0, 0, NOW(), NOW())"
+                )->execute([$opponentId, $me['id']]);
+                $matchId = (int) $pdo->lastInsertId();
+                $pdo->commit();
+
+                $stmt = $pdo->prepare(
+                    'SELECT m.*, h.name AS host_name, g.name AS guest_name
+                     FROM matches m
+                     JOIN players h ON h.id = m.host_id
+                     JOIN players g ON g.id = m.guest_id
+                     WHERE m.id = ?'
+                );
+                $stmt->execute([$matchId]);
+                $matched = match_payload((array) $stmt->fetch(), (int) $me['id']);
+            } else {
+                // Nobody waiting: stand in line. Re-joining keeps your
+                // original place rather than letting refreshes jump it.
+                $pdo->prepare(
+                    'INSERT IGNORE INTO matchmaking (player_id, joined_at)
+                     VALUES (?, NOW())'
+                )->execute([$me['id']]);
+            }
+        } finally {
+            $pdo->query("SELECT RELEASE_LOCK('bbz_matchmaking')");
+        }
+
+        respond([
+            'ok'        => true,
+            'searching' => $matched === null,
+            'match'     => $matched,
+        ]);
+    }
+
+    // ------------------------------------------------------- queue_leave
+    //
+    // Stop searching — and, if a pairing was already found, decline it:
+    // backing out of "MATCH FOUND" is how you say no thanks.
+    case 'queue_leave': {
+        $me = require_player($pdo, $in);
+        $pdo->prepare('DELETE FROM matchmaking WHERE player_id = ?')
+            ->execute([$me['id']]);
+        $pdo->prepare(
+            "UPDATE matches SET status = 'done', updated_at = NOW()
+             WHERE (host_id = ? OR guest_id = ?) AND status = 'found'"
+        )->execute([$me['id'], $me['id']]);
+        respond(['ok' => true]);
+    }
+
+    // ------------------------------------------------------ accept_match
+    //
+    // One captain's yes to a found pairing. The second yes flips the
+    // match to 'active' for BOTH players, which is what sends them into
+    // the ordinary match flow together.
+    case 'accept_match': {
+        $me = require_player($pdo, $in);
+        $matchId = int_field($in, 'matchId');
+
+        $stmt = $pdo->prepare(
+            'SELECT * FROM matches
+             WHERE id = ? AND (host_id = ? OR guest_id = ?)
+               AND status = \'found\''
+        );
+        $stmt->execute([$matchId, $me['id'], $me['id']]);
+        $m = $stmt->fetch();
+        if (!$m) {
+            fail('That match is no longer being offered.', 404);
+        }
+
+        $mine = ((int) $m['host_id']) === ((int) $me['id'])
+            ? 'host_ready'
+            : 'guest_ready';
+        $theirs = $mine === 'host_ready' ? 'guest_ready' : 'host_ready';
+
+        // Accepting also refreshes updated_at, which is what the expiry
+        // sweep measures: each acceptance buys fresh time for the other
+        // captain to answer.
+        $newStatus = ((int) $m[$theirs]) === 1 ? 'active' : 'found';
+        $stmt = $pdo->prepare(
+            "UPDATE matches SET {$mine} = 1, status = ?, updated_at = NOW()
+             WHERE id = ?"
+        );
+        $stmt->execute([$newStatus, $matchId]);
+
+        respond(['ok' => true, 'status' => $newStatus]);
     }
 
     // --------------------------------------------------------- match_end

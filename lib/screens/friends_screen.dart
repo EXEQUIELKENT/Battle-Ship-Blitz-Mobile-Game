@@ -223,8 +223,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
   Future<void> _search() async {
     final q = _searchCtrl.text.trim();
     if (q.isEmpty) {
-      _toast('Type the name of the captain you want to add.',
-          type: AppNoticeType.error);
+      _toast('Type the name of the captain you want to add.');
       return;
     }
     SoundService.instance.click();
@@ -236,7 +235,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
       _searchResults = results;
     });
     if (results.isEmpty && _online.lastError == null) {
-      _toast('No captain named "$q" found.', type: AppNoticeType.error);
+      _toast('No captain named "$q" found.');
     }
   }
 
@@ -245,12 +244,9 @@ class _FriendsScreenState extends State<FriendsScreen> {
     final ok = await _online.requestById(p.id);
     if (!mounted) return;
     if (ok) {
-      _toast(
-        p.online
-            ? 'Request sent to ${p.name}.'
-            : 'Request sent — they will see it next time they are online.',
-        type: AppNoticeType.success,
-      );
+      _toast(p.online
+          ? 'Request sent to ${p.name}.'
+          : 'Request sent — they will see it next time they are online.');
     } else {
       _toast(_online.lastError ?? 'Could not send that request.',
           type: AppNoticeType.error);
@@ -450,11 +446,9 @@ class _FriendsScreenState extends State<FriendsScreen> {
     if (!mounted) return;
     if (_online.signedIn && _online.reachable) {
       _online.startHeartbeat();
-      _toast('Connected as ${_online.myName} — code ${_online.myTag}',
-          type: AppNoticeType.success);
+      _toast('Connected as ${_online.myName} — code ${_online.myTag}');
     } else {
-      _toast(_online.lastError ?? 'No game server found.',
-          type: AppNoticeType.error);
+      _toast(_online.lastError ?? 'No game server found.');
     }
   }
 

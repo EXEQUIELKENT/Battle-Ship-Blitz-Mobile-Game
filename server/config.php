@@ -23,6 +23,11 @@ $defaults = [
     // requests; too long and Apache runs out of workers. Must stay
     // comfortably under the client's own request timeout.
     'poll_hold_seconds' => 8,
+
+    // How long a "MATCH FOUND" prompt stays open while waiting for both
+    // captains to accept. After this with no second yes, the pairing is
+    // released and both players go back to searching.
+    'pair_hold_seconds' => 30,
 ];
 
 $local = [];

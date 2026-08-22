@@ -2,6 +2,9 @@
 --
 -- Run once:  mysql -u root < server/schema.sql
 -- (XAMPP:    C:\xampp\mysql\bin\mysql.exe -u root < server\schema.sql)
+--
+-- Upgrading an EXISTING database (created before matchmaking existed)?
+-- Run server/migrate-matchmaking.sql instead — it applies just the diff.
 
 CREATE DATABASE IF NOT EXISTS battleship_blitz
   DEFAULT CHARACTER SET utf8mb4
@@ -61,17 +64,34 @@ CREATE TABLE IF NOT EXISTS friendships (
 -- The host is always the player who sent the invite — which is what makes
 -- them the red fleet and gives them the opening shot, exactly as hosting a
 -- hotspot room does.
+-- 'found' is a matchmaking pairing that NEITHER side has agreed to yet:
+-- both captains must tap accept before it becomes 'active' and the relay
+-- opens. host_ready/guest_ready track who has accepted so far.
 CREATE TABLE IF NOT EXISTS matches (
   id          INT AUTO_INCREMENT PRIMARY KEY,
   host_id     INT NOT NULL,
   guest_id    INT NOT NULL,
-  status      ENUM('inviting','active','done') NOT NULL DEFAULT 'inviting',
+  status      ENUM('inviting','found','active','done') NOT NULL DEFAULT 'inviting',
+  host_ready  TINYINT(1) NOT NULL DEFAULT 0,
+  guest_ready TINYINT(1) NOT NULL DEFAULT 0,
   created_at  DATETIME NOT NULL,
   updated_at  DATETIME NOT NULL,
   INDEX idx_host (host_id, status),
   INDEX idx_guest (guest_id, status),
   CONSTRAINT fk_m_host  FOREIGN KEY (host_id)  REFERENCES players(id) ON DELETE CASCADE,
   CONSTRAINT fk_m_guest FOREIGN KEY (guest_id) REFERENCES players(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ------------------------------------------------------------ matchmaking
+--
+-- The "find a match" queue. One row per searching player; pairing two of
+-- them creates a match with status 'found' and deletes both rows. Rows
+-- whose owner stops answering are swept by the next queue operation.
+CREATE TABLE IF NOT EXISTS matchmaking (
+  player_id INT NOT NULL PRIMARY KEY,
+  joined_at DATETIME NOT NULL,
+  CONSTRAINT fk_q_player FOREIGN KEY (player_id)
+    REFERENCES players(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- ------------------------------------------------------------ match_msgs

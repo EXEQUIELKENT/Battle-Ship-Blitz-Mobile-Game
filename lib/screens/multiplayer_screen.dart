@@ -170,12 +170,9 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     SoundService.instance.click();
     final ok = await online.connectAuto(profile);
     if (!mounted) return;
-    _toast(
-      ok
-          ? 'Connected — your friend code is ${online.myTag}'
-          : (online.lastError ?? 'Could not find the game server.'),
-      type: ok ? AppNoticeType.success : AppNoticeType.error,
-    );
+    _toast(ok
+        ? 'Connected — your friend code is ${online.myTag}'
+        : (online.lastError ?? 'Could not find the game server.'));
   }
 
   void _openFriends() {
@@ -193,8 +190,14 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     );
   }
 
-  void _toast(String msg, {AppNoticeType type = AppNoticeType.info}) {
-    AppNotification.show(context, msg, type: type);
+  void _toast(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg, style: const TextStyle(fontWeight: FontWeight.w800)),
+        backgroundColor: AppColors.navy,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override

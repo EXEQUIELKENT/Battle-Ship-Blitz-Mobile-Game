@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -97,6 +98,17 @@ Future<void> main() async {
 
   final online = OnlineService();
   await online.load();
+
+  // Dev/testing convenience (debug builds only): launching with
+  // BBZ_AUTOONLINE=1 connects to the game server right away — discovery,
+  // registration, heartbeat — instead of waiting for somebody to open the
+  // MULTIPLAYER tab. This is what lets automated desktop tests run two
+  // instances headlessly and watch them meet on the server.
+  if (!kIsWeb && kDebugMode && Platform.environment['BBZ_AUTOONLINE'] == '1') {
+    unawaited(online.connectAuto(profile).then((ok) {
+      if (ok) online.startHeartbeat();
+    }));
+  }
 
   // Whichever way a match ends — played out, surrendered, abandoned, or
   // simply backed out of — it funnels through `NetworkService.stop()`,
