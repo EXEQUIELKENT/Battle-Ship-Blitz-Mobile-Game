@@ -419,7 +419,22 @@ class SoundService {
   /// UI click. Same pooled path as everything else now — no longer needs
   /// a special case to stay reliable while the pools are still warming up,
   /// since `_play` just no-ops safely if a pool isn't built yet.
-  void click() => _play('click', volume: 0.9);
+  ///
+  /// RETRIGGER GUARD: buttons that play this from their own widget code
+  /// (see [NeonButton]) are sometimes ALSO played again inside the handler
+  /// they invoke, and nested pressables can fire a tap twice — so clicks
+  /// landing within a tenth of a second of each other are treated as one
+  /// gesture and played once. No human taps two different buttons within
+  /// 100 ms; a double sound on every other press was what the guard is
+  /// for.
+  void click() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastClickAt < 100) return;
+    _lastClickAt = now;
+    _play('click', volume: 0.9);
+  }
+
+  int _lastClickAt = -1000;
 
   void denied() => _play('denied');
 

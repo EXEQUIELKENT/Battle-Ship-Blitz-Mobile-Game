@@ -826,9 +826,15 @@ class _BattleScreenState extends State<BattleScreen>
     // barrel length, so the ball is born at THIS cannon's muzzle rather
     // than at a fixed distance that would leave a short mortar throwing
     // from thin air and a long autoloader swallowing its own shot.
+    //
+    // Multiplied by `cannonRenderSize`, not the shared base `cannonSize`
+    // — a family gun is actually DRAWN bigger than that base size (see
+    // `CannonWidget.gameplaySizeScaleOf`), so the muzzle fraction has to
+    // scale against the size it's really drawn at, or the ball would
+    // launch from where the old, smaller barrel USED to end.
     final ly = c.dy +
         g.muzzleLocalDir *
-            g.cannonSize *
+            g.cannonRenderSize *
             CannonWidget.muzzleFractionOf(_cannonSkinFor(halfIsP1));
     if (g.rotated) {
       return Offset(g.halfW - lx, g.halfTopY + (g.halfH - ly));
@@ -1342,6 +1348,12 @@ class _BattleScreenState extends State<BattleScreen>
         final cell = gridSide / kBoardSize;
         final gridLeft = (w - gridSide) / 2;
         final cannonSize = gridSide * 0.24;
+        // A family skin's gun is drawn at its OWN, bigger widget size —
+        // see `CannonWidget.gameplaySizeScaleOf` — so it reads at the
+        // same on-screen size as a legacy gun instead of looking small
+        // next to one. Legacy skins get a scale of 1.0, i.e. no change.
+        final cannonRenderSize =
+            cannonSize * CannonWidget.gameplaySizeScaleOf(_cannonSkinFor(halfIsP1));
 
         // Every half is laid out the same way in principle: grid against
         // the MIDDLE BAND, cannon out past the grid at the far edge of
@@ -1366,8 +1378,8 @@ class _BattleScreenState extends State<BattleScreen>
         // Clip.none, so spilling past the half's own edge is fine and by
         // design; covering the board is not.
         final cannonCenter = flipLayout
-            ? Offset(w / 2, gridTop - cannonSize * 0.55)
-            : Offset(w / 2, gridTop + gridSide + cannonSize * 0.55);
+            ? Offset(w / 2, gridTop - cannonRenderSize * 0.55)
+            : Offset(w / 2, gridTop + gridSide + cannonRenderSize * 0.55);
         // Which way the barrel points, in this half's own local space.
         final muzzleLocalDir = flipLayout ? 1.0 : -1.0;
 
@@ -1392,6 +1404,7 @@ class _BattleScreenState extends State<BattleScreen>
           cannonCenter: cannonCenter,
           gridCenterLocal: gridCenterLocal,
           cannonSize: cannonSize,
+          cannonRenderSize: cannonRenderSize,
           muzzleLocalDir: muzzleLocalDir,
           rotated: isTopHalf && _mirrorTopHalf,
         );
@@ -1531,8 +1544,8 @@ class _BattleScreenState extends State<BattleScreen>
                   final pos =
                       Offset.lerp(cannonCenter, gridCenterLocal, slide)!;
                   return Positioned(
-                    left: pos.dx - cannonSize / 2,
-                    top: pos.dy - cannonSize / 2,
+                    left: pos.dx - cannonRenderSize / 2,
+                    top: pos.dy - cannonRenderSize / 2,
                     // The cannon is purely a visual indicator here (onFire
                     // is always null below — firing happens by tapping the
                     // enemy grid). IgnorePointer guarantees it can never
@@ -1560,7 +1573,7 @@ class _BattleScreenState extends State<BattleScreen>
                                   ? controller.cooldownFraction1
                                   : controller.cooldownFraction2,
                               enabled: controller.battling && !_countingDown,
-                              size: cannonSize,
+                              size: cannonRenderSize,
                               fireTrigger: cannonStream.stream,
                               readyTrigger: readyStream.stream,
                               accentOverride: accent,
@@ -2060,6 +2073,15 @@ class _HalfGeom {
   final Offset gridCenterLocal; // grid center within the half (local space)
   final double cannonSize;
 
+  /// The size the equipped gun is ACTUALLY drawn at — `cannonSize` for
+  /// a legacy skin, or `cannonSize * CannonWidget.gameplaySizeScaleOf`
+  /// for a family skin (see that getter for why a family gun needs to
+  /// be drawn bigger to read at the same on-screen size as a legacy
+  /// one). `_cannonMouth` reads THIS, not `cannonSize`, when it spawns
+  /// the shell, so the ball keeps launching from the gun's real,
+  /// currently-drawn muzzle tip regardless of which skin is equipped.
+  final double cannonRenderSize;
+
   /// Which way this half's barrel points in the half's own LOCAL space:
   /// −1 toward local −y (cannon sits below its grid), +1 toward local +y
   /// (cannon sits above it). Always points AT the half's own grid, and so
@@ -2080,6 +2102,7 @@ class _HalfGeom {
     required this.cannonCenter,
     required this.gridCenterLocal,
     required this.cannonSize,
+    required this.cannonRenderSize,
     required this.muzzleLocalDir,
     required this.rotated,
   });

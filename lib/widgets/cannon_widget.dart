@@ -62,6 +62,21 @@ class CannonWidget extends StatefulWidget {
   static double muzzleFractionOf(CannonSkin skin) =>
       FleetFamilies.byKey(skin.familyKey)?.muzzleFrac ?? muzzleFraction;
 
+  /// How much bigger THIS gun's widget must be drawn on the battle
+  /// screen so it reads at the same on-screen size as a legacy gun
+  /// sharing the same nominal `cannonSize` — 1.0 (no change) for the
+  /// nine legacy skins, which this scale was never needed for.
+  ///
+  /// Single source of truth for the fix, read in exactly the two places
+  /// that have to agree on how big a family gun really is: the widget
+  /// size battle_screen.dart hands to this `CannonWidget`, and the
+  /// `_cannonMouth` trajectory math that spawns the shell at
+  /// `size * muzzleFractionOf(skin)`. Scaling both by the same factor
+  /// is what keeps the shell leaving the barrel's actual (now bigger)
+  /// tip instead of drifting off it as soon as the gun's drawn larger.
+  static double gameplaySizeScaleOf(CannonSkin skin) =>
+      FleetFamilies.byKey(skin.familyKey)?.gameplayScale ?? 1.0;
+
   @override
   State<CannonWidget> createState() => _CannonWidgetState();
 }
@@ -796,13 +811,20 @@ class CannonPainter extends CustomPainter {
 
     // Ground shadow, under the platform rather than under the gun — the
     // art's own shadow is switched off below so there is only ever one.
-    canvas.drawOval(
-      Rect.fromCenter(
-        center: mountCenter + Offset(0, platformR * 0.30),
-        width: platformR * 2.3,
-        height: platformR * 0.85,
-      ),
-      Paint()..color = Colors.black.withValues(alpha: 0.20),
+    //
+    // Drawn as a full circle a little WIDER than the platform itself
+    // (rather than a squashed oval sized to roughly match it), so a ring
+    // of shadow is always visible peeking out from behind the plate all
+    // the way round — the same "hard shadow" read a legacy gun gets from
+    // its own ring in `CannonPainter.paint`'s "Soft ground shadow
+    // ellipse" above. A shadow sized to match the plate mostly ends up
+    // hidden UNDER it once the opaque disc is painted on top; oversizing
+    // it here is what actually keeps it visible on every gun, not just
+    // the ones with a wide enough mount to poke past a tight oval.
+    canvas.drawCircle(
+      mountCenter + Offset(0, platformR * 0.12),
+      platformR * 1.18,
+      Paint()..color = Colors.black.withValues(alpha: 0.24),
     );
 
     // Rim, then the plate itself — the same two-tone build as the

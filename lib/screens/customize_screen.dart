@@ -140,7 +140,13 @@ class _CustomizeScreenState extends State<CustomizeScreen>
                     fontSize: 12,
                     letterSpacing: 1.2,
                   ),
+                  // Scrollable so long labels are never clipped — but
+                  // with [TabAlignment.center] the row sits centred while
+                  // it fits and only becomes swipeable once it actually
+                  // overflows. (Fixed-width mode split the bar into even
+                  // quarters, which cut these labels off mid-word.)
                   isScrollable: true,
+                  tabAlignment: TabAlignment.center,
                   tabs: const [
                     Tab(text: 'SHIP HULLS'),
                     Tab(text: 'CANNONS'),
@@ -454,25 +460,33 @@ class _FamilyHullCard extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 250),
         decoration: _cardBox(equipped: equipped),
+        // Same skeleton as [_LegacyHullCard]: the preview area soaks up
+        // whatever height the grid hands this card, and the name + pill
+        // stay pinned just above a modest fixed bottom padding. (A
+        // trailing `Spacer` used to collect ALL the slack under the
+        // status pill instead, which read as a big dead margin at the
+        // bottom of every family card.)
         child: Column(
           children: [
             // The plate takes the family's own water and accent, so even
             // before you read the name the card is already the right
             // colour of sea to be looking at that fleet on.
-            Container(
-              margin: const EdgeInsets.fromLTRB(9, 9, 9, 5),
-              height: 74,
-              decoration: BoxDecoration(
-                color: family.board.deck,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: family.accent, width: 2),
-              ),
-              child: Center(
-                child: AnimatedShip(
-                  spec: kFleet[0], // carrier — the largest silhouette
-                  skin: skin,
-                  width: 132,
-                  height: 42,
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(9, 9, 9, 5),
+                constraints: const BoxConstraints(minHeight: 74),
+                decoration: BoxDecoration(
+                  color: family.board.deck,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: family.accent, width: 2),
+                ),
+                child: Center(
+                  child: AnimatedShip(
+                    spec: kFleet[0], // carrier — the largest silhouette
+                    skin: skin,
+                    width: 132,
+                    height: 42,
+                  ),
                 ),
               ),
             ),
@@ -547,14 +561,15 @@ class _FamilyHullCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 5),
-            _statusPill(
-              owned: owned,
-              equipped: equipped,
-              affordable: affordable,
-              cost: skin.cost,
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _statusPill(
+                owned: owned,
+                equipped: equipped,
+                affordable: affordable,
+                cost: skin.cost,
+              ),
             ),
-            const SizedBox(height: 10),
-            const Spacer(),
           ],
         ),
       ),

@@ -503,7 +503,18 @@ class _PlacementScreenState extends State<PlacementScreen> {
     // these can't spend RP — but they're still the equip path rather
     // than a direct field write, so ownership stays enforced in one
     // place.
-    profile.equipShipSkin(Catalog.shipById(lo.shipSkinId));
+    //
+    // BUGFIX (picking the side colour kept "reverting" to Steel): the
+    // RED/BLUE FLEET chip opts OUT of hulls (shipChosen false), but this
+    // used to ignore that flag and equip lo.shipSkinId anyway — forcing
+    // shipSkinChosen back to true with whatever hull id was still in the
+    // loadout. Honoured now: opting out un-chooses, picking a hull
+    // equips it.
+    if (lo.shipChosen) {
+      profile.equipShipSkin(Catalog.shipById(lo.shipSkinId));
+    } else {
+      profile.clearShipSkinChoice();
+    }
     profile.equipCannonSkin(Catalog.cannonById(lo.cannonSkinId));
     profile.equipGameplayTheme(Catalog.gameplayThemeById(lo.themeId));
     if (announceToOpponent) {
@@ -511,7 +522,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
         shipSkinId: lo.shipSkinId,
         cannonSkinId: lo.cannonSkinId,
         themeId: lo.themeId,
-        shipChosen: true,
+        shipChosen: lo.shipChosen,
       );
     }
   }

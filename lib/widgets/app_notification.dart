@@ -8,17 +8,15 @@ import '../core/theme.dart';
 /// default icon so call sites don't have to.
 enum AppNoticeType { info, success, error }
 
-/// Chunky flat-cartoon notification banner that drops in from the TOP of
-/// the screen and slides back out, replacing the framework's default
-/// bottom [SnackBar] everywhere in the app.
+/// Chunky flat-cartoon notification banner that slides up from the BOTTOM
+/// of the screen and slides back down, replacing the framework's default
+/// [SnackBar] everywhere in the app.
 ///
-/// The bottom SnackBar sat under the thumb, got clipped by on-screen
-/// keyboards and Android's gesture bar, and used the plain Material
-/// default look — completely out of step with the rest of this app's
-/// outlined, drop-shadowed cartoon panels. This shows the same [cartoonBox]
-/// styling everything else uses, anchors under the status bar where it's
-/// always visible, and is easy to dismiss (tap it, swipe it up, or just
-/// wait it out).
+/// It lives where the old SnackBar did — under the thumb, out of the way
+/// of screens' top navigation — but restyled to this app's outlined,
+/// drop-shadowed cartoon panels via [cartoonBox], kept clear of Android's
+/// gesture bar by [SafeArea], and is easy to dismiss (tap it, flick it
+/// down, or just wait it out).
 class AppNotification {
   AppNotification._();
 
@@ -26,16 +24,28 @@ class AppNotification {
   static Timer? _timer;
   static GlobalKey<_TopNotificationBannerState>? _bannerKey;
 
-  /// Shows [message] as a banner sliding down from the top of the screen.
-  /// A notice already on screen is swapped out immediately rather than
-  /// stacking, so a burst of quick messages never piles up.
+  /// Bumped every time [show] runs. Everything that tears a banner down
+  /// — the auto-dismiss timer, the slide-out completion — remembers the
+  /// generation it belongs to and bows out if a newer banner has taken
+  /// over. Without this, an old banner's exit animation finishing AFTER
+  /// its replacement arrived would reach back through these statics and
+  /// cancel the new banner's timer / rip it off screen mid-entrance.
+  static int _generation = 0;
+
+  /// Shows [message] as a banner sliding up from the bottom of the
+  /// screen. A notice already on screen is swapped out immediately rather than
+  /// stacking, so a burst of quick messages (say, hammering an item you
+  /// can't afford) always leaves exactly one banner up.
   static void show(
     BuildContext context,
     String message, {
     AppNoticeType type = AppNoticeType.info,
     Duration duration = const Duration(seconds: 3),
   }) {
+    final gen = ++_generation;
     _timer?.cancel();
+    // Safe to remove unconditionally: whatever onDismissed the old entry
+    // might still be about to call is now generation-stale and no-ops.
     _entry?.remove();
 
     final overlay = Overlay.of(context, rootOverlay: true);
@@ -46,21 +56,50 @@ class AppNotification {
         key: key,
         message: message,
         type: type,
-        onDismissed: _clear,
+        onDismissed: () => _clear(gen),
       ),
     );
     _entry = entry;
     overlay.insert(entry);
 
-    _timer = Timer(duration, () => _bannerKey?.currentState?.dismiss());
+    // Auto-dismiss does NOT go through the GlobalKey's state directly:
+    // if the timer ever fires before the banner's first frame has been
+    // built (pathological frame starvation — or the test harness), that
+    // state simply doesn't exist yet and a `currentState?.dismiss()`
+    // would silently no-op, leaving an unkillable banner. Route through
+    // [_autoDismiss], which falls back to tearing the entry down itself.
+    _timer = Timer(duration, () => _autoDismiss(gen));
   }
 
-  static void _clear() {
+  /// Fires when [gen]'s notice has lived out its duration.
+  static void _autoDismiss(int gen) {
+    if (gen != _generation) return;
+    final state = _bannerKey?.currentState;
+    if (state != null && state.mounted) {
+      // The normal path: animate the slide-out; [_clear] runs when the
+      // animation lands.
+      state.dismiss();
+    } else {
+      // No live banner to animate — the timer beat its first frame
+      // (frame starvation), or it's already on its way out. Tear down
+      // directly instead of leaking an unkillable entry.
+      _clear(gen);
+    }
+  }
+
+  /// Tears down the banner of generation [gen] — but only if it is still
+  /// the current one.
+  static void _clear(int gen) {
+    if (gen != _generation) return;
     _timer?.cancel();
     _timer = null;
+    _bannerKey = null;
+    // Unconditional: OverlayEntry.mounted means "its widget state has
+    // been built", NOT merely "inserted" — gating removal on it would
+    // leak a banner whose auto-dismiss fired before its first frame ever
+    // rendered. remove() itself is safe on an inserted-but-unbuilt entry.
     _entry?.remove();
     _entry = null;
-    _bannerKey = null;
   }
 }
 
@@ -94,7 +133,7 @@ class _TopNotificationBannerState extends State<_TopNotificationBanner>
       vsync: this,
       duration: const Duration(milliseconds: 340),
     );
-    _slide = Tween<Offset>(begin: const Offset(0, -1.3), end: Offset.zero)
+    _slide = Tween<Offset>(begin: const Offset(0, 1.3), end: Offset.zero)
         .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack));
     _ctrl.forward();
   }
@@ -122,22 +161,24 @@ class _TopNotificationBannerState extends State<_TopNotificationBanner>
   Widget build(BuildContext context) {
     final (color, icon) = _style;
     return Positioned(
-      top: 0,
+      bottom: 0,
       left: 0,
       right: 0,
       child: SafeArea(
-        bottom: false,
+        top: false,
         child: SlideTransition(
           position: _slide,
           child: Align(
-            alignment: Alignment.topCenter,
+            alignment: Alignment.bottomCenter,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: dismiss,
                 onVerticalDragEnd: (details) {
-                  if ((details.primaryVelocity ?? 0) < 0) dismiss();
+                  // Flick DOWN to send it back where it came from — the
+                  // natural gesture for something docked at the bottom.
+                  if ((details.primaryVelocity ?? 0) > 0) dismiss();
                 },
                 child: Material(
                   color: Colors.transparent,

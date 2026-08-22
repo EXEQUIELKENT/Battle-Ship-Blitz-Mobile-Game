@@ -242,6 +242,30 @@ class FleetFamily {
   /// than the family's own mount so a ring of it is always visible.
   double platformRadius(double side) => gunLen(side, mountROuter * 1.06);
 
+  /// How much bigger this family's gun has to be drawn on the BATTLE
+  /// SCREEN so its platform ring — the widest part of the gun at rest,
+  /// and the thing the eye actually measures its "size" by — reads at
+  /// the same on-screen footprint as a legacy cannon sharing the exact
+  /// same widget size.
+  ///
+  /// A legacy gun's ring fills almost the entire widget (`CannonPainter`
+  /// draws it at `outerR = size * 0.48`). A family gun's platform is
+  /// authored much smaller relative to its own widget — `platformRadius`
+  /// above works out to roughly 0.28–0.30 of the side, before [gunInset]
+  /// even shrinks the barrel further inside it — so at the ONE shared
+  /// `cannonSize` the battle screen hands out regardless of which gun is
+  /// equipped, every family gun used to read noticeably smaller than a
+  /// legacy one. This is the single multiplier that closes that gap:
+  /// solved for so `platformRadius(1.0) * gameplayScale == 0.48`, i.e.
+  /// so the two rings land on the same radius.
+  ///
+  /// Deliberately NOT read anywhere the shipyard already draws a family
+  /// gun at its own fixed, hand-tuned size (`customize_screen.dart`'s
+  /// cards already oversize the family art relative to its badge for
+  /// exactly this reason) — only `battle_screen.dart`'s single shared
+  /// `cannonSize` needs correcting.
+  double get gameplayScale => 0.48 / platformRadius(1.0);
+
   /// Radius the reload sweep rides at — the middle of the visible ring,
   /// between the inset mount's edge and the platform's rim.
   double sweepRadius(double side) =>

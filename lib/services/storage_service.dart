@@ -432,6 +432,20 @@ class ProfileStore extends ChangeNotifier {
     return true;
   }
 
+  /// Steps back out of skins entirely: sail your side's plain red/blue.
+  ///
+  /// The counterpart to [equipShipSkin], which can only ever say "a hull
+  /// was chosen" — the GEAR dialog's RED/BLUE FLEET chip needs a way to
+  /// UN-choose, and without this it silently re-equipped whatever hull id
+  /// was still lying around (Steel, usually) with the chosen flag forced
+  /// back on. That is exactly the "I pick Red Fleet and it reverts to
+  /// Steel" bug.
+  void clearShipSkinChoice() {
+    shipSkinChosen = false;
+    _save();
+    notifyListeners();
+  }
+
   bool equipCannonSkin(CannonSkin skin) {
     if (!ownsCannon(skin.id)) {
       if (rp < skin.cost) return false;
