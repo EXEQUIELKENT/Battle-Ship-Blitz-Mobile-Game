@@ -28,16 +28,24 @@ class ServerDiscovery {
   /// narrow enough not to drown a phone's radio or trip stingy routers.
   static const _batchSize = 32;
 
-  /// The server address baked into the build itself, if any:
+  /// The server address baked into the build itself.
+  ///
+  /// Defaults to this project's own tunnel so a plain `flutter build` or
+  /// `flutter run` — no flags needed — always finds it, from anywhere.
+  /// Override for a different server without touching this file:
   ///
   ///   flutter build apk --release \
   ///     --dart-define=BBZ_SERVER=https://my-tunnel.example/server
   ///
-  /// Release players who got their APK this way never see an address —
-  /// the app opens, pings this one machine, and FIND A MATCH just works,
-  /// even far outside the builder's Wi-Fi where subnet sweeping is
-  /// useless. Left empty (dev builds), discovery falls back to the LAN.
-  static const bakedUrl = String.fromEnvironment('BBZ_SERVER');
+  /// Release players never see an address — the app opens, pings this one
+  /// machine, and FIND A MATCH just works, even far outside the builder's
+  /// Wi-Fi where subnet sweeping is useless. Blank this default out again
+  /// (empty string) to go back to LAN-only discovery for dev builds.
+  static const bakedUrl = String.fromEnvironment(
+    'BBZ_SERVER',
+    defaultValue:
+        'https://envious-dropbox-taste.ngrok-free.dev/Battle-Ship-Blitz-Mobile-Game/server',
+  );
 
   /// Returns the base URL of the game server (no trailing slash, no
   /// `api.php`), or null if nothing out there answered. [known] — usually

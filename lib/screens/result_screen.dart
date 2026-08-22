@@ -183,12 +183,16 @@ class _ResultScreenState extends State<ResultScreen>
                               ),
                               const SizedBox(height: 6),
                               Text(
-                                '${controller.rpDelta >= 0 ? '+' : ''}${controller.rpDelta} RP',
+                                controller.rpDelta == 0
+                                    ? 'NO CHANGE'
+                                    : '${controller.rpDelta > 0 ? '+' : ''}${controller.rpDelta} RP',
                                 style: AppText.title(
                                   size: 30,
-                                  color: controller.rpDelta >= 0
-                                      ? AppColors.gold
-                                      : AppColors.hit,
+                                  color: controller.rpDelta == 0
+                                      ? AppColors.inkSoft
+                                      : controller.rpDelta > 0
+                                          ? AppColors.gold
+                                          : AppColors.hit,
                                 ),
                               ),
                               if (won && profile.streak >= 2) ...[

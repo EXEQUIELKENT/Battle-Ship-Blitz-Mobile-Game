@@ -28,8 +28,10 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tab;
   final _ipCtrl = TextEditingController();
+  final _serverCtrl = TextEditingController();
   bool _hosting = false;
   bool _connecting = false;
+  bool _showServerField = false;
 
   @override
   void initState() {
@@ -59,6 +61,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   @override
   void dispose() {
     _ipCtrl.dispose();
+    _serverCtrl.dispose();
     _tab.dispose();
     super.dispose();
   }
@@ -176,6 +179,31 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
           : (online.lastError ?? 'Could not find the game server.'),
       type: ok ? AppNoticeType.success : AppNoticeType.error,
     );
+  }
+
+  /// Manual escape hatch for when automatic discovery can't find anything
+  /// — a server on a different network (a friend's tunnel/host address),
+  /// or a LAN server discovery's sweep missed for some reason. Auto-detect
+  /// still runs first and normally makes this unnecessary.
+  Future<void> _connectManual() async {
+    final online = context.read<OnlineService>();
+    final profile = context.read<ProfileStore>();
+    final addr = _serverCtrl.text.trim();
+    if (addr.isEmpty) {
+      _toast('Enter the server address first', type: AppNoticeType.error);
+      return;
+    }
+    SoundService.instance.click();
+    await online.setBaseUrl(addr);
+    final ok = await online.ensureAccount(profile);
+    if (!mounted) return;
+    _toast(
+      ok
+          ? 'Connected — your friend code is ${online.myTag}'
+          : (online.lastError ?? 'Could not reach that address.'),
+      type: ok ? AppNoticeType.success : AppNoticeType.error,
+    );
+    if (ok) setState(() => _showServerField = false);
   }
 
   void _openFriends() {
@@ -509,6 +537,36 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   color: AppColors.blue,
                   onPressed: _reconnectOnline,
                 ),
+                const SizedBox(height: 10),
+                Center(
+                  child: TextButton(
+                    onPressed: () => setState(
+                        () => _showServerField = !_showServerField),
+                    child: Text(
+                      _showServerField
+                          ? 'HIDE MANUAL ADDRESS'
+                          : "SERVER ON A DIFFERENT NETWORK? ENTER ITS ADDRESS",
+                      style: AppText.label(size: 9.5, color: AppColors.blue),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+                if (_showServerField) ...[
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _serverCtrl,
+                    style: AppText.body(size: 11, color: AppColors.ink),
+                    decoration: _inputDeco(
+                        'e.g. https://your-tunnel.example/…/server'),
+                  ),
+                  const SizedBox(height: 8),
+                  NeonButton(
+                    label: 'CONNECT',
+                    icon: Icons.link,
+                    color: AppColors.green,
+                    onPressed: _connectManual,
+                  ),
+                ],
                 const SizedBox(height: 10),
               ],
               if (ready) ...[

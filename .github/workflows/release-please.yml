@@ -1,0 +1,102 @@
+name: Release Please
+
+# Runs on every push to main. Most pushes just update (or open) a standing
+# "chore: release X.Y.Z" PR with the version bump and changelog computed
+# from Conventional Commits since the last release — nothing is built or
+# published yet at that point.
+#
+# Merging that PR is what actually cuts a release: release-please tags the
+# merge commit, writes the GitHub Release with the changelog as its notes,
+# and THIS SAME WORKFLOW RUN then builds the APK/AAB and attaches them to
+# it, because `release_created` comes back true only on that run.
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the tag release-please just created, not whatever HEAD
+      # of main happens to be — they're usually the same commit, but the
+      # tag is the source of truth for what's being shipped.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Optional: decode a real signing key from GitHub Secrets.
+      # If these secrets aren't set, build.gradle.kts already falls back
+      # to debug signing on its own, so this step is safe to leave in.
+      - name: Set up Android signing
+        if: ${{ env.HAS_KEYSTORE == 'true' }}
+        env:
+          HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release-key.jks
+          cat > android/app/key.properties <<EOF
+          storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          EOF
+
+      - name: Build release APK
+        env:
+          BBZ_SERVER: ${{ vars.BBZ_SERVER }}
+        run: |
+          flutter build apk --release \
+            --dart-define=BBZ_SERVER="${BBZ_SERVER:-https://envious-dropbox-taste.ngrok-free.dev/Battle-Ship-Blitz-Mobile-Game/server}"
+
+      - name: Build release App Bundle
+        env:
+          BBZ_SERVER: ${{ vars.BBZ_SERVER }}
+        run: |
+          flutter build appbundle --release \
+            --dart-define=BBZ_SERVER="${BBZ_SERVER:-https://envious-dropbox-taste.ngrok-free.dev/Battle-Ship-Blitz-Mobile-Game/server}"
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          tag="${{ needs.release-please.outputs.tag_name }}"
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/battleship-blitz-${tag}.apk"
+          cp build/app/outputs/bundle/release/app-release.aab "dist/battleship-blitz-${tag}.aab"
+
+      # The Release itself — tag, title, and changelog body — already
+      # exists, written by release-please. This step only attaches the
+      # built installables to it, so no `name`/`body`/`generate_release_notes`
+      # here: setting those would blow away the changelog release-please wrote.
+      - name: Attach build artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: dist/*

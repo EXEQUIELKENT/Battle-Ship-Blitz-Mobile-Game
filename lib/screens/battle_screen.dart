@@ -16,6 +16,7 @@ import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
+import '../widgets/cartoon_confirm.dart';
 import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ship_painter.dart';
@@ -1955,37 +1956,18 @@ class _BattleScreenState extends State<BattleScreen>
         ),
       );
 
-  void _confirmSurrender(GameController controller) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.navy,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: const BorderSide(color: AppColors.outline, width: 3),
-        ),
-        title: Text('SURRENDER?', style: AppText.heading(size: 16)),
-        content: Text(
-          'Abandon the battle?\nThis counts as a loss.',
-          style: AppText.body(
-              size: 13, color: AppColors.cream.withValues(alpha: 0.85)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child:
-                Text('FIGHT ON', style: AppText.label(color: AppColors.green)),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              controller.surrender();
-            },
-            child: Text('SURRENDER', style: AppText.label(color: AppColors.hit)),
-          ),
-        ],
-      ),
+  Future<void> _confirmSurrender(GameController controller) async {
+    // The original of the app-wide confirm box — now shown through
+    // [showCartoonConfirm] so the shipyard's buy prompts and this one can
+    // never drift apart in look or motion.
+    final confirmed = await showCartoonConfirm(
+      context,
+      title: 'SURRENDER?',
+      message: 'Abandon the battle?\nThis counts as a loss.',
+      cancelLabel: 'FIGHT ON',
+      confirmLabel: 'SURRENDER',
     );
+    if (confirmed) controller.surrender();
   }
 }
 

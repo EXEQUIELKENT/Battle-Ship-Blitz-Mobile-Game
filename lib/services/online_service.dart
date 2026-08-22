@@ -263,8 +263,9 @@ class OnlineService extends ChangeNotifier {
       busy = false;
       reachable = false;
       lastError = await discovery.hasInternet()
-          ? 'Could not reach the game server. Check your internet '
-              'connection and try again.'
+          ? 'No game server found on this Wi-Fi. Ask whoever is hosting '
+              'for its address and enter it below, or start '
+              'server/api.php yourself and rejoin the same network.'
           : _offlineMessage;
       notifyListeners();
       return false;

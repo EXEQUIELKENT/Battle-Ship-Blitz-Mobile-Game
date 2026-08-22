@@ -12,6 +12,7 @@ import '../models/game_models.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/app_notification.dart';
+import '../widgets/cartoon_confirm.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/ocean_background.dart';
 import '../widgets/ship_painter.dart';
@@ -184,6 +185,33 @@ void _denied(BuildContext context, int cost) {
     context,
     'Not enough RP! Need $cost RP.',
     type: AppNoticeType.error,
+  );
+}
+
+/// Asks before spending RP, so a stray tap while flicking through the
+/// shelves can't quietly empty the balance. Every card's tap handler
+/// runs this ONLY when the tap would actually buy something — equipping
+/// an already-owned skin stays a one-tap affair.
+///
+/// Same box as the battle screen's surrender prompt, animations and all
+/// — see [showCartoonConfirm]. Returns true only when the player
+/// confirmed.
+Future<bool> _confirmBuy(
+  BuildContext context, {
+  required String kind,
+  required String name,
+  required int cost,
+  String? detail,
+}) {
+  SoundService.instance.click();
+  return showCartoonConfirm(
+    context,
+    title: 'BUY $kind',
+    message: detail == null
+        ? 'Buy $name for $cost RP?'
+        : 'Buy $name for $cost RP?\n$detail',
+    cancelLabel: 'NO',
+    confirmLabel: 'BUY',
   );
 }
 
@@ -450,7 +478,18 @@ class _FamilyHullCard extends StatelessWidget {
     final affordable = profile.rp >= skin.cost;
 
     return GestureDetector(
-      onTap: () {
+      onTap: () async {
+        // Owned → equip outright; unowned → this tap spends RP, so ask.
+        if (!profile.ownsShip(skin.id)) {
+          final ok = await _confirmBuy(
+            context,
+            kind: 'HULL',
+            name: skin.name,
+            cost: skin.cost,
+          );
+          if (!ok) return;
+        }
+        if (!context.mounted) return;
         if (profile.equipShipSkin(skin)) {
           SoundService.instance.victory();
         } else {
@@ -592,7 +631,17 @@ class _LegacyHullCard extends StatelessWidget {
     final affordable = profile.rp >= skin.cost;
 
     return GestureDetector(
-      onTap: () {
+      onTap: () async {
+        if (!profile.ownsShip(skin.id)) {
+          final ok = await _confirmBuy(
+            context,
+            kind: 'HULL',
+            name: skin.name,
+            cost: skin.cost,
+          );
+          if (!ok) return;
+        }
+        if (!context.mounted) return;
         if (profile.equipShipSkin(skin)) {
           SoundService.instance.victory();
         } else {
@@ -783,7 +832,17 @@ class _CannonCard extends StatelessWidget {
     final affordable = profile.rp >= cannon.cost;
 
     return GestureDetector(
-      onTap: () {
+      onTap: () async {
+        if (!profile.ownsCannon(cannon.id)) {
+          final ok = await _confirmBuy(
+            context,
+            kind: 'CANNON',
+            name: cannon.name,
+            cost: cannon.cost,
+          );
+          if (!ok) return;
+        }
+        if (!context.mounted) return;
         if (profile.equipCannonSkin(cannon)) {
           SoundService.instance.victory();
         } else {
@@ -1202,9 +1261,21 @@ class _MatchedSetCard extends StatelessWidget {
           const SizedBox(height: 10),
           // The button, and only the button. See the class note: this
           // is the one card that charges for three things at once, in a
-          // list where every other card buys on a tap anywhere.
+          // list where every other card buys on a tap anywhere. It also
+          // ALWAYS confirms — it's the priciest tap in the shop.
           GestureDetector(
-            onTap: () {
+            onTap: () async {
+              final ok = await _confirmBuy(
+                context,
+                kind: 'MATCHED SET',
+                name: family.fleetName,
+                cost: price,
+                detail: parts.isEmpty
+                    ? null
+                    : 'Adds the ${parts.join(', ')}.',
+              );
+              if (!ok) return;
+              if (!context.mounted) return;
               if (profile.buyFamilySet(family)) {
                 SoundService.instance.victory();
               } else {
@@ -1253,7 +1324,17 @@ class _ThemeCard extends StatelessWidget {
         : AppColors.cream;
 
     return GestureDetector(
-      onTap: () {
+      onTap: () async {
+        if (!owned) {
+          final ok = await _confirmBuy(
+            context,
+            kind: 'BATTLEFIELD',
+            name: theme.name,
+            cost: theme.cost,
+          );
+          if (!ok) return;
+        }
+        if (!context.mounted) return;
         if (profile.equipGameplayTheme(theme)) {
           SoundService.instance.victory();
         } else {

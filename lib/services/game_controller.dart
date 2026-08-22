@@ -691,9 +691,17 @@ class GameController extends ChangeNotifier {
     p2Won = !p1Win;
     endReason = reason;
 
+    // A local (same-device) LOSS doesn't touch the record at all — same
+    // as an abandoned match, no loss counted and no streak reset. Both
+    // fleets in this mode are one person passing the phone back and
+    // forth, so "losing" here doesn't represent a real result the way it
+    // does against the AI or another device. A local WIN still counts
+    // normally: it's the only outcome of this mode worth rewarding.
+    final localLoss = mode == GameMode.local && !p1Win;
+
     // An abandoned match is void — see [abandonMatch]. Guarded here as
     // well so a late-arriving result can't sneak a record in afterwards.
-    if (!rpAwarded && !matchAbandoned) {
+    if (!rpAwarded && !matchAbandoned && !localLoss) {
       rpAwarded = true;
       rpDelta = profile.recordResult(won: p1Win);
     }
