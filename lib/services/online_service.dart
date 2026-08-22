@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'online_api.dart';
+import 'server_discovery.dart';
 import 'storage_service.dart';
 
 /// Another captain, as the online server knows them.
@@ -79,12 +80,18 @@ class OnlinePlayer {
 class OnlineMatch {
   final int id;
 
-  /// `inviting` — somebody has been invited and hasn't answered yet.
+  /// `inviting` — a friend has been invited and hasn't answered yet.
+  /// `found`    — matchmaking paired two searchers; BOTH must accept.
   /// `active`   — both sides are in; the relay is carrying the game.
   final String status;
   final bool youAreHost;
   final int peerId;
   final String peerName;
+
+  /// For a matchmaking pairing (`found`): whether each captain has tapped
+  /// accept. The match only goes live on the second yes.
+  final bool youAccepted;
+  final bool peerAccepted;
 
   const OnlineMatch({
     required this.id,
@@ -92,6 +99,8 @@ class OnlineMatch {
     required this.youAreHost,
     required this.peerId,
     required this.peerName,
+    this.youAccepted = false,
+    this.peerAccepted = false,
   });
 
   factory OnlineMatch.fromJson(Map<String, dynamic> j) => OnlineMatch(
@@ -100,10 +109,13 @@ class OnlineMatch {
         youAreHost: j['youAreHost'] == true,
         peerId: (j['peerId'] as num?)?.toInt() ?? 0,
         peerName: (j['peerName'] as String?) ?? 'Opponent',
+        youAccepted: j['youAccepted'] == true,
+        peerAccepted: j['peerAccepted'] == true,
       );
 
   bool get isInvitation => status == 'inviting';
   bool get isActive => status == 'active';
+  bool get isFound => status == 'found';
 
   /// An invitation waiting for THIS player to answer.
   bool get isIncomingInvite => isInvitation && !youAreHost;
@@ -137,10 +149,19 @@ class OnlineService extends ChangeNotifier {
   int myId = 0;
   String myTag = '';
 
+  /// This player's captain name as the server knows it — the thing other
+  /// people search for to add them.
+  String myName = '';
+
   List<OnlinePlayer> friends = const [];
   List<OnlinePlayer> incomingRequests = const [];
   List<OnlinePlayer> outgoingRequests = const [];
   OnlineMatch? match;
+
+  /// True while this player is standing in the find-a-match queue. The
+  /// matchmaking screen reads it to tell "still searching" apart from
+  /// "paired, waiting on accepts" and from "released, re-searching".
+  bool searching = false;
 
   /// Last thing that went wrong, ready to show. Cleared by the next
   /// successful call.
@@ -192,8 +213,69 @@ class OnlineService extends ChangeNotifier {
     incomingRequests = const [];
     outgoingRequests = const [];
     match = null;
+    searching = false;
     await _persist();
     notifyListeners();
+  }
+
+  /// The message shown when the device is simply offline — distinct from
+  /// "server unreachable", because the fix (turn on data) is different.
+  static const _offlineMessage = 'You need an internet connection to '
+      'play online. Turn on Wi-Fi or mobile data and try again.';
+
+  /// Finds the game server on its own — nobody types an address — and
+  /// signs in against whatever it finds.
+  ///
+  /// Order: the address remembered from last time (fast path: an
+  /// unchanged network answers in one ping), then localhost and the
+  /// Android-emulator host, then a sweep of this device's Wi-Fi subnet.
+  /// Only a machine speaking this game's exact protocol is accepted, so
+  /// random web servers on the LAN are ignored.
+  ///
+  /// A release build carries its server's address inside the binary, so
+  /// it needs real internet: with none, it fails here in one DNS check
+  /// instead of sweeping, and the player is told exactly that.
+  Future<bool> connectAuto(ProfileStore profile) async {
+    busy = true;
+    notifyListeners();
+    final discovery = ServerDiscovery();
+
+    // Release builds point at one far-away machine; without a route to
+    // it there is nothing to find. Dev builds may still legitimately
+    // reach a LAN-only XAMPP box with the router's internet down, so
+    // they fall through and let discovery try.
+    if (ServerDiscovery.bakedUrl.trim().isNotEmpty &&
+        !await discovery.hasInternet()) {
+      busy = false;
+      reachable = false;
+      lastError = _offlineMessage;
+      notifyListeners();
+      return false;
+    }
+
+    String? found;
+    try {
+      found = await discovery.discover(
+        known: configured ? api.baseUrl : null,
+      );
+    } catch (_) {}
+    if (found == null) {
+      busy = false;
+      reachable = false;
+      lastError = await discovery.hasInternet()
+          ? 'Could not reach the game server. Check your internet '
+              'connection and try again.'
+          : _offlineMessage;
+      notifyListeners();
+      return false;
+    }
+    if (found != api.baseUrl.trim()) {
+      // A different machine than last time. The old token means nothing
+      // to the new server, so setBaseUrl drops it along with everything
+      // that came from the old session.
+      await setBaseUrl(found);
+    }
+    return ensureAccount(profile);
   }
 
   /// Registers this installation if it has no account yet, then pushes
@@ -230,7 +312,7 @@ class OnlineService extends ChangeNotifier {
       lastError = null;
       return true;
     } on OnlineError catch (e) {
-      lastError = e.message;
+      lastError = e.offline ? _offlineMessage : e.message;
       reachable = false;
       return false;
     } finally {
@@ -254,6 +336,11 @@ class OnlineService extends ChangeNotifier {
   /// Mirrors the local profile up so friends see current stats and the
   /// right loadout. The device stays the authority — this is a copy for
   /// other people to read, not a score being submitted.
+  ///
+  /// Called from every online entry point AND right after a rename on the
+  /// main menu, so the server never keeps showing a name the player
+  /// already changed. On success the local display name updates too —
+  /// instant feedback, no waiting for the next poll to echo it back.
   Future<void> syncProfile(ProfileStore profile) async {
     if (!signedIn) return;
     try {
@@ -268,6 +355,10 @@ class OnlineService extends ChangeNotifier {
         'cannon': profile.cannonSkinId,
         'theme': profile.gameplayThemeId,
       });
+      if (myName != profile.playerName) {
+        myName = profile.playerName;
+        notifyListeners();
+      }
     } on OnlineError catch (e) {
       if (kDebugMode) debugPrint('OnlineService: sync failed ($e)');
     }
@@ -283,6 +374,7 @@ class OnlineService extends ChangeNotifier {
       friends = _players(res['friends']);
       incomingRequests = _players(res['incoming']);
       outgoingRequests = _players(res['outgoing']);
+      searching = res['searching'] == true;
       final m = res['match'];
       match = m is Map
           ? OnlineMatch.fromJson(Map<String, dynamic>.from(m))
@@ -290,12 +382,15 @@ class OnlineService extends ChangeNotifier {
       final me = res['me'];
       if (me is Map) {
         myTag = (me['tag'] as String?) ?? myTag;
+        myName = (me['name'] as String?) ?? myName;
         myId = (me['id'] as num?)?.toInt() ?? myId;
       }
       reachable = true;
       lastError = null;
     } on OnlineError catch (e) {
-      lastError = e.message;
+      // Offline moments say it in the player's own words, everywhere:
+      // entry, mid-search heartbeats, invites — one message, one fix.
+      lastError = e.offline ? _offlineMessage : e.message;
       if (e.offline) reachable = false;
     }
     notifyListeners();
@@ -312,15 +407,48 @@ class OnlineService extends ChangeNotifier {
   /// Starts the presence heartbeat. Runs only while a screen that needs
   /// it is open — there is no reason to advertise as online from inside a
   /// single-player match against the AI.
-  void startHeartbeat() {
+  ///
+  /// [fast] halves-and-halves-again the interval: while a matchmaking
+  /// screen is up, "opponent accepted" should land in a blink, not on the
+  /// next five-second tick.
+  void startHeartbeat({bool fast = false}) {
     _heartbeat?.cancel();
     if (!signedIn) return;
+    _fastPolling = fast;
     unawaited(refresh());
     _heartbeat = Timer.periodic(
-      const Duration(seconds: 5),
+      fast ? const Duration(milliseconds: 1200) : const Duration(seconds: 5),
       (_) => unawaited(refresh()),
     );
   }
+
+  /// Switches an already-running heartbeat between the normal friends
+  /// pace and the matchmaking pace without dropping it.
+  void setFastPolling(bool fast) {
+    if (_fastPolling == fast) return;
+    startHeartbeat(fast: fast);
+  }
+
+  bool _fastPolling = false;
+
+  // ------------------------------------------------------- MATCHMAKING ---
+
+  /// Puts this captain in the find-a-match queue. The server answers
+  /// either "searching" or "paired with X — both of you now accept";
+  /// [_act]'s refresh pulls whichever it is into [match]/[searching].
+  Future<bool> joinQueue() => _act(() => api.call('queue_join'));
+
+  /// Stops searching. If a pairing was already found but not yet fully
+  /// accepted by both sides, this doubles as declining it.
+  Future<bool> leaveQueue() => _act(
+        () => api.call('queue_leave'),
+      );
+
+  /// Says yes to a found pairing. The second yes anywhere flips the match
+  /// active, which is what sends both captains into the game.
+  Future<bool> acceptMatch(int matchId) => _act(
+        () => api.call('accept_match', args: {'matchId': matchId}),
+      );
 
   void stopHeartbeat() {
     _heartbeat?.cancel();
@@ -329,23 +457,26 @@ class OnlineService extends ChangeNotifier {
 
   // ------------------------------------------------------------ FRIENDS ---
 
-  /// Looks a captain up by friend code without adding them, so the player
-  /// can confirm they've got the right person first.
-  Future<OnlinePlayer?> find(String tag) async {
+  /// Searches for captains to add. A query matches a player's NAME —
+  /// prefix match, so "ken" finds Kent — or their friend code for anyone
+  /// still swapping codes. Names are unique per player, which is what
+  /// makes searching them a way to find exactly one person; if two
+  /// players picked the same name anyway, both come back and the tag on
+  /// each result tells them apart.
+  Future<List<OnlinePlayer>> search(String q) async {
     try {
-      final res = await api.call('find', args: {'tag': tag.toUpperCase()});
+      final res = await api.call('find', args: {'q': q});
       lastError = null;
-      return OnlinePlayer.fromJson(
-          Map<String, dynamic>.from(res['player'] as Map));
+      return _players(res['players']);
     } on OnlineError catch (e) {
       lastError = e.message;
       notifyListeners();
-      return null;
+      return const [];
     }
   }
 
-  Future<bool> addFriend(String tag) => _act(
-        () => api.call('request', args: {'tag': tag.toUpperCase()}),
+  Future<bool> requestById(int playerId) => _act(
+        () => api.call('request', args: {'playerId': playerId}),
       );
 
   Future<bool> respondToRequest(int playerId, bool accept) => _act(
@@ -409,7 +540,7 @@ class OnlineService extends ChangeNotifier {
       await refresh();
       return true;
     } on OnlineError catch (e) {
-      lastError = e.message;
+      lastError = e.offline ? _offlineMessage : e.message;
       notifyListeners();
       return false;
     } finally {
