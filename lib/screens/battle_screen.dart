@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../art/family_shell_art.dart';
 import '../art/fleet_family.dart';
+import '../art/legacy_shell_art.dart';
 import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
@@ -993,9 +994,13 @@ class _BattleScreenState extends State<BattleScreen>
           builder: (context, _) {
             final t = p.ctrl.value;
             // Whose gun this shell came out of — the shell is part of the
-            // cannon, not of the board it is crossing.
-            final shellFamily =
-                FleetFamilies.byKey(_cannonSkinFor(p.byP1).familyKey);
+            // cannon, not of the board it is crossing. A family cannon's
+            // shell is keyed off the family; one of the nine originals has
+            // no family, so its own catalogue id is what picks its shell
+            // instead (see `legacy_shell_art.dart`).
+            final shooterSkin = _cannonSkinFor(p.byP1);
+            final shellFamily = FleetFamilies.byKey(shooterSkin.familyKey);
+            final legacyShellId = shellFamily == null ? shooterSkin.id : null;
             // Vertical ARC for the up-and-down lob effect, reused for the
             // ball itself and its trail.
             Offset posAt(double tt) {
@@ -1028,7 +1033,8 @@ class _BattleScreenState extends State<BattleScreen>
                 top: gp.dy - gd / 2,
                 child: Opacity(
                     opacity: opacity,
-                    child: _cannonball(gd, family: shellFamily)),
+                    child: _cannonball(gd,
+                        family: shellFamily, legacyId: legacyShellId)),
               );
             }
 
@@ -1042,7 +1048,8 @@ class _BattleScreenState extends State<BattleScreen>
                   top: pos.dy - d / 2,
                   child: Transform.rotate(
                     angle: spin,
-                    child: _cannonball(d, family: shellFamily),
+                    child: _cannonball(d,
+                        family: shellFamily, legacyId: legacyShellId),
                   ),
                 ),
               ],
@@ -1831,12 +1838,14 @@ class _BattleScreenState extends State<BattleScreen>
 
   /// The projectile in flight.
   ///
-  /// A shell belongs to the gun that fired it, so this takes the
-  /// shooter's family rather than the board's or the fleet's: equip the
-  /// Ion Lance and plasma bolts fly, whatever water they cross and
-  /// whatever hulls they land on. With no family equipped it stays the
-  /// original iron ball, untouched.
-  Widget _cannonball(double d, {FleetFamily? family}) {
+  /// A shell belongs to the gun that fired it: a family cannon's shell is
+  /// keyed off its family, and each of the nine originals now draws its
+  /// own shell off its own catalogue id (see `legacy_shell_art.dart`) —
+  /// the same shell already shown on its Shipyard card, so what you buy
+  /// is what you fire. `legacyId` is only null in the defensive case
+  /// where a loadout names neither a family nor a known original, which
+  /// falls back to the plain iron ball rather than drawing nothing.
+  Widget _cannonball(double d, {FleetFamily? family, String? legacyId}) {
     if (family != null) {
       // The design's shell box is taller than wide (the tail hangs below
       // the body), so the drawing is given that room and centred on the
@@ -1851,6 +1860,23 @@ class _BattleScreenState extends State<BattleScreen>
           child: CustomPaint(
             size: Size(d, h),
             painter: _FamilyShellPainter(family),
+          ),
+        ),
+      );
+    }
+    if (legacyId != null) {
+      // Legacy shells are authored in the same box as family ones (see
+      // `legacy_shell_art.dart`), so the same letterboxing applies.
+      final h = d / kShellBoxAspect;
+      return SizedBox(
+        width: d,
+        height: d,
+        child: OverflowBox(
+          maxWidth: d,
+          maxHeight: h,
+          child: CustomPaint(
+            size: Size(d, h),
+            painter: _LegacyCannonballPainter(legacyId),
           ),
         ),
       );
@@ -2285,4 +2311,22 @@ class _FamilyShellPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _FamilyShellPainter old) =>
       old.family.id != family.id;
+}
+
+/// Draws one of the nine original cannons' projectiles into the flight
+/// layer — the [_FamilyShellPainter] counterpart for guns with no family.
+/// Same reasoning: stateless, keyed off the cannon's own catalogue id
+/// rather than anything that changes mid-flight.
+class _LegacyCannonballPainter extends CustomPainter {
+  final String cannonId;
+
+  const _LegacyCannonballPainter(this.cannonId);
+
+  @override
+  void paint(Canvas canvas, Size size) =>
+      paintLegacyShell(canvas, size, cannonId);
+
+  @override
+  bool shouldRepaint(covariant _LegacyCannonballPainter old) =>
+      old.cannonId != cannonId;
 }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../art/family_cannon_art.dart';
 import '../art/fleet_family.dart';
+import '../art/legacy_shell_art.dart';
 import '../core/theme.dart';
 import '../services/storage_service.dart';
 
@@ -183,6 +184,7 @@ class _CannonWidgetState extends State<CannonWidget>
     // reads as a real jolt (the whole cannon nudges back) rather than
     // just a shrink-and-grow pulse.
     final kick = _recoil.value * widget.size * 0.05;
+    final family = FleetFamilies.byKey(widget.skin.familyKey);
     return GestureDetector(
       onTap: ready ? widget.onFire : null,
       child: Transform.translate(
@@ -197,7 +199,10 @@ class _CannonWidgetState extends State<CannonWidget>
                 accent: ready
                     ? (widget.accentOverride ?? widget.skin.projectile)
                     : AppColors.inkSoft,
-                family: FleetFamilies.byKey(widget.skin.familyKey),
+                family: family,
+                // Only meaningful when there's no family gun — see
+                // CannonPainter.legacyCannonId.
+                legacyCannonId: family == null ? widget.skin.id : null,
                 cooldown: widget.cooldownFraction,
                 recoil: _recoil.value,
                 ready: ready,
@@ -257,9 +262,16 @@ class CannonPainter extends CustomPainter {
   /// gun is drawn instead of the standard one.
   final FleetFamily? family;
 
+  /// The equipped cannon's own catalogue id, but ONLY when [family] is
+  /// null — i.e. one of the nine originals. Used solely to tint and
+  /// shape its muzzle exhaust (see [_paintLegacyExhaust]); a family gun
+  /// gets its look from [family] instead and ignores this.
+  final String? legacyCannonId;
+
   CannonPainter({
     required this.accent,
     this.family,
+    this.legacyCannonId,
     this.cooldown = 1,
     this.recoil = 0,
     this.ready = true,
@@ -509,27 +521,238 @@ class CannonPainter extends CustomPainter {
     // drift upward, growing and fading as `smoke` runs 0→1 — independent
     // of (and outlasting) the sharp `recoil` flash above, so a shot
     // leaves a brief hanging cloud instead of the boom just vanishing.
+    //
+    // Before this, all nine originals shared this one grey cloud — the
+    // same "just a recolour" gap the shell had (see
+    // `legacy_shell_art.dart`). [_paintLegacyExhaust] gives each of them
+    // its own exhaust; the plain rising cloud below is now specifically
+    // the MK-I's ("reliable naval artillery" gets the plain powder
+    // smoke) and the fallback for an unrecognised id.
     if (smoke > 0.01 && smokePuffs.isNotEmpty) {
+      _paintLegacyExhaust(canvas, mouthCenter, outerR);
+    }
+  }
+
+  /// The nine originals' firing storyboard, past the flash — the
+  /// [_paintExhaust] counterpart for guns with no family. Same idea:
+  /// fixed 850 ms timing shared by every cannon, [smokePuffs] supplying
+  /// the randomized stagger; what changes per cannon is the shape of
+  /// what comes out and its colour, taken from [legacyShellPalette] so
+  /// exhaust and shell always agree.
+  void _paintLegacyExhaust(Canvas canvas, Offset mouth, double outerR) {
+    double lifeOf(_SmokePuff puff) {
+      final span = (1 - puff.delay).clamp(0.0001, 1.0);
+      return ((smoke - puff.delay) / span).clamp(0.0, 1.0);
+    }
+
+    void plainSmoke() {
       for (final puff in smokePuffs) {
-        // Each puff waits out its own `delay` fraction before it starts
-        // growing, so the cloud billows out staggered rather than as one
-        // uniform blob.
-        final span = (1 - puff.delay).clamp(0.0001, 1.0);
-        final local = ((smoke - puff.delay) / span).clamp(0.0, 1.0);
-        if (local <= 0) continue;
-        final puffCenter = mouthCenter +
-            Offset(
-              puff.dx * outerR * local,
-              -puff.rise * outerR * local,
-            );
-        final puffR = outerR * (0.22 + local * 0.30) * puff.sizeMul;
-        final fade = (1 - local) * 0.32;
+        final t = lifeOf(puff);
+        if (t <= 0) continue;
+        final puffCenter = mouth +
+            Offset(puff.dx * outerR * t, -puff.rise * outerR * t);
+        final puffR = outerR * (0.22 + t * 0.30) * puff.sizeMul;
         canvas.drawCircle(
           puffCenter,
           puffR,
-          Paint()..color = const Color(0xFFB9C2CC).withValues(alpha: fade),
+          Paint()
+            ..color = const Color(0xFFB9C2CC).withValues(alpha: (1 - t) * 0.32),
         );
       }
+    }
+
+    final id = legacyCannonId;
+    if (id == null || id == 'mk1') {
+      plainSmoke();
+      return;
+    }
+    final p = legacyShellPalette(id);
+    switch (id) {
+      // Fireburst: puffs run hotter and faster than powder smoke, with a
+      // spark riding out ahead of each one.
+      case 'inferno':
+        for (final puff in smokePuffs) {
+          final t = lifeOf(puff);
+          if (t <= 0) continue;
+          canvas.drawCircle(
+            mouth +
+                Offset(puff.dx * outerR * 0.5 * t, -puff.rise * outerR * 0.9 * t),
+            outerR * (0.20 + t * 0.26) * puff.sizeMul,
+            Paint()..color = p.trim.withValues(alpha: (1 - t) * 0.55),
+          );
+          canvas.drawCircle(
+            mouth +
+                Offset(
+                    puff.dx * outerR * 0.9 * t, -puff.rise * outerR * 1.5 * t),
+            outerR * 0.05 * (1 - t) * puff.sizeMul,
+            Paint()..color = p.glow.withValues(alpha: 1 - t),
+          );
+        }
+        break;
+
+      // Electric discharge: jagged bolts kicked out in four directions,
+      // gone almost at once, rather than any kind of cloud.
+      case 'tesla':
+        final t = (smoke / 0.4).clamp(0.0, 1.0);
+        if (t < 1) {
+          canvas.drawCircle(mouth, outerR * 0.14 * (1 - t),
+              Paint()..color = p.glow.withValues(alpha: 1 - t));
+          for (final a in const [-0.9, -0.3, 0.3, 0.9]) {
+            final dir = Offset(math.sin(a), -math.cos(a));
+            final len = outerR * (0.55 + 0.9 * t);
+            final kink = mouth +
+                dir * len * 0.55 +
+                Offset(dir.dy, -dir.dx) * outerR * 0.12;
+            final end = mouth + dir * len;
+            final bolt = Path()
+              ..moveTo(mouth.dx, mouth.dy)
+              ..lineTo(kink.dx, kink.dy)
+              ..lineTo(end.dx, end.dy);
+            canvas.drawPath(
+              bolt,
+              Paint()
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = outerR * 0.045 * (1 - t)
+                ..strokeCap = StrokeCap.round
+                ..color = p.trim.withValues(alpha: (1 - t) * 0.9),
+            );
+          }
+        }
+        break;
+
+      // Toxic gas: a sluggish, low-rising cloud shedding drops of toxin
+      // that fall rather than drift with it.
+      case 'venom':
+        for (final puff in smokePuffs) {
+          final t = lifeOf(puff);
+          if (t <= 0) continue;
+          canvas.drawCircle(
+            mouth +
+                Offset(
+                    puff.dx * outerR * 0.5 * t, -puff.rise * outerR * 0.35 * t),
+            outerR * (0.22 + t * 0.30) * puff.sizeMul,
+            Paint()..color = p.trim.withValues(alpha: (1 - t) * 0.42),
+          );
+          canvas.drawCircle(
+            mouth + Offset(puff.dx * outerR * 0.6, outerR * 0.5 * t),
+            outerR * 0.03 * (1 - t) * puff.sizeMul,
+            Paint()..color = p.glow.withValues(alpha: (1 - t) * 0.8),
+          );
+        }
+        break;
+
+      // Gilded sparkle burst: small motes scattering out and up fast,
+      // no cloud at all — closer to a firework than smoke.
+      case 'royal':
+        for (final puff in smokePuffs) {
+          final t = lifeOf(puff);
+          if (t <= 0) continue;
+          final centre = mouth +
+              Offset(
+                  puff.dx * outerR * 1.3 * t, -puff.rise * outerR * 1.1 * t);
+          canvas.drawCircle(centre, outerR * 0.05 * (1 - t) * puff.sizeMul,
+              Paint()..color = p.trim.withValues(alpha: 1 - t));
+          canvas.drawCircle(centre, outerR * 0.02 * (1 - t) * puff.sizeMul,
+              Paint()..color = Colors.white.withValues(alpha: 1 - t));
+        }
+        break;
+
+      // Twinned energy rings, the second chasing the first — an
+      // afterimage rather than one clean pulse.
+      case 'phantom':
+        for (final k in const [0.0, 0.16]) {
+          final t = (smoke - k).clamp(0.0, 1.0);
+          if (t <= 0) continue;
+          canvas.drawCircle(
+            mouth,
+            outerR * (0.16 + t * 0.85),
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = outerR * 0.05 * (1 - t)
+              ..color = p.trim.withValues(alpha: (1 - t) * 0.7),
+          );
+        }
+        break;
+
+      // Deep-sea report: bubbles rising and popping rather than
+      // billowing, with a wisp of ink sinking against the current.
+      case 'kraken':
+        for (final puff in smokePuffs) {
+          final t = lifeOf(puff);
+          if (t <= 0) continue;
+          final bubbleT = t < 0.7 ? t / 0.7 : 0.0;
+          if (bubbleT > 0) {
+            canvas.drawCircle(
+              mouth +
+                  Offset(
+                      puff.dx * outerR * 0.6 * t, -puff.rise * outerR * t),
+              outerR * 0.16 * bubbleT * puff.sizeMul,
+              Paint()
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = outerR * 0.02
+                ..color = p.trim.withValues(alpha: (1 - bubbleT) * 0.8),
+            );
+          }
+          canvas.drawCircle(
+            mouth + Offset(-puff.dx * outerR * 0.3 * t, outerR * 0.3 * t),
+            outerR * 0.10 * (1 - t) * puff.sizeMul,
+            Paint()..color = p.hull.withValues(alpha: (1 - t) * 0.35),
+          );
+        }
+        break;
+
+      // Solar flare: rays burst outward from the muzzle and fade fast,
+      // over a bright core rather than a cloud.
+      case 'sunfire':
+        final t = (smoke / 0.5).clamp(0.0, 1.0);
+        if (t < 1) {
+          for (var i = 0; i < 6; i++) {
+            final a = (2 * math.pi / 6) * i;
+            final dir = Offset(math.cos(a), math.sin(a));
+            canvas.drawLine(
+              mouth,
+              mouth + dir * outerR * (0.3 + 0.9 * t),
+              Paint()
+                ..strokeWidth = outerR * 0.06 * (1 - t)
+                ..strokeCap = StrokeCap.round
+                ..color = p.trim.withValues(alpha: (1 - t) * 0.85),
+            );
+          }
+          canvas.drawCircle(mouth, outerR * 0.22 * (1 - t),
+              Paint()..color = p.glow.withValues(alpha: 1 - t));
+        }
+        break;
+
+      // Void discharge: matter is pulled INTO the muzzle first — the
+      // one exhaust here that converges instead of dispersing — then
+      // the charge releases as a single fading ring.
+      case 'void':
+        if (smoke < 0.5) {
+          final t = smoke / 0.5;
+          for (final puff in smokePuffs) {
+            final start = mouth +
+                Offset(puff.dx * outerR * 1.1, -puff.rise * outerR * 0.9);
+            canvas.drawCircle(
+              Offset.lerp(start, mouth, t)!,
+              outerR * 0.05 * puff.sizeMul,
+              Paint()..color = p.trim.withValues(alpha: t),
+            );
+          }
+        } else {
+          final t = (smoke - 0.5) / 0.5;
+          canvas.drawCircle(
+            mouth,
+            outerR * 0.5 * t,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = outerR * 0.06 * (1 - t)
+              ..color = p.glow.withValues(alpha: (1 - t) * 0.85),
+          );
+        }
+        break;
+
+      default:
+        plainSmoke();
     }
   }
 
@@ -839,5 +1062,6 @@ class CannonPainter extends CustomPainter {
       oldDelegate.recoil != recoil ||
       oldDelegate.ready != ready ||
       oldDelegate.family != family ||
+      oldDelegate.legacyCannonId != legacyCannonId ||
       oldDelegate.smoke != smoke;
 }

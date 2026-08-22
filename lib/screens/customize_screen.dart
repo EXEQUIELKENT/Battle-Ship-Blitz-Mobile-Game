@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../art/family_board_art.dart';
 import '../art/family_shell_art.dart';
 import '../art/fleet_family.dart';
+import '../art/legacy_shell_art.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/sound_service.dart';
@@ -822,6 +823,23 @@ class _CannonCard extends StatelessWidget {
                         child:
                             CustomPaint(painter: _ShellPreviewPainter(family)),
                       ),
+                    )
+                  else
+                    // The nine originals never had a shell to show here —
+                    // they were nine barrel recolours firing one shared
+                    // iron ball, so a card advertising "Blazing fire
+                    // shells" or "Dark-matter launcher" showed neither.
+                    // Same badge, same corner, as the family guns above:
+                    // the pairing is the point, not just a family perk.
+                    Positioned(
+                      right: -10,
+                      bottom: -6,
+                      child: SizedBox(
+                        width: 34,
+                        height: 37,
+                        child: CustomPaint(
+                            painter: _LegacyShellPreviewPainter(cannon.id)),
+                      ),
                     ),
                 ],
               ),
@@ -1281,6 +1299,23 @@ class _ShellPreviewPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ShellPreviewPainter old) =>
       old.family.id != family.id;
+}
+
+/// The projectile one of the nine original cannons fires, shown on its
+/// store card — the LEGACY-shelf counterpart to [_ShellPreviewPainter].
+/// Keyed off the cannon's own id rather than a [FleetFamily] since the
+/// originals never had one; see `legacy_shell_art.dart`.
+class _LegacyShellPreviewPainter extends CustomPainter {
+  final String cannonId;
+  const _LegacyShellPreviewPainter(this.cannonId);
+
+  @override
+  void paint(Canvas canvas, Size size) =>
+      paintLegacyShell(canvas, size, cannonId);
+
+  @override
+  bool shouldRepaint(covariant _LegacyShellPreviewPainter old) =>
+      old.cannonId != cannonId;
 }
 
 /// A family's gun, static, for the matched-set card — the same painter
