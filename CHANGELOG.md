@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.3](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.2...battleship_blitz-v1.4.3) (2026-08-23)
+
+
+### Bug Fixes
+
+* Fix release, keyboard, and mute issues ([e672266](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/e67226640d7dc8656320f04addf9354f326797f4))
+
 ## [1.4.2](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.1...battleship_blitz-v1.4.2) (2026-08-22)
 
 
