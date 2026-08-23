@@ -94,6 +94,26 @@ CREATE TABLE IF NOT EXISTS matchmaking (
     REFERENCES players(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- ------------------------------------------------------ matchmaking_avoid
+--
+-- Remembers "player_id declined a pairing with avoid_id" for a while.
+-- `queue_join` reads this to PREFER a different opponent over the one
+-- just declined — it's a preference, not a hard exclusion, so if the
+-- avoided player is the only one left in the queue, they still get
+-- paired again rather than leaving both of them stuck searching forever.
+-- Rows older than `avoid_rematch_seconds` are swept the same way stale
+-- queue/match rows are.
+CREATE TABLE IF NOT EXISTS matchmaking_avoid (
+  player_id  INT NOT NULL,
+  avoid_id   INT NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (player_id, avoid_id),
+  CONSTRAINT fk_ma_player FOREIGN KEY (player_id)
+    REFERENCES players(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ma_avoid FOREIGN KEY (avoid_id)
+    REFERENCES players(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 -- ------------------------------------------------------------ match_msgs
 --
 -- The relay itself. Every line the two clients would have written to each

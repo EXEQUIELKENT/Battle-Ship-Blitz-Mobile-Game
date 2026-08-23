@@ -92,6 +92,20 @@ class BattleGrid extends StatefulWidget {
   /// controls rather than only enforced after the fact.
   final Set<ShipKind>? movableShips;
 
+  /// Whether a ship mounting for the FIRST time (no prior element for its
+  /// `ValueKey` — see `_animatedShipBox`) should ease in with a fade +
+  /// settle-scale instead of just appearing at full size instantly.
+  ///
+  /// Defaults to false, which keeps ordinary drag-and-drop placement
+  /// exactly as it always was — the drag gesture itself already supplies
+  /// the motion, so a first-mount pop there is unnoticeable. The deploy
+  /// screen turns this on only for the RANDOM button's very first deal
+  /// onto an empty board, where there is no drag and no prior position
+  /// for `AnimatedPositioned` to ease FROM, so all five ships would
+  /// otherwise just blink onto the grid at once. See
+  /// `PlacementScreen._runRandomize`.
+  final bool animateEntrance;
+
   const BattleGrid({
     super.key,
     required this.shots,
@@ -112,6 +126,7 @@ class BattleGrid extends StatefulWidget {
     this.onShipTap,
     this.onShipDragUpdate,
     this.movableShips,
+    this.animateEntrance = false,
   });
 
   @override
@@ -509,12 +524,13 @@ class _BattleGridState extends State<BattleGrid>
     // rewriting every ship's position in one setState — it's matched by
     // its stable `ValueKey(ship.spec.kind)` to the SAME element and eases
     // from its old spot to the new one instead of teleporting there
-    // instantly. A brand-new ship (no prior element for that key) still
-    // just appears at its target with no animation, so normal
-    // drag-and-drop placement is unaffected. The box itself is always
-    // square (see the bugfix note above `_shipWidgets`) — only its CENTER
-    // moves; the ship's actual footprint change is handled entirely by the
-    // rotation inside `_ShipWithRotate`.
+    // instantly. A brand-new ship (no prior element for that key) has no
+    // old position to ease FROM, so `AnimatedPositioned` alone can't
+    // animate its first appearance — `_ShipEntrance` below is what gives
+    // that moment its own transition when `widget.animateEntrance` asks
+    // for one. The box itself is always square (see the bugfix note above
+    // `_shipWidgets`) — only its CENTER moves; the ship's actual footprint
+    // change is handled entirely by the rotation inside `_ShipWithRotate`.
     return AnimatedPositioned(
       key: ValueKey(ship.spec.kind),
       duration: const Duration(milliseconds: 420),
@@ -535,12 +551,15 @@ class _BattleGridState extends State<BattleGrid>
       // the bandwidth to composite them are expensive on low-end mobile
       // GPUs in a way they simply are not on a desktop GPU, which is why
       // this looked harmless in local testing. See `build()`.
-      child: _ShipWithRotate(
-        ship: ship,
-        skin: widget.skin!,
-        cell: cell,
-        showRotate:
-            widget.onShipTap != null && !ship.isSunk && _movable(ship),
+      child: _ShipEntrance(
+        animate: widget.animateEntrance,
+        child: _ShipWithRotate(
+          ship: ship,
+          skin: widget.skin!,
+          cell: cell,
+          showRotate:
+              widget.onShipTap != null && !ship.isSunk && _movable(ship),
+        ),
       ),
     );
   }
@@ -628,6 +647,68 @@ class _BattleGridState extends State<BattleGrid>
                 ),
         ),
       ),
+    );
+  }
+}
+
+/// One-shot fade + settle-scale for a ship's FIRST appearance on the grid,
+/// played only when [animate] is true at the moment this element is
+/// created — otherwise the child just appears instantly, unchanged from
+/// how a normal drag-placed ship has always behaved.
+///
+/// [animate] is read once, in `initState`: since this sits directly inside
+/// `_animatedShipBox`'s `AnimatedPositioned` (itself keyed to the ship's
+/// kind), this widget's State is created exactly once per ship — the
+/// instant that ship's key first appears in the tree — and reused on every
+/// later rebuild (reshuffles, rotations, drags) without re-running
+/// `initState`, so the entrance can never accidentally replay on a ship
+/// that's simply moving to a new spot.
+class _ShipEntrance extends StatefulWidget {
+  final Widget child;
+  final bool animate;
+  const _ShipEntrance({required this.child, required this.animate});
+
+  @override
+  State<_ShipEntrance> createState() => _ShipEntranceState();
+}
+
+class _ShipEntranceState extends State<_ShipEntrance>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
+  late final Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 380),
+    );
+    _scale = CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack);
+    _fade = CurvedAnimation(
+      parent: _ctrl,
+      curve: const Interval(0.0, 0.55, curve: Curves.easeOut),
+    );
+    if (widget.animate) {
+      _ctrl.forward();
+    } else {
+      // Same instant appearance drag-and-drop placement has always had.
+      _ctrl.value = 1.0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _fade,
+      child: ScaleTransition(scale: _scale, child: widget.child),
     );
   }
 }

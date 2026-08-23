@@ -196,7 +196,7 @@ function match_payload(array $m, int $myId): array
  * release pairings neither captain accepted in time so both players
  * return to the lobby instead of staring at a dead prompt forever.
  */
-function sweep_matchmaking(PDO $pdo, int $queueTtl, int $pairTtl): void
+function sweep_matchmaking(PDO $pdo, int $queueTtl, int $pairTtl, int $avoidTtl): void
 {
     $pdo->prepare(
         'DELETE q FROM matchmaking q
@@ -209,6 +209,14 @@ function sweep_matchmaking(PDO $pdo, int $queueTtl, int $pairTtl): void
          WHERE status = 'found'
            AND updated_at < NOW() - INTERVAL ? SECOND"
     )->execute([$pairTtl]);
+
+    // Expired "just declined this player" preferences — after this window
+    // a previously-declined opponent is a normal candidate again instead
+    // of being passed over forever.
+    $pdo->prepare(
+        'DELETE FROM matchmaking_avoid
+         WHERE created_at < NOW() - INTERVAL ? SECOND'
+    )->execute([$avoidTtl]);
 }
 
 // ----------------------------------------------------------------- routing
@@ -570,25 +578,38 @@ switch ($action) {
             sweep_matchmaking(
                 $pdo,
                 $window + 10,
-                (int) $config['pair_hold_seconds']
+                (int) $config['pair_hold_seconds'],
+                (int) $config['avoid_rematch_seconds']
             );
 
             // The captain who has been searching longest and is still
             // online — and not already sitting in some other live match.
+            //
+            // A recently-declined pairing (either direction: I declined
+            // them, or they declined me) is only PREFERRED against, not
+            // excluded outright — the ORDER BY pushes them to the back of
+            // the line rather than dropping them from it. That's what
+            // gives a decline "find someone else if you can" behaviour
+            // without leaving two players who are the only ones online
+            // unable to ever match at all: if the avoided captain is the
+            // sole candidate, they're still the row this query returns.
             $stmt = $pdo->prepare(
                 'SELECT q.player_id FROM matchmaking q
                  JOIN players p ON p.id = q.player_id
                  LEFT JOIN matches m
                    ON (m.host_id = q.player_id OR m.guest_id = q.player_id)
                   AND m.status <> \'done\'
+                 LEFT JOIN matchmaking_avoid av
+                   ON (av.player_id = ? AND av.avoid_id = q.player_id)
+                   OR (av.player_id = q.player_id AND av.avoid_id = ?)
                  WHERE q.player_id <> ?
                    AND TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) <= ?
                  GROUP BY q.player_id
                  HAVING COUNT(m.id) = 0
-                 ORDER BY q.joined_at ASC
+                 ORDER BY (MAX(av.player_id) IS NOT NULL) ASC, q.joined_at ASC
                  LIMIT 1'
             );
-            $stmt->execute([$me['id'], $window]);
+            $stmt->execute([$me['id'], $me['id'], $me['id'], $window]);
             $opponentId = (int) ($stmt->fetchColumn() ?: 0);
 
             if ($opponentId !== 0) {
@@ -643,6 +664,30 @@ switch ($action) {
         $me = require_player($pdo, $in);
         $pdo->prepare('DELETE FROM matchmaking WHERE player_id = ?')
             ->execute([$me['id']]);
+
+        // If we were mid-pairing, leaving IS declining it: remember who,
+        // so our next queue_join prefers a different opponent instead of
+        // immediately landing back on the one we just said no to (see the
+        // ORDER BY in queue_join). Only a live 'found' pairing counts —
+        // just backing out of the search queue with nobody offered yet
+        // has no one to remember.
+        $stmt = $pdo->prepare(
+            "SELECT * FROM matches
+             WHERE (host_id = ? OR guest_id = ?) AND status = 'found'"
+        );
+        $stmt->execute([$me['id'], $me['id']]);
+        $declined = $stmt->fetch();
+        if ($declined) {
+            $peerId = ((int) $declined['host_id']) === ((int) $me['id'])
+                ? (int) $declined['guest_id']
+                : (int) $declined['host_id'];
+            $pdo->prepare(
+                'INSERT INTO matchmaking_avoid (player_id, avoid_id, created_at)
+                 VALUES (?, ?, NOW())
+                 ON DUPLICATE KEY UPDATE created_at = NOW()'
+            )->execute([$me['id'], $peerId]);
+        }
+
         $pdo->prepare(
             "UPDATE matches SET status = 'done', updated_at = NOW()
              WHERE (host_id = ? OR guest_id = ?) AND status = 'found'"

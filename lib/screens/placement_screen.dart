@@ -76,6 +76,18 @@ class _PlacementScreenState extends State<PlacementScreen> {
   /// fire off a second shuffle mid-animation.
   bool _randomizing = false;
 
+  /// True once the RANDOM button has dealt a first layout onto a board
+  /// that started completely empty. That first deal is the one case where
+  /// `BattleGrid`'s `AnimatedPositioned` has no previous ship position to
+  /// ease FROM (see `_ShipEntrance`), so every ship would otherwise just
+  /// blink onto the grid at once instead of dropping in like every later
+  /// reshuffle already does. Sticky rather than reset after use: once the
+  /// board has any ship on it, `_board.ships` is never empty again for the
+  /// rest of this placement session (RANDOM replaces ships one kind at a
+  /// time, it never clears the board), so there is no later "first mount"
+  /// left for this to affect either way.
+  bool _entranceDeal = false;
+
   /// Live "where will this land" highlight — driven by whichever drag is
   /// currently active: a fresh ship being dragged in from the dock tray,
   /// or an already-placed ship being repositioned on the grid.
@@ -244,11 +256,16 @@ class _PlacementScreenState extends State<PlacementScreen> {
 
   Future<void> _runRandomize() async {
     final target = Board.random();
+    // Captured before any ship lands: by the time the first one is added
+    // below, `_board.ships` is no longer empty, so this has to be decided
+    // up front rather than re-checked each iteration of the deal loop.
+    final startedEmpty = _board.ships.isEmpty;
     // Shuffle whoosh right as the button is pressed — the cue that a new
     // layout is being dealt out, ahead of any ship actually moving.
     SoundService.instance.whir();
     setState(() {
       _randomizing = true;
+      _entranceDeal = _entranceDeal || startedEmpty;
       _selected = null;
       _previewShip = null;
     });
@@ -882,6 +899,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
                               onShipTap: _randomizing ? null : _rotateShip,
                               onShipDragEnd: _randomizing ? null : _moveShip,
                               onShipDragUpdate: _onShipDragPreview,
+                              animateEntrance: _entranceDeal,
                             ),
                           ),
                         );

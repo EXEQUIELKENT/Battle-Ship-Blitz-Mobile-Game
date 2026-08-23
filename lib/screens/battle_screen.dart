@@ -1720,18 +1720,27 @@ class _BattleScreenState extends State<BattleScreen>
     final topDeck = _themeFor(topIsP1Fleet).deck;
     final bottomDeck = _themeFor(bottomIsP1Fleet).deck;
 
-    // Room for the chat tab on the left, and for the EXIT pill on the
-    // right. Fixed regardless of whether the chat is open: the revealed
-    // button floats over the band as an overlay (see the Positioned
-    // below) instead of carving out extra padding, so opening it no
-    // longer reflows — and doesn't shrink — the ships in either fleet
-    // strip.
-    const leftInset = 56.0;
+    // Room for the sunk-count badge on the left (always present, ~34px —
+    // see `_DotsBadge`), plus the LAN/online chat tab when it's shown
+    // (its closed tab sits at x:34-54, so it needs the wider inset), and
+    // for the EXIT pill on the right (also always present, ~34px — see
+    // `_ExitPill`). Fixed regardless of whether the chat is open: the
+    // revealed button floats over the band as an overlay (see the
+    // Positioned below) instead of carving out extra padding, so opening
+    // it no longer reflows — and doesn't shrink — the ships in either
+    // fleet strip.
+    //
+    // Trimmed to just clear whatever actually overlaps the strip instead
+    // of a flat guess: local/vs-AI matches have no chat tab, so they only
+    // need to clear the dots badge; the right side never needs more than
+    // the exit pill's own width on any mode.
+    final leftInset = _lan ? 56.0 : 40.0;
+    const rightInset = 40.0;
 
     Widget row(Board board, bool isP1Fleet, Color deck) => Expanded(
           child: Container(
             color: deck,
-            padding: const EdgeInsets.only(left: leftInset, right: 56),
+            padding: EdgeInsets.only(left: leftInset, right: rightInset),
             child: _statusRow(board,
                 faded: fadedFor(isP1Fleet),
                 isP1Fleet: isP1Fleet,

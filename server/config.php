@@ -28,6 +28,13 @@ $defaults = [
     // captains to accept. After this with no second yes, the pairing is
     // released and both players go back to searching.
     'pair_hold_seconds' => 30,
+
+    // How long a declined pairing is avoided before that opponent becomes
+    // a normal candidate again. Not a hard block — see `queue_join`'s
+    // candidate query — just a preference for a different opponent while
+    // one is available, so two players stuck in a small online population
+    // still end up back together rather than never matching at all.
+    'avoid_rematch_seconds' => 300,
 ];
 
 $local = [];
