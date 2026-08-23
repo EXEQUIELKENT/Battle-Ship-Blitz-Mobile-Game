@@ -24,6 +24,67 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # release-please decides whether to release (and whether it's a
+      # patch/minor/major) purely by parsing commit messages for
+      # Conventional Commits prefixes ("fix: ...", "feat: ...", etc.) —
+      # that parsing IS the mechanism, there's no config flag to loosen it.
+      #
+      # ROOT-CAUSE FIX (commits made via GitHub Desktop with a
+      # Copilot-generated message never triggered a release): those
+      # messages are plain descriptive prose with no "fix:"/"feat:"
+      # prefix, so release-please's parser can't classify them and
+      # silently ignores them — no version bump, no changelog line, and
+      # if EVERY commit since the last release looks like that, no
+      # release PR gets created or updated at all.
+      #
+      # This step is a safety net, not a replacement for typing a prefix
+      # when you want one: it first checks whether anything since the
+      # last tag already IS a Conventional Commit (covers you occasionally
+      # typing "fix: ..."/"feat: ..." yourself, including release-please's
+      # own "chore: release ..." merge commit) and does nothing if so. Only
+      # when NOTHING qualifies does it add one small empty commit that
+      # reuses the latest real commit's own message, just with a "fix: "
+      # prefix added — so the changelog still reads like something a
+      # person wrote, and every push keeps producing a normal patch
+      # release even when every real commit came out of Copilot's
+      # suggestion box with no prefix at all.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Ensure a Conventional Commit exists since the last release
+        run: |
+          set -euo pipefail
+          latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          range="HEAD"
+          if [ -n "$latest_tag" ]; then
+            range="${latest_tag}..HEAD"
+          fi
+
+          if [ -z "$(git rev-list "$range")" ]; then
+            echo "No new commits since ${latest_tag:-the start of history} — nothing to do."
+            exit 0
+          fi
+
+          conventional='^(feat|fix|perf|revert|refactor|docs|chore|test|build|ci)(\([^)]*\))?!?:'
+          if git log "$range" --pretty=%s | grep -Eiq "$conventional"; then
+            echo "A Conventional Commit already exists since ${latest_tag:-the start of history} — nothing to do."
+            exit 0
+          fi
+
+          # Reuse the latest real commit's own subject line rather than a
+          # generic placeholder, so the changelog entry release-please
+          # writes still describes what actually changed.
+          subject="$(git log -1 --pretty=%s | sed -E 's/ *\(#[0-9]+\)$//')"
+          echo "No Conventional Commit found since ${latest_tag:-the start of history}."
+          echo "Adding one so release-please can pick this push up: fix: ${subject}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "fix: ${subject}"
+          git push origin HEAD:${{ github.ref_name }}
+
       - uses: googleapis/release-please-action@v4
         id: release
         with:
@@ -55,20 +116,47 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      # Optional: decode a real signing key from GitHub Secrets.
-      # If these secrets aren't set, build.gradle.kts already falls back
-      # to debug signing on its own, so this step is safe to leave in.
+      # Decode the real signing key from GitHub Secrets.
+      #
+      # ROOT-CAUSE FIX (releases kept needing an uninstall to update):
+      # this step used to be gated with
+      #   if: ${{ env.HAS_KEYSTORE == 'true' }}
+      #   env: { HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }} }
+      # — but a step's `if:` cannot see an `env:` block defined on that
+      # SAME step (GitHub only exposes step-level env once the step is
+      # already running, not while its own `if:` is evaluated). So
+      # `env.HAS_KEYSTORE` was always empty, the condition was always
+      # false, and this step silently never ran — even with the secrets
+      # set correctly. THIS is the workflow that actually fires
+      # automatically on every push to main and produces the release you
+      # download, so this was the live cause of every release conflicting
+      # with the last one — release.yml's copy of the same bug barely
+      # matters, since it only runs on a bare `v*.*.*` tag or a manual
+      # dispatch, and release-please's own tags (`battleship_blitz-vX.Y.Z`)
+      # never match that pattern.
+      #
+      # Fixed the same way build-apk.yml already does it: the step always
+      # runs, and the *script* decides what to do based on whether the
+      # secret is actually set — no if: needed at all.
       - name: Set up Android signing
-        if: ${{ env.HAS_KEYSTORE == 'true' }}
         env:
-          HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release-key.jks
-          cat > android/app/key.properties <<EOF
-          storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}
-          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
-          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
-          EOF
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set — this build"
+            echo "::warning::will be signed with a throwaway debug key and"
+            echo "::warning::will NOT install over any previous release."
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release-key.jks
+          {
+            echo "storePassword=$ANDROID_STORE_PASSWORD"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+            echo "keyAlias=${ANDROID_KEY_ALIAS:-battleshipblitz}"
+          } > android/app/key.properties
 
       - name: Build release APK
         env:

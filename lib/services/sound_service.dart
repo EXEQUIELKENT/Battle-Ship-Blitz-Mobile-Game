@@ -54,7 +54,32 @@ class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
 
-  bool enabled = true;
+  bool _enabled = true;
+  bool get enabled => _enabled;
+
+  /// ROOT-CAUSE FIX (main-menu sound toggle appearing to do nothing):
+  /// this used to be a plain `bool` field. Every one-shot effect already
+  /// checked it inside [_play], so gameplay SFX genuinely muted — but
+  /// the looping menu-music player never did, because it is only ever
+  /// gated at the moment it *starts* (see the guard in [startMenuMusic]).
+  /// Flipping this flag while the track was already playing left it
+  /// looping right through the "muted" state, which is the one sound
+  /// most audible on the main menu — so the button looked completely
+  /// broken even though effects were, in fact, being silenced. This
+  /// setter now actively pauses/resumes the menu track to match,
+  /// mirroring the existing app-lifecycle pause/resume pair
+  /// ([onAppPaused]/[onAppResumed]) instead of leaving mute as a
+  /// no-op flag.
+  set enabled(bool value) {
+    if (_enabled == value) return;
+    _enabled = value;
+    if (!value) {
+      _muteMenuMusic();
+    } else {
+      unawaited(_unmuteMenuMusic());
+    }
+  }
+
   final _rng = math.Random();
 
   static const _files = {
@@ -189,7 +214,7 @@ class SoundService {
       for (final pool in _pools.values) {
         await pool.rebuild();
       }
-      if (_menuMusicWanted) {
+      if (_menuMusicWanted && enabled) {
         // Coming back from a pause we did ourselves, resume rather than
         // replay: `play()` restarts an AssetSource from position zero, so
         // glancing at a notification would send the track back to its
@@ -253,6 +278,41 @@ class SoundService {
   /// ordinary in-game reason like walking into a battle.
   bool _menuMusicPausedByLifecycle = false;
 
+  /// Same idea as [_menuMusicPausedByLifecycle] but for the mute toggle
+  /// instead of app backgrounding — kept as its own flag because the two
+  /// can overlap (muting, then backgrounding the app, then unmuting
+  /// before it's foregrounded again) and each needs to unwind on its own
+  /// trigger without stepping on the other.
+  bool _menuMusicMutedWhilePlaying = false;
+
+  void _muteMenuMusic() {
+    _menuMusicRetryTimer?.cancel();
+    final player = _menuMusicPlayer;
+    if (player != null && player.state == PlayerState.playing) {
+      _menuMusicMutedWhilePlaying = true;
+      unawaited(player.pause());
+    }
+  }
+
+  Future<void> _unmuteMenuMusic() async {
+    if (!_menuMusicWanted) return; // not on a screen that wants music
+    if (_menuMusicMutedWhilePlaying) {
+      _menuMusicMutedWhilePlaying = false;
+      final player = _menuMusicPlayer;
+      if (player != null) {
+        try {
+          await player.resume();
+          if (player.state == PlayerState.playing) {
+            _scheduleMenuMusicAutoRetry();
+            return;
+          }
+        } catch (_) {/* fall through to a fresh attempt below */}
+      }
+    }
+    await _attemptMenuMusicPlay();
+    _scheduleMenuMusicAutoRetry();
+  }
+
   Future<void> _play(String key, {double volume = 1.0}) async {
     if (!enabled) return;
     final pool = _pools[key];
@@ -295,9 +355,13 @@ class SoundService {
   /// all (fixes case 2 — and also helps case 1 slightly, on browsers
   /// that don't block a plain retry once the page itself has settled).
   Future<void> startMenuMusic() async {
-    if (!enabled) return;
+    // Record intent BEFORE the enabled check (unlike before): a screen
+    // that wants menu music still wants it even while muted, so that
+    // unmuting later (via the [enabled] setter) knows to actually start
+    // it rather than treating the request as never having happened.
     final alreadyWanted = _menuMusicWanted;
     _menuMusicWanted = true;
+    if (!enabled) return;
     await _attemptMenuMusicPlay();
     if (!alreadyWanted) {
       // Only kick off a fresh retry burst for a brand-new request — a

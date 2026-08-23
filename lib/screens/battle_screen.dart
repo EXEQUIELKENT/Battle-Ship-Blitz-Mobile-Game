@@ -933,6 +933,11 @@ class _BattleScreenState extends State<BattleScreen>
     final bottomDeckColor = _themeFor(bottomIsP1Fleet).deck;
 
     return Scaffold(
+      // See the matching note in placement_screen.dart: MediaQuery's
+      // keyboard inset is global, so this Scaffold would otherwise shrink
+      // both battle grids the instant the chat panel's keyboard opens,
+      // even though the panel already insets itself independently.
+      resizeToAvoidBottomInset: false,
       body: Stack(
         children: [
           Positioned.fill(

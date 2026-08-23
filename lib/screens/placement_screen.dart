@@ -692,6 +692,20 @@ class _PlacementScreenState extends State<PlacementScreen> {
     }
 
     return Scaffold(
+      // ROOT-CAUSE FIX (deck shrinking/changing size the instant the chat
+      // keyboard appears): `MediaQuery.viewInsets` is global to the app,
+      // so ANY Scaffold still mounted underneath the chat's overlay
+      // dialog — including this one — sees the keyboard's height the
+      // moment it opens. Scaffold's default `resizeToAvoidBottomInset:
+      // true` then shrinks THIS body to make room for it, even though the
+      // keyboard is only needed by the chat panel floating on top, not by
+      // anything on this screen. Since the board's cell size is derived
+      // from the laid-out grid's own size (see `_cellSize` above), a
+      // shrunken body meant a visibly shrunken deck for as long as the
+      // keyboard was up. The chat panel already insets itself for the
+      // keyboard independently (see `bottomInset` in `_ChatPanel` in
+      // match_chat.dart), so this screen has no reason to react to it too.
+      resizeToAvoidBottomInset: false,
       // Animated rather than swapped: picking a new battlefield in the
       // GEAR dialog changes this while the dialog is still open, and a
       // hard cut behind a modal reads as a glitch. 320ms matches the
