@@ -1001,7 +1001,7 @@ class _CrosshairState extends State<_Crosshair> {
     final visible = widget.target != null;
     final r = visible ? widget.target![0] : _lastTarget[0];
     final c = visible ? widget.target![1] : _lastTarget[1];
-    final size = cell * 0.8;
+    final size = cell;
     // BUGFIX: `AnimatedPositioned` (like `Positioned`) is a
     // ParentDataWidget for `Stack` — its render-tree PARENT must be the
     // Stack itself, with nothing else that creates its own RenderObject

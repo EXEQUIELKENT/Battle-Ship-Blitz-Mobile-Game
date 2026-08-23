@@ -766,7 +766,35 @@ class _ManagedPool {
     }
   }
 
+  /// BUGFIX (some sound effects going silent specifically after
+  /// backgrounding and returning to the app, rather than all of them):
+  /// this used to dispose every player without first canceling the
+  /// `onPlayerComplete` subscription / safety timer of any player still
+  /// checked out ("busy") at the moment the app was backgrounded — e.g.
+  /// whichever effect happened to be mid-playback right when the phone
+  /// was locked or the app was switched away from.
+  ///
+  /// [rebuild] (called by [SoundService.onAppResumed]) runs this BEFORE
+  /// [warmUp] repopulates `_idle` with brand-new players. Without the
+  /// cancellation below, that old player's listener was still live: its
+  /// `onPlayerComplete` event (already in flight over the platform
+  /// channel) or its 2.2s safety timer could fire AFTER this method
+  /// returned, running `play()`'s `release()` closure against the OLD,
+  /// now-DISPOSED player — which pushes it straight into the SAME
+  /// `_idle` list `warmUp` had just filled with working ones. The next
+  /// `play()` for that effect could then hand out that stale, disposed
+  /// player, whose `stop()`/`resume()` calls fail silently — exactly
+  /// "this one effect went quiet" rather than the whole roster, since
+  /// only effects that happened to be busy at the exact moment of
+  /// backgrounding were ever at risk.
   Future<void> dispose() async {
+    // Cancel every busy player's own listeners FIRST, so none of them can
+    // fire mid- or post-disposal and reinsert a dead player into the pool
+    // this method (and the `warmUp()` right after it, via [rebuild]) is
+    // about to rebuild clean.
+    for (final cancel in _busy.values) {
+      cancel();
+    }
     for (final p in [..._idle, ..._busy.keys]) {
       try {
         await p.dispose();

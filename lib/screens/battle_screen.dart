@@ -415,8 +415,9 @@ class _BattleScreenState extends State<BattleScreen>
     // which `_slideFor` reports for every mode including chaos (where it
     // never leaves the back at all).
     final from = _cannonMouth(top, _slideFor(false), false);
-    final to = bottom.cellCenterScreen(e.row, e.col) +
-        _mouthDir(bottom) * (bottom.cannonSize * 0.25);
+    // Lands dead-center on the target cell — see `_launchBall` for why
+    // this used to be nudged off-center.
+    final to = bottom.cellCenterScreen(e.row, e.col);
     setState(() {
       _projP2
         ..pendingCell = [e.row, e.col]
@@ -426,7 +427,9 @@ class _BattleScreenState extends State<BattleScreen>
         ..visible = true;
     });
     SoundService.instance.cannonFire();
-    _cannon2Fire.add(null);
+    // NOTE: the cannon's recoil/muzzle-flash ("reload") animation no
+    // longer fires here at launch — see `_resolveImpact`, which only
+    // triggers it once the shot is confirmed to have hit a ship.
     _projP2.ctrl.forward(from: 0);
   }
 
@@ -493,6 +496,14 @@ class _BattleScreenState extends State<BattleScreen>
       _shake(_shakeSunkMagnitude);
     } else if (e.result == ShotResult.hit) {
       _shake(_shakeHitMagnitude);
+    }
+    // Cannon recoil/muzzle-flash ("reload") animation — only plays when
+    // the shot actually lands on a ship, right as the impact is
+    // confirmed, rather than at the moment the ball was launched. A
+    // miss leaves the gun visually idle instead of kicking back on
+    // nothing.
+    if (e.result == ShotResult.hit || e.result == ShotResult.sunk) {
+      (e.byPlayer ? _cannon1Fire : _cannon2Fire).add(null);
     }
     // BUGFIX (end-game timing): the match is only actually allowed to end
     // here, now that this shot's impact has been visually applied — see
@@ -622,8 +633,17 @@ class _BattleScreenState extends State<BattleScreen>
     final shooterGeom = byP1 ? bottom : top;
     final targetGeom = byP1 ? top : bottom;
     final from = _cannonMouth(shooterGeom, _slideFor(byP1), byP1);
-    final to = targetGeom.cellCenterScreen(r, c) +
-        _mouthDir(targetGeom) * (targetGeom.cannonSize * 0.25);
+    // BUGFIX (ball landing off-center): this used to add
+    // `_mouthDir(targetGeom) * (targetGeom.cannonSize * 0.25)` on top of
+    // the cell's true center — cannonSize is ~24% of the grid's side, so
+    // that pushed the landing point over HALF A CELL away from where the
+    // splash/explosion effect (and the persistent hit/miss marker) are
+    // actually drawn, keyed straight off `e.row`/`e.col` (see
+    // `_FxGridPainter`/`_StaticGridPainter`). The two effects visibly
+    // disagreeing on where the shot landed read as a sloppy, mismatched
+    // impact. `cellCenterScreen` already returns the exact cell center,
+    // so no extra nudge belongs here at all.
+    final to = targetGeom.cellCenterScreen(r, c);
     final proj = byP1 ? _projP1 : _projP2;
     // Adaptive lob: keep the classic 3-cell peak as a floor, but grow it
     // when the shot spans a long vertical gap so the shell still arrives
@@ -646,7 +666,9 @@ class _BattleScreenState extends State<BattleScreen>
         ..visible = true;
     });
     SoundService.instance.cannonFire();
-    (byP1 ? _cannon1Fire : _cannon2Fire).add(null);
+    // NOTE: the cannon's recoil/muzzle-flash ("reload") animation no
+    // longer fires here at launch — see `_resolveImpact`, which only
+    // triggers it once the shot is confirmed to have hit a ship.
     proj.ctrl.forward(from: 0);
   }
 
@@ -847,13 +869,6 @@ class _BattleScreenState extends State<BattleScreen>
     if (_manoeuvre && halfIsP1) return 0.0;
     return halfIsP1 ? _slideCtrl.value : 1 - _slideCtrl.value;
   }
-
-  /// Unit direction from a half's cannon toward its grid mouth, in SCREEN
-  /// space (+y = down the screen). Derived from the half's own muzzle
-  /// direction (which points at its grid in the half's LOCAL space) and
-  /// then flipped if the half itself is drawn rotated.
-  Offset _mouthDir(_HalfGeom g) =>
-      Offset(0, g.rotated ? -g.muzzleLocalDir : g.muzzleLocalDir);
 
   /// A half cannon CENTER (in that half's local, unrotated space),
   /// interpolated between its home position near the middle band (t=0)
@@ -1144,8 +1159,26 @@ class _BattleScreenState extends State<BattleScreen>
             double diamAt(double tt) =>
                 p.cell * (2.6 - 1.6 * tt.clamp(0.0, 1.0));
 
+            // BUGFIX (hard cut into the splash): the shell used to stay
+            // fully solid right up to the very last frame, then vanish
+            // outright the instant `p.ctrl` completed (see the
+            // `AnimationStatus.completed` listener in `initState`, which
+            // flips `visible` to false). That one-frame pop read as the
+            // ball and the water-splash/explosion effect (`_FxGridPainter`,
+            // keyed off the same landing cell) fighting for the same
+            // instant instead of one handing off to the other. Fading the
+            // shell out over just its final stretch of flight lets it
+            // visually "sink into" the point of impact right as the splash
+            // blooms there, instead of cutting from opaque to gone.
+            double impactFadeAt(double tt) {
+              const fadeStart = 0.92;
+              if (tt <= fadeStart) return 1.0;
+              return (1 - (tt - fadeStart) / (1 - fadeStart)).clamp(0.0, 1.0);
+            }
+
             final pos = posAt(t);
             final d = diamAt(t);
+            final fade = impactFadeAt(t);
             // Round shells keep the classic continuous tumble-spin (sold
             // by the sphere's highlight sweeping around it); directional
             // ones face the way they're actually flying.
@@ -1160,7 +1193,7 @@ class _BattleScreenState extends State<BattleScreen>
                 left: gp.dx - gd / 2,
                 top: gp.dy - gd / 2,
                 child: Opacity(
-                    opacity: opacity,
+                    opacity: opacity * impactFadeAt(tt),
                     child: Transform.rotate(
                       // Trailing ghosts of a directional shell face the
                       // same way the shell itself did at that point along
@@ -1181,10 +1214,13 @@ class _BattleScreenState extends State<BattleScreen>
                 Positioned(
                   left: pos.dx - d / 2,
                   top: pos.dy - d / 2,
-                  child: Transform.rotate(
-                    angle: angle,
-                    child: _cannonball(d,
-                        family: shellFamily, legacyId: legacyShellId),
+                  child: Opacity(
+                    opacity: fade,
+                    child: Transform.rotate(
+                      angle: angle,
+                      child: _cannonball(d,
+                          family: shellFamily, legacyId: legacyShellId),
+                    ),
                   ),
                 ),
               ],
@@ -1570,6 +1606,22 @@ class _BattleScreenState extends State<BattleScreen>
                     // both fleets are revealed as a final recap.
                     ships: shipsOnGrid,
                     skin: shipsOnGrid == null ? null : fleetSkin,
+                    // BUGFIX (ships just appearing with no transition at
+                    // game end): the enemy's grid holds `ships: null` for
+                    // the entire match (see the "empty grid" rule above),
+                    // so the moment `gameOver` flips `shipsOnGrid` to the
+                    // full fleet, every one of THOSE ships is mounting on
+                    // this `BattleGrid` for the very first time — exactly
+                    // the case `animateEntrance` (the same fade + settle
+                    // -scale the placement screen's RANDOM deal already
+                    // uses) exists for. Safe to pass unconditionally on
+                    // `gameOver`: this grid's `State` persists for the
+                    // whole screen (stable `ValueKey` above), and its own
+                    // per-ship-kind latch (`_shipsEnteredOnce`) means any
+                    // ship already shown earlier — your own fleet, mid
+                    // -match — simply keeps its already-settled place
+                    // instead of replaying the entrance.
+                    animateEntrance: gameOver,
                     destroyedShips:
                         (gameOver || showOwnFleet) ? const [] : sunkShips,
                     enabled: gridFirable,
@@ -1718,8 +1770,9 @@ class _BattleScreenState extends State<BattleScreen>
                               // Firing happens with a single tap on the
                               // enemy grid cell (see gridFirable /
                               // onTapCell above); the cannon itself just
-                              // reacts (recoil + muzzle flash) as a "shot
-                              // fired" indicator.
+                              // reacts (recoil + muzzle flash) once that
+                              // shot is confirmed to have hit a ship —
+                              // see `_resolveImpact`.
                               onFire: null,
                             );
                             // CannonWidget always draws its barrel toward
@@ -1993,13 +2046,15 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
-  /// Solid bar over the middle band once the match is finished — tapping
+  /// Overlay over the middle band once the match is finished — tapping
   /// CONTINUE is the only way to leave this screen at that point (see
   /// _goToResult), so both fleets stay fully revealed until the player
-  /// is actually done looking.
+  /// is actually done looking. Transparent (no solid bar) so the button
+  /// floats over the still-visible fleet strips underneath instead of
+  /// covering them with a solid dark panel.
   Widget _gameOverBar() {
     return Container(
-      color: AppColors.navy,
+      color: Colors.transparent,
       alignment: Alignment.center,
       child: NeonButton(
         label: 'CONTINUE',
