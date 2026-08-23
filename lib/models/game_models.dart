@@ -144,6 +144,38 @@ class Board {
     ships.removeWhere((s) => s.spec.kind == kind);
   }
 
+  /// Moves an already-placed ship to a new row/col/orientation IN PLACE —
+  /// i.e. at the same index in [ships] it already occupied — instead of
+  /// the remove-then-append pattern `removeShip` + `place` produces.
+  ///
+  /// `ships` paints in list order (see `BattleGrid._shipWidgets`), so
+  /// removing an entry and re-appending it silently moves it to the END
+  /// of that order. Every OTHER caller that repositions a ship this way
+  /// (manual tap-to-rotate, manual drag-to-move, Manoeuvre-mode relocate)
+  /// was doing exactly that — reordering paint order on every single
+  /// reposition — which is the same root cause `PlacementScreen
+  ///._runRandomize` had to work around locally for the RANDOM button's
+  /// reshuffle: whenever a ship's `AnimatedPositioned` box briefly
+  /// overlaps a neighbour's mid-slide, a z-order flip during that overlap
+  /// reads as a little shift/pop right as the ship arrives. Centralizing
+  /// the fix here (rather than leaving it duplicated ad hoc at each call
+  /// site) means EVERY path that moves a ship — not just RANDOM — keeps
+  /// stable paint order. Returns false and touches nothing if [kind]
+  /// isn't currently on the board.
+  bool reposition(ShipKind kind, int row, int col, bool horizontal) {
+    final idx = ships.indexWhere((s) => s.spec.kind == kind);
+    if (idx == -1) return false;
+    final old = ships[idx];
+    ships[idx] = PlacedShip(
+      spec: old.spec,
+      row: row,
+      col: col,
+      horizontal: horizontal,
+      hitIndices: Set<int>.from(old.hitIndices),
+    );
+    return true;
+  }
+
   PlacedShip? shipOfKind(ShipKind kind) {
     for (final s in ships) {
       if (s.spec.kind == kind) return s;
@@ -200,14 +232,12 @@ class Board {
     final ship = shipOfKind(kind);
     if (ship == null) return false;
     if (!canRelocateTo(ship, row, col, horizontal)) return false;
-    ships.remove(ship);
-    ships.add(PlacedShip(
-      spec: ship.spec,
-      row: row,
-      col: col,
-      horizontal: horizontal,
-    ));
-    return true;
+    // `canRelocate` already required `hitIndices.isEmpty` above, so
+    // `reposition`'s carry-over of the old hit set is a no-op here — but
+    // going through it anyway keeps this in step with every other
+    // reposition path (see `reposition`'s doc comment) instead of
+    // reintroducing the same remove-then-append z-order bug locally.
+    return reposition(kind, row, col, horizontal);
   }
 
   /// Receives an incoming shot. Returns the outcome and (if sunk) the ship.

@@ -144,9 +144,21 @@ class _PlacementScreenState extends State<PlacementScreen> {
     final origRow = ship.row;
     final origCol = ship.col;
     final origHorizontal = ship.horizontal;
-    _board.removeShip(kind);
     final newHorizontal = !origHorizontal;
-    // Try rotated at same anchor first; nudge back on-grid if needed.
+    // BUGFIX (rotated ship visibly nudges/pops on its next move): this
+    // used to call `_board.removeShip(kind)` up front so `canPlace`
+    // wouldn't collide with the ship's OWN current cells while probing
+    // candidate spots, then `_board.place(...)` the winner back in. But
+    // `place` always APPENDS to `Board.ships`, and `ships` paints in list
+    // order (see `BattleGrid._shipWidgets`) — so every single rotation
+    // silently moved this ship to the END of the paint order, exactly
+    // the z-order-reshuffle bug `PlacementScreen._runRandomize` already
+    // had to work around for the RANDOM button (see the bugfix note in
+    // `_runRandomize`). `_canPlaceIgnoring` gets the same "don't collide
+    // with myself" behaviour without ever removing the ship from the
+    // list, and `Board.reposition` commits the winning spot AT THE SAME
+    // INDEX — so a rotation, like a reshuffle, only ever animates
+    // position/rotation, never paint order.
     var r = origRow;
     var c = origCol;
     if (newHorizontal && c + spec.size > kBoardSize) {
@@ -163,26 +175,27 @@ class _PlacementScreenState extends State<PlacementScreen> {
     // actually fits, and turn there instead. Only when NOTHING on the
     // whole board can hold this orientation does the rotation actually
     // fail.
-    if (!_board.canPlace(spec, r, c, newHorizontal)) {
+    if (!_canPlaceIgnoring(kind, spec, r, c, newHorizontal)) {
       final found = findNearestRotationAnchor(
         size: spec.size,
         horizontal: newHorizontal,
         anchorRow: origRow,
         anchorCol: origCol,
-        canPlaceAt: (rr, cc) => _board.canPlace(spec, rr, cc, newHorizontal),
+        canPlaceAt: (rr, cc) =>
+            _canPlaceIgnoring(kind, spec, rr, cc, newHorizontal),
       );
       if (found != null) {
         r = found.row;
         c = found.col;
       }
     }
-    if (_board.canPlace(spec, r, c, newHorizontal)) {
-      _board.place(spec, r, c, newHorizontal);
+    if (_canPlaceIgnoring(kind, spec, r, c, newHorizontal)) {
+      _board.reposition(kind, r, c, newHorizontal);
       SoundService.instance.place();
     } else {
-      // Truly nowhere on the board can hold this orientation — put it
-      // back exactly as it was.
-      _board.place(spec, origRow, origCol, origHorizontal);
+      // Truly nowhere on the board can hold this orientation — nothing
+      // was ever removed this time, so there's nothing to put back;
+      // the ship simply stays exactly as it was.
       SoundService.instance.denied();
     }
     setState(() {});
@@ -203,12 +216,16 @@ class _PlacementScreenState extends State<PlacementScreen> {
       setState(() => _previewShip = null);
       return;
     }
-    _board.removeShip(kind);
-    if (_board.canPlace(ship.spec, r, c, ship.horizontal)) {
-      _board.place(ship.spec, r, c, ship.horizontal);
+    // Same z-order-preserving fix as `_rotateShip` above: validate with
+    // `_canPlaceIgnoring` (ignores this ship's own current cells) and
+    // commit with `Board.reposition` (same list index) instead of the
+    // old remove-then-append `removeShip` + `place` pair, so dragging an
+    // already-placed ship around the board never reorders paint order
+    // either.
+    if (_canPlaceIgnoring(kind, ship.spec, r, c, ship.horizontal)) {
+      _board.reposition(kind, r, c, ship.horizontal);
       SoundService.instance.place();
     } else {
-      _board.place(ship.spec, ship.row, ship.col, ship.horizontal);
       SoundService.instance.denied();
     }
     setState(() => _previewShip = null);
