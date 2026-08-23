@@ -924,6 +924,26 @@ class GameController extends ChangeNotifier {
         final (result, sunk) =
             boards[0].receiveShot(r, c);
 
+        // BUGFIX (duplicate-fire turn corruption): a stray repeat of a
+        // 'fire' this board already answered — most often
+        // `RelayLink._flush` resending a line whose first delivery
+        // actually landed but whose ack got lost to a timeout (the relay
+        // has no dedup; a resend after a lost ack is a real second INSERT
+        // — see `RelayLink`), occasionally a leftover from the same tap
+        // race `_fireAtCell` guards against on the sender's side.
+        // `Board.receiveShot` already refuses to hit the same cell twice,
+        // but without this check the rest of this case would still run
+        // for it: `_registerShot` would count the incoming shot a SECOND
+        // time, and because `.duplicate` isn't `.miss`, `_maybePassTurn`
+        // would read it as a hit and hand the attacker a bogus extra
+        // turn — which is exactly the "multiple fire rounds" this fixes.
+        // The real result for this cell already went out the first time
+        // it was seen, so just echo it again and stop.
+        if (result == ShotResult.duplicate) {
+          network.sendResult(r, c, result);
+          break;
+        }
+
         // Mirror the peer's reload on their on-screen cannon only for
         // hits — misses leave the gun instantly ready so the circle timer
         // never spins for a miss (matches the removed recoil animation).
@@ -954,6 +974,15 @@ class GameController extends ChangeNotifier {
         final c = msg['c'] as int;
         final result =
             ShotResult.values[msg['res'] as int];
+
+        // The echo for a stray repeat of one of OUR OWN 'fire' messages
+        // (see the matching guard in the 'fire' case above) — the real
+        // result for this cell already arrived and was applied the first
+        // time it came back. Ignore this one: registering it again would
+        // stomp `myShots[r][c]`'s already-correct value and, since
+        // `.duplicate` isn't `.miss`, be read as a hit that keeps our
+        // turn we never actually earned.
+        if (result == ShotResult.duplicate) break;
 
         PlacedShip? sunk;
         final sunkName = msg['sunk'] as String?;

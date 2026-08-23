@@ -128,7 +128,11 @@ CREATE TABLE IF NOT EXISTS match_msgs (
   sender_id  INT NOT NULL,
   body       MEDIUMTEXT NOT NULL,
   created_at DATETIME NOT NULL,
-  INDEX idx_match_seq (match_id, seq),
+  -- Covers relay_poll's own lookup (match_id + sender_id + seq) exactly,
+  -- so each iteration of its wait loop stays a fast index lookup instead
+  -- of a range scan filtered row-by-row, no matter how long a match's
+  -- history gets.
+  INDEX idx_match_sender_seq (match_id, sender_id, seq),
   CONSTRAINT fk_mm_match FOREIGN KEY (match_id)
     REFERENCES matches(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;

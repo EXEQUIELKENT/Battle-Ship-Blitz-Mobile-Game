@@ -44,6 +44,36 @@ class OnlineApi {
 
   bool get configured => baseUrl.trim().isNotEmpty;
 
+  /// One [HttpClient] reused for every call, instead of a fresh one per
+  /// request.
+  ///
+  /// `relay_poll` alone fires roughly once every few seconds for as long
+  /// as a match is running, and a new [HttpClient] each time meant a
+  /// full TCP handshake (and, over HTTPS, a TLS handshake on top of
+  /// that) paid before the request's own round trip even started — pure
+  /// added latency, and the single biggest one on the online path since
+  /// it lands on every poll and every shot fired. Keeping one client
+  /// open lets it pool a persistent connection per host and reuse it
+  /// turn after turn.
+  HttpClient? _client;
+
+  HttpClient _httpClient() => _client ??= HttpClient()
+    ..connectionTimeout = const Duration(seconds: 8)
+    // Long enough that the pooled connection survives the gap between
+    // an ordinary lobby/matchmaking call and the next one a few seconds
+    // later; a live match's own poll-then-immediately-repoll loop never
+    // goes idle long enough for this to matter.
+    ..idleTimeout = const Duration(seconds: 30);
+
+  /// Drops the pooled connection. Call when finished talking to the
+  /// server for good (see [OnlineService.dispose]) — never between
+  /// ordinary calls, which would defeat the reuse [_httpClient] exists
+  /// for.
+  void close() {
+    _client?.close(force: true);
+    _client = null;
+  }
+
   /// The endpoint URL, tolerating a base that does or doesn't already
   /// point at `api.php` and with or without a trailing slash — people
   /// paste all three shapes.
@@ -76,7 +106,7 @@ class OnlineApi {
     final payload = <String, dynamic>{'a': action, ...args};
     if (authed && token != null) payload['token'] = token;
 
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    final client = _httpClient();
     try {
       final request = await client.postUrl(_endpoint).timeout(timeout);
       request.headers.contentType =
@@ -115,9 +145,10 @@ class OnlineApi {
     } on HandshakeException {
       throw const OnlineError('Could not establish a secure connection.',
           offline: true);
-    } finally {
-      client.close(force: true);
     }
+    // Deliberately no `finally { client.close(...) }` here any more —
+    // the client outlives this single call so its connection can be
+    // pooled and reused by the next one. See [close] for real teardown.
   }
 
   String _friendly(SocketException e) {

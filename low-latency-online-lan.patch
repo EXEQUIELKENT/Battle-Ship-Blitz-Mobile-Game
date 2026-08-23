@@ -1,0 +1,172 @@
+diff --git a/lib/services/online_api.dart b/lib/services/online_api.dart
+index c4c95e3..651b773 100644
+--- a/lib/services/online_api.dart
++++ b/lib/services/online_api.dart
+@@ -44,6 +44,36 @@ class OnlineApi {
+ 
+   bool get configured => baseUrl.trim().isNotEmpty;
+ 
++  /// One [HttpClient] reused for every call, instead of a fresh one per
++  /// request.
++  ///
++  /// `relay_poll` alone fires roughly once every few seconds for as long
++  /// as a match is running, and a new [HttpClient] each time meant a
++  /// full TCP handshake (and, over HTTPS, a TLS handshake on top of
++  /// that) paid before the request's own round trip even started — pure
++  /// added latency, and the single biggest one on the online path since
++  /// it lands on every poll and every shot fired. Keeping one client
++  /// open lets it pool a persistent connection per host and reuse it
++  /// turn after turn.
++  HttpClient? _client;
++
++  HttpClient _httpClient() => _client ??= HttpClient()
++    ..connectionTimeout = const Duration(seconds: 8)
++    // Long enough that the pooled connection survives the gap between
++    // an ordinary lobby/matchmaking call and the next one a few seconds
++    // later; a live match's own poll-then-immediately-repoll loop never
++    // goes idle long enough for this to matter.
++    ..idleTimeout = const Duration(seconds: 30);
++
++  /// Drops the pooled connection. Call when finished talking to the
++  /// server for good (see [OnlineService.dispose]) — never between
++  /// ordinary calls, which would defeat the reuse [_httpClient] exists
++  /// for.
++  void close() {
++    _client?.close(force: true);
++    _client = null;
++  }
++
+   /// The endpoint URL, tolerating a base that does or doesn't already
+   /// point at `api.php` and with or without a trailing slash — people
+   /// paste all three shapes.
+@@ -76,7 +106,7 @@ class OnlineApi {
+     final payload = <String, dynamic>{'a': action, ...args};
+     if (authed && token != null) payload['token'] = token;
+ 
+-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
++    final client = _httpClient();
+     try {
+       final request = await client.postUrl(_endpoint).timeout(timeout);
+       request.headers.contentType =
+@@ -115,9 +145,10 @@ class OnlineApi {
+     } on HandshakeException {
+       throw const OnlineError('Could not establish a secure connection.',
+           offline: true);
+-    } finally {
+-      client.close(force: true);
+     }
++    // Deliberately no `finally { client.close(...) }` here any more —
++    // the client outlives this single call so its connection can be
++    // pooled and reused by the next one. See [close] for real teardown.
+   }
+ 
+   String _friendly(SocketException e) {
+diff --git a/lib/services/online_service.dart b/lib/services/online_service.dart
+index 58995b1..54f9a6d 100644
+--- a/lib/services/online_service.dart
++++ b/lib/services/online_service.dart
+@@ -713,6 +713,7 @@ class OnlineService extends ChangeNotifier {
+   @override
+   void dispose() {
+     _heartbeat?.cancel();
++    api.close();
+     super.dispose();
+   }
+ }
+diff --git a/server/api.php b/server/api.php
+index cf7443d..71980a7 100644
+--- a/server/api.php
++++ b/server/api.php
+@@ -818,6 +818,11 @@ switch ($action) {
+         $matchState = $pdo->prepare('SELECT status FROM matches WHERE id = ?');
+ 
+         $deadline = microtime(true) + (float) $config['poll_hold_seconds'];
++        // See `poll_fast_window_seconds` in config.php: check tightly for
++        // the first stretch of the wait, since that is when a live
++        // opponent's move almost always lands, then back off once it is
++        // clear this poll is just holding on an idle match.
++        $fastUntil = microtime(true) + (float) $config['poll_fast_window_seconds'];
+         $rows = [];
+         while (true) {
+             $fetch->execute([$matchId, $peerId, $since]);
+@@ -825,11 +830,9 @@ switch ($action) {
+             if ($rows || microtime(true) >= $deadline) {
+                 break;
+             }
+-            // 100ms: fast enough that a shot lands promptly (measured
+-            // end-to-end delivery is ~250ms including both round trips),
+-            // slow enough that a held connection isn't spinning the
+-            // database.
+-            usleep(100000);
++            usleep(microtime(true) < $fastUntil
++                ? (int) $config['poll_fast_interval_us']
++                : (int) $config['poll_slow_interval_us']);
+         }
+ 
+         $peerSeen->execute([$peerId]);
+diff --git a/server/config.php b/server/config.php
+index a5643a7..10b954f 100644
+--- a/server/config.php
++++ b/server/config.php
+@@ -24,6 +24,18 @@ $defaults = [
+     // comfortably under the client's own request timeout.
+     'poll_hold_seconds' => 8,
+ 
++    // How often relay_poll re-checks the database while it holds the
++    // connection open, split into two phases. During a live match a
++    // reply almost always shows up within a second or two of the poll
++    // starting — the opponent is actively taking their turn — so the
++    // FAST phase checks tightly to shave that latency down. Once the
++    // wait drags past `poll_fast_window_seconds` (nobody has moved in a
++    // while), it backs off to the gentler SLOW interval so a long-held
++    // idle connection isn't spinning the database the whole time.
++    'poll_fast_window_seconds' => 1.5,
++    'poll_fast_interval_us'    => 20000,   // 20ms during the fast phase
++    'poll_slow_interval_us'    => 100000,  // 100ms after backing off
++
+     // How long a "MATCH FOUND" prompt stays open while waiting for both
+     // captains to accept. After this with no second yes, the pairing is
+     // released and both players go back to searching.
+diff --git a/server/migrate-relay-latency.sql b/server/migrate-relay-latency.sql
+new file mode 100644
+index 0000000..80db85f
+--- /dev/null
++++ b/server/migrate-relay-latency.sql
+@@ -0,0 +1,20 @@
++-- Battleship Blitz — upgrade an existing database with a covering index
++-- for relay_poll's message lookup.
++--
++-- relay_poll filters match_msgs by (match_id, sender_id, seq) on every
++-- iteration of its wait loop, once per poll, for as long as the match
++-- runs. The original idx_match_seq only covered (match_id, seq), so
++-- MySQL/MariaDB had to walk and filter sender_id row-by-row once a
++-- match's history grew — this replaces it with an index that covers the
++-- query exactly.
++--
++-- Safe to run more than once (MariaDB 10.4+ / MySQL 8: IF NOT EXISTS /
++-- IF EXISTS on the clauses).
++--
++--   C:\xampp\mysql\bin\mysql.exe -u root < server\migrate-relay-latency.sql
++
++USE battleship_blitz;
++
++ALTER TABLE match_msgs
++  DROP INDEX IF EXISTS idx_match_seq,
++  ADD INDEX IF NOT EXISTS idx_match_sender_seq (match_id, sender_id, seq);
+diff --git a/server/schema.sql b/server/schema.sql
+index 24e01c7..2fd30ed 100644
+--- a/server/schema.sql
++++ b/server/schema.sql
+@@ -128,7 +128,11 @@ CREATE TABLE IF NOT EXISTS match_msgs (
+   sender_id  INT NOT NULL,
+   body       MEDIUMTEXT NOT NULL,
+   created_at DATETIME NOT NULL,
+-  INDEX idx_match_seq (match_id, seq),
++  -- Covers relay_poll's own lookup (match_id + sender_id + seq) exactly,
++  -- so each iteration of its wait loop stays a fast index lookup instead
++  -- of a range scan filtered row-by-row, no matter how long a match's
++  -- history gets.
++  INDEX idx_match_sender_seq (match_id, sender_id, seq),
+   CONSTRAINT fk_mm_match FOREIGN KEY (match_id)
+     REFERENCES matches(id) ON DELETE CASCADE
+ ) ENGINE=InnoDB;

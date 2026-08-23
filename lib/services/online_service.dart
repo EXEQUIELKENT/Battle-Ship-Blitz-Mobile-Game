@@ -713,6 +713,7 @@ class OnlineService extends ChangeNotifier {
   @override
   void dispose() {
     _heartbeat?.cancel();
+    api.close();
     super.dispose();
   }
 }

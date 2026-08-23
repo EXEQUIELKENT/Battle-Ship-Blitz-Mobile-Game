@@ -818,6 +818,11 @@ switch ($action) {
         $matchState = $pdo->prepare('SELECT status FROM matches WHERE id = ?');
 
         $deadline = microtime(true) + (float) $config['poll_hold_seconds'];
+        // See `poll_fast_window_seconds` in config.php: check tightly for
+        // the first stretch of the wait, since that is when a live
+        // opponent's move almost always lands, then back off once it is
+        // clear this poll is just holding on an idle match.
+        $fastUntil = microtime(true) + (float) $config['poll_fast_window_seconds'];
         $rows = [];
         while (true) {
             $fetch->execute([$matchId, $peerId, $since]);
@@ -825,11 +830,9 @@ switch ($action) {
             if ($rows || microtime(true) >= $deadline) {
                 break;
             }
-            // 100ms: fast enough that a shot lands promptly (measured
-            // end-to-end delivery is ~250ms including both round trips),
-            // slow enough that a held connection isn't spinning the
-            // database.
-            usleep(100000);
+            usleep(microtime(true) < $fastUntil
+                ? (int) $config['poll_fast_interval_us']
+                : (int) $config['poll_slow_interval_us']);
         }
 
         $peerSeen->execute([$peerId]);

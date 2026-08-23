@@ -24,6 +24,18 @@ $defaults = [
     // comfortably under the client's own request timeout.
     'poll_hold_seconds' => 8,
 
+    // How often relay_poll re-checks the database while it holds the
+    // connection open, split into two phases. During a live match a
+    // reply almost always shows up within a second or two of the poll
+    // starting — the opponent is actively taking their turn — so the
+    // FAST phase checks tightly to shave that latency down. Once the
+    // wait drags past `poll_fast_window_seconds` (nobody has moved in a
+    // while), it backs off to the gentler SLOW interval so a long-held
+    // idle connection isn't spinning the database the whole time.
+    'poll_fast_window_seconds' => 1.5,
+    'poll_fast_interval_us'    => 20000,   // 20ms during the fast phase
+    'poll_slow_interval_us'    => 100000,  // 100ms after backing off
+
     // How long a "MATCH FOUND" prompt stays open while waiting for both
     // captains to accept. After this with no second yes, the pairing is
     // released and both players go back to searching.

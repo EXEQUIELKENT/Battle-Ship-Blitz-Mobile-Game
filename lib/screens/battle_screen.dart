@@ -586,8 +586,22 @@ class _BattleScreenState extends State<BattleScreen>
     // Block only on THIS gun's own ball still being airborne. Blocking on
     // "any ball anywhere" would make chaos mode unplayable, since the
     // opponent has a ball in the air a good part of the time.
+    //
+    // BUGFIX (online/LAN duplicate- and rapid-fire race): `visible` only
+    // tracks the ball's fixed-duration flight animation (`_projDuration`,
+    // 750ms) — it says nothing about whether the TRUE result of that shot
+    // has actually come back over the network yet (see
+    // `_tryResolveImpact`). On a fast connection the animation routinely
+    // finishes before that reply lands, and for the moment in between,
+    // this guard alone reopened firing: a second tap could get a `fire`
+    // out — sometimes at the very same cell, since `tracking[r][c]` isn't
+    // set until that first result arrives either — before the shot it was
+    // meant to follow had actually been confirmed. `pendingCell` stays set
+    // for exactly as long as a shot is genuinely outstanding (it's only
+    // cleared once `_tryResolveImpact` finds the real result), so checking
+    // it too closes that window instead of just narrowing it.
     final proj = byP1 ? _projP1 : _projP2;
-    if (proj.visible) return;
+    if (proj.visible || proj.pendingCell != null) return;
     final tracking = byP1 ? controller.myShots : controller.p2Shots;
     if (tracking[r][c] != 0) {
       // No pop-up reminder for this — an already-tried cell simply
@@ -1404,7 +1418,18 @@ class _BattleScreenState extends State<BattleScreen>
       // shared-screen rule below would have made it one on the opponent's
       // "turn", letting you fire at your own fleet.
       final myTurn = _chaos || !_p2Active;
-      gridFirable = !halfIsP1 && inBattle && myTurn && !_projP1.visible;
+      // See the matching guard in `_fireAtCell`: `!_projP1.visible` alone
+      // reopens the grid the instant the ball's flight animation ends,
+      // which on a fast connection can be before the real result of that
+      // very shot has come back from the peer. Requiring
+      // `pendingCell == null` too keeps it genuinely locked until the
+      // shot is actually resolved, closing the same duplicate/rapid-fire
+      // race this enables.
+      gridFirable = !halfIsP1 &&
+          inBattle &&
+          myTurn &&
+          !_projP1.visible &&
+          _projP1.pendingCell == null;
     } else {
       // Shared screen: the active player fires at the other half, whether
       // that other player is a human sitting opposite or the AI.
