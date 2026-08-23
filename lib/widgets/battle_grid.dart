@@ -74,6 +74,10 @@ class BattleGrid extends StatefulWidget {
   /// shows exactly where the shot is headed until it hits the grid.
   final List<int>? aimCell;
 
+  /// The equipped cannon skin ID — used to draw a unique crosshair
+  /// design that matches the cannon's theme and identity.
+  final String? cannonSkinId;
+
   /// Placement-mode interactions.
   final void Function(ShipKind kind, int newRow, int newCol)? onShipDragEnd;
   final void Function(ShipKind kind)? onShipTap;
@@ -106,7 +110,7 @@ class BattleGrid extends StatefulWidget {
   /// `PlacementScreen._runRandomize`.
   final bool animateEntrance;
 
-  const BattleGrid({
+const BattleGrid({
     super.key,
     required this.shots,
     this.ships,
@@ -122,6 +126,7 @@ class BattleGrid extends StatefulWidget {
     this.previewShip,
     this.previewValid = true,
     this.aimCell,
+    this.cannonSkinId,
     this.onShipDragEnd,
     this.onShipTap,
     this.onShipDragUpdate,
@@ -134,6 +139,10 @@ class BattleGrid extends StatefulWidget {
   /// screen so the RANDOM deal can visibly slide ships in from the dock
   /// tray above the board instead of popping in from just underneath it.
   final bool clip;
+
+  /// The equipped cannon skin ID — used to draw a unique crosshair
+  /// design that matches the cannon's theme and identity.
+  final String? cannonSkinId;
 
   @override
   State<BattleGrid> createState() => _BattleGridState();
@@ -971,8 +980,9 @@ class _RotateArrow extends StatelessWidget {
 class _Crosshair extends StatefulWidget {
   final double cell;
   final List<int>? target;
+  final String? cannonSkinId;
 
-  const _Crosshair({required this.cell, required this.target});
+  const _Crosshair({required this.cell, required this.target, this.cannonSkinId});
 
   @override
   State<_Crosshair> createState() => _CrosshairState();
@@ -1001,24 +1011,21 @@ class _CrosshairState extends State<_Crosshair> {
     final visible = widget.target != null;
     final r = visible ? widget.target![0] : _lastTarget[0];
     final c = visible ? widget.target![1] : _lastTarget[1];
+    // Exactly fill the allocated cell (c*cell, r*cell, size=cell) and
+    // keep the painter's brackets flush to the cell border so the
+    // reticle reads as cell-filling and its centre stays at
+    // c*cell+cell/2 / r*cell+cell/2 — no half-grid-line drift.
     final size = cell;
     // BUGFIX: `AnimatedPositioned` (like `Positioned`) is a
-    // ParentDataWidget for `Stack` — its render-tree PARENT must be the
-    // Stack itself, with nothing else that creates its own RenderObject
-    // in between. `_Crosshair` (a StatelessWidget-like State build) is
-    // transparent so that's fine, but `IgnorePointer` is NOT transparent —
-    // it has its own RenderObject. Wrapping `AnimatedPositioned` INSIDE
-    // `IgnorePointer` (the original version of this code) put
-    // RenderIgnorePointer between the Stack and the Positioned data,
-    // which crashes with "type 'ParentData' is not a subtype of type
-    // 'StackParentData'" the moment it mounts. AnimatedPositioned must be
-    // the OUTERMOST widget returned here; IgnorePointer belongs nested
-    // inside its `child`, where it's just an ordinary descendant.
+    // ParentDataWidget for `Stack` — its parent must be the Stack
+    // itself. `IgnorePointer` has its own RenderObject, so
+    // AnimatedPositioned must be outermost; IgnorePointer belongs
+    // inside its child.
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
-      left: c * cell + cell / 2 - size / 2,
-      top: r * cell + cell / 2 - size / 2,
+      left: c * cell,
+      top: r * cell,
       width: size,
       height: size,
       child: IgnorePointer(
@@ -1031,11 +1038,47 @@ class _CrosshairState extends State<_Crosshair> {
             duration: const Duration(milliseconds: 150),
             // The enclosing AnimatedPositioned already fixes this to a
             // `size × size` tight box, so CustomPaint just fills it.
-            child: const CustomPaint(painter: _CrosshairPainter()),
+            child: CustomPaint(painter: _crosshairPainterFor(widget.cannonSkinId)),
           ),
         ),
       ),
     );
+  }
+}
+
+CustomPainter _crosshairPainterFor(String? cannonSkinId) {
+  switch (cannonSkinId) {
+    case 'inferno':
+      return const _InfernoCrosshairPainter();
+    case 'tesla':
+      return const _TeslaCrosshairPainter();
+    case 'venom':
+      return const _VenomCrosshairPainter();
+    case 'royal':
+      return const _RoyalCrosshairPainter();
+    case 'phantom':
+      return const _PhantomCrosshairPainter();
+    case 'kraken':
+      return const _KrakenCrosshairPainter();
+    case 'sunfire':
+      return const _SunfireCrosshairPainter();
+    case 'void':
+      return const _VoidCrosshairPainter();
+    case 'f_pirate':
+      return const _PirateCrosshairPainter();
+    case 'f_naval':
+      return const _NavalCrosshairPainter();
+    case 'f_steam':
+      return const _SteamCrosshairPainter();
+    case 'f_arctic':
+      return const _ArcticCrosshairPainter();
+    case 'f_volcanic':
+      return const _VolcanicCrosshairPainter();
+    case 'f_scifi':
+      return const _ScifiCrosshairPainter();
+    case 'mk1':
+    default:
+      return const _CrosshairPainter();
   }
 }
 
@@ -1046,8 +1089,12 @@ class _CrosshairPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final s = size.width;
     final center = Offset(s / 2, s / 2);
-    final bracketLen = s * 0.30;
-    final inset = s * 0.13; // gap between the center and each bracket corner
+    // Fill the cell: brackets sit flush with the cell border (tiny
+    // inset only for the stroke cap so the paint isn't hard-clipped)
+    // so the reticle reads as cell-filling and the centre dot stays
+    // exactly at c*cell+cell/2 / r*cell+cell/2.
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
     final d = s / 2 - inset;
 
     // PERF: this used a `MaskFilter.blur` for a soft halo. Blur is one of
@@ -1086,8 +1133,9 @@ class _CrosshairPainter extends CustomPainter {
     bracket(center + Offset(-d, d), right, up); // bottom-left
     bracket(center + Offset(d, d), left, up); // bottom-right
 
-    // Thin center cross.
-    final crossLen = s * 0.11;
+    // Thin center cross — scaled to remain proportional when the
+    // brackets now reach the cell edges.
+    final crossLen = s * 0.14;
     canvas.drawLine(
       center - Offset(crossLen, 0),
       center + Offset(crossLen, 0),
@@ -1105,6 +1153,920 @@ class _CrosshairPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CrosshairPainter oldDelegate) => false;
+}
+
+/// Inferno Cannon — fire brackets with ember glow
+class _InfernoCrosshairPainter extends CustomPainter {
+  const _InfernoCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFFEF4444).withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFFFBBF24)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final accent = Paint()
+      ..color = const Color(0xFFEF4444)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Flame tips
+      canvas.drawCircle(p1, s * 0.03, Paint()..color = const Color(0xFFFBBF24));
+      canvas.drawCircle(p2, s * 0.03, Paint()..color = const Color(0xFFFBBF24));
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), accent);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), accent);
+    canvas.drawCircle(center, s * 0.035, Paint()..color = const Color(0xFFFBBF24));
+  }
+  @override
+  bool shouldRepaint(covariant _InfernoCrosshairPainter oldDelegate) => false;
+}
+
+/// Tesla Coilgun — electric arc brackets with cyan glow
+class _TeslaCrosshairPainter extends CustomPainter {
+  const _TeslaCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFF22D3EE).withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF0E7490)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final arc = Paint()
+      ..color = const Color(0xFF22D3EE)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.03
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Electric arc zigzag
+      final mid1 = corner + toward1 * (bracketLen * 0.5);
+      final mid2 = corner + toward2 * (bracketLen * 0.5);
+      canvas.drawLine(mid1, mid1 + toward1 * (s * 0.05), arc);
+      canvas.drawLine(mid2, mid2 + toward2 * (s * 0.05), arc);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), arc);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), arc);
+    canvas.drawCircle(center, s * 0.028, Paint()..color = const Color(0xFF22D3EE));
+    // Center ring
+    canvas.drawCircle(center, s * 0.06, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.02 ..color = const Color(0xFF22D3EE).withValues(alpha: 0.5));
+  }
+  @override
+  bool shouldRepaint(covariant _TeslaCrosshairPainter oldDelegate) => false;
+}
+
+/// Venom Launcher — toxic green brackets with poison drip
+class _VenomCrosshairPainter extends CustomPainter {
+  const _VenomCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFF84CC16).withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF365314)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final accent = Paint()
+      ..color = const Color(0xFF84CC16)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Toxic drips
+      canvas.drawCircle(p1 + toward1 * (s * 0.04), s * 0.02, Paint()..color = const Color(0xFF84CC16));
+      canvas.drawCircle(p2 + toward2 * (s * 0.04), s * 0.02, Paint()..color = const Color(0xFF84CC16));
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), accent);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), accent);
+    // Biohazard center
+    canvas.drawCircle(center, s * 0.035, Paint()..color = const Color(0xFF84CC16));
+    canvas.drawCircle(center, s * 0.06, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.02 ..color = const Color(0xFF365314));
+  }
+  @override
+  bool shouldRepaint(covariant _VenomCrosshairPainter oldDelegate) => false;
+}
+
+/// Royal Broadside — gold ornate brackets with regal trim
+class _RoyalCrosshairPainter extends CustomPainter {
+  const _RoyalCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFFFBBF24).withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF78350F)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final gold = Paint()
+      ..color = const Color(0xFFFBBF24)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Ornate tips
+      canvas.drawLine(p1, p1 + toward1 * (s * 0.06), gold);
+      canvas.drawLine(p2, p2 + toward2 * (s * 0.06), gold);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), gold);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), gold);
+    // Crown center
+    canvas.drawCircle(center, s * 0.035, Paint()..color = const Color(0xFFFBBF24));
+    canvas.drawCircle(center, s * 0.07, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.02 ..color = const Color(0xFF78350F));
+  }
+  @override
+  bool shouldRepaint(covariant _RoyalCrosshairPainter oldDelegate) => false;
+}
+
+/// Phantom Railgun — purple ghostly brackets with ethereal glow
+class _PhantomCrosshairPainter extends CustomPainter {
+  const _PhantomCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFFC084FC).withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF312E81)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final phantom = Paint()
+      ..color = const Color(0xFFC084FC)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      // Dashed phantom lines
+      final dash = Paint()
+        ..color = const Color(0xFFC084FC)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = s * 0.035
+        ..strokeCap = StrokeCap.round;
+      _drawDashedLine(canvas, corner, p1, dash, s * 0.04);
+      _drawDashedLine(canvas, corner, p2, dash, s * 0.04);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    final dash = Paint()
+      ..color = const Color(0xFFC084FC)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+    _drawDashedLine(canvas, center - Offset(crossLen, 0), center + Offset(crossLen, 0), dash, s * 0.04);
+    _drawDashedLine(canvas, center - Offset(0, crossLen), center + Offset(0, crossLen), dash, s * 0.04);
+    canvas.drawCircle(center, s * 0.03, Paint()..color = const Color(0xFFC084FC).withValues(alpha: 0.8));
+    canvas.drawCircle(center, s * 0.08, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.015 ..color = const Color(0xFFC084FC).withValues(alpha: 0.4));
+  }
+
+  void _drawDashedLine(Canvas canvas, Offset start, Offset end, Paint paint, double dashLength) {
+    final distance = (end - start).distance;
+    final count = (distance / (dashLength * 2)).floor();
+    for (int i = 0; i < count; i++) {
+      final t1 = (i * 2 * dashLength) / distance;
+      final t2 = ((i * 2 + 1) * dashLength) / distance;
+      if (t2 > 1) break;
+      canvas.drawLine(
+        Offset.lerp(start, end, t1)!,
+        Offset.lerp(start, end, t2)!,
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PhantomCrosshairPainter oldDelegate) => false;
+}
+
+/// Kraken Cannon — deep sea teal brackets with tentacle tips
+class _KrakenCrosshairPainter extends CustomPainter {
+  const _KrakenCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFF5EEAD4).withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF0F766E)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final tentacle = Paint()
+      ..color = const Color(0xFF5EEAD4)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.03
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Tentacle curl
+      _drawTentacle(canvas, p1, toward1, tentacle, s);
+      _drawTentacle(canvas, p2, toward2, tentacle, s);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), tentacle);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), tentacle);
+    canvas.drawCircle(center, s * 0.035, Paint()..color = const Color(0xFF5EEAD4));
+    canvas.drawCircle(center, s * 0.07, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.015 ..color = const Color(0xFF0F766E));
+  }
+
+  void _drawTentacle(Canvas canvas, Offset start, Offset direction, Paint paint, double s) {
+    final curve = start + direction * (s * 0.05);
+    final end = start + direction * (s * 0.08);
+    canvas.drawLine(start, curve, paint);
+    canvas.drawLine(curve, end, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _KrakenCrosshairPainter oldDelegate) => false;
+}
+
+/// Sunfire Battery — golden solar brackets with radiant spikes
+class _SunfireCrosshairPainter extends CustomPainter {
+  const _SunfireCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFFFDE047).withValues(alpha: 0.4)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFFB45309)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final solar = Paint()
+      ..color = const Color(0xFFFDE047)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.03
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Solar flare spikes
+      _drawSpike(canvas, p1, toward1, solar, s);
+      _drawSpike(canvas, p2, toward2, solar, s);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), solar);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), solar);
+    // Sun center with rays
+    canvas.drawCircle(center, s * 0.04, Paint()..color = const Color(0xFFFDE047));
+    for (int i = 0; i < 8; i++) {
+      final angle = i * (3.14159 / 4);
+      final dir = Offset(cos(angle), sin(angle));
+      canvas.drawLine(center + dir * (s * 0.06), center + dir * (s * 0.1), solar);
+    }
+  }
+
+  void _drawSpike(Canvas canvas, Offset start, Offset direction, Paint paint, double s) {
+    canvas.drawLine(start, start + direction * (s * 0.08), paint);
+    canvas.drawLine(start + direction * (s * 0.08), start + direction * (s * 0.04) + direction.rotate(-0.3) * (s * 0.03), paint);
+    canvas.drawLine(start + direction * (s * 0.08), start + direction * (s * 0.04) + direction.rotate(0.3) * (s * 0.03), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SunfireCrosshairPainter oldDelegate) => false;
+}
+
+/// Void Annihilator — dark matter brackets with pink void energy
+class _VoidCrosshairPainter extends CustomPainter {
+  const _VoidCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFFEC4899).withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF111827)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final voidPaint = Paint()
+      ..color = const Color(0xFFEC4899)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Void particles
+      canvas.drawCircle(p1, s * 0.025, Paint()..color = const Color(0xFFEC4899).withValues(alpha: 0.8));
+      canvas.drawCircle(p2, s * 0.025, Paint()..color = const Color(0xFFEC4899).withValues(alpha: 0.8));
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), voidPaint);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), voidPaint);
+    // Void center - black hole with pink ring
+    canvas.drawCircle(center, s * 0.03, Paint()..color = const Color(0xFF111827));
+    canvas.drawCircle(center, s * 0.06, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.025 ..color = const Color(0xFFEC4899));
+    canvas.drawCircle(center, s * 0.09, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.015 ..color = const Color(0xFFEC4899).withValues(alpha: 0.3));
+  }
+  @override
+  bool shouldRepaint(covariant _VoidCrosshairPainter oldDelegate) => false;
+}
+
+/// Pirate Bell-Mouth — wooden bracket ends with bronze bell flares
+class _PirateCrosshairPainter extends CustomPainter {
+  const _PirateCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFFC98A3E).withValues(alpha: 0.3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF8A5A2B)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final bronze = Paint()
+      ..color = const Color(0xFFC98A3E)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Bell flare
+      _drawBellFlare(canvas, p1, toward1, bronze, s);
+      _drawBellFlare(canvas, p2, toward2, bronze, s);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), bronze);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), bronze);
+    // Crossed cutlasses center
+    canvas.drawLine(center - Offset(s * 0.05, s * 0.05), center + Offset(s * 0.05, s * 0.05), bronze);
+    canvas.drawLine(center - Offset(s * 0.05, -s * 0.05), center + Offset(s * 0.05, -s * 0.05), bronze);
+    canvas.drawCircle(center, s * 0.02, Paint()..color = const Color(0xFFC98A3E));
+  }
+
+  void _drawBellFlare(Canvas canvas, Offset start, Offset direction, Paint paint, double s) {
+    final flareWidth = s * 0.05;
+    final flareLen = s * 0.05;
+    final perp = Offset(-direction.dy, direction.dx);
+    canvas.drawLine(start, start + direction * flareLen, paint);
+    canvas.drawLine(start + direction * flareLen + perp * flareWidth, start + direction * flareLen - perp * flareWidth, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PirateCrosshairPainter oldDelegate) => false;
+}
+
+/// Naval MK-IV — precision military brackets with range markings
+class _NavalCrosshairPainter extends CustomPainter {
+  const _NavalCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFF8CA0AD).withValues(alpha: 0.3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF5A6B78)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final mark = Paint()
+      ..color = const Color(0xFF8CA0AD)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.025
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Range tick marks
+      for (int i = 1; i <= 3; i++) {
+        final pos = corner + toward1 * (bracketLen * i / 4);
+        final perp = Offset(-toward1.dy, toward1.dx);
+        canvas.drawLine(pos - perp * (s * 0.02), pos + perp * (s * 0.02), mark);
+      }
+      for (int i = 1; i <= 3; i++) {
+        final pos = corner + toward2 * (bracketLen * i / 4);
+        final perp = Offset(-toward2.dy, toward2.dx);
+        canvas.drawLine(pos - perp * (s * 0.02), pos + perp * (s * 0.02), mark);
+      }
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), mark);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), mark);
+    // Range rings
+    canvas.drawCircle(center, s * 0.04, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.02 ..color = const Color(0xFF8CA0AD));
+    canvas.drawCircle(center, s * 0.07, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.015 ..color = const Color(0xFF8CA0AD).withValues(alpha: 0.5));
+    canvas.drawCircle(center, s * 0.02, Paint()..color = const Color(0xFF8CA0AD));
+  }
+  @override
+  bool shouldRepaint(covariant _NavalCrosshairPainter oldDelegate) => false;
+}
+
+/// Steam Pressure Battery — brass brackets with pressure gauges
+class _SteamCrosshairPainter extends CustomPainter {
+  const _SteamCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFFC99A3F).withValues(alpha: 0.35)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF7A5A34)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final brass = Paint()
+      ..color = const Color(0xFFC99A3F)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Pressure gauge
+      _drawGauge(canvas, p1, brass, s);
+      _drawGauge(canvas, p2, brass, s);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), brass);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), brass);
+    // Gear center
+    canvas.drawCircle(center, s * 0.04, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.025 ..color = const Color(0xFFC99A3F));
+    for (int i = 0; i < 8; i++) {
+      final angle = i * (3.14159 / 4);
+      final dir = Offset(cos(angle), sin(angle));
+      canvas.drawLine(center + dir * (s * 0.045), center + dir * (s * 0.07), brass);
+    }
+  }
+
+  void _drawGauge(Canvas canvas, Offset pos, Paint paint, double s) {
+    canvas.drawCircle(pos, s * 0.025, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.02 ..color = paint.color);
+    canvas.drawLine(pos, pos + Offset(0, -s * 0.025), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SteamCrosshairPainter oldDelegate) => false;
+}
+
+/// Arctic Icebreaker — ice crystal brackets with frost vapor
+class _ArcticCrosshairPainter extends CustomPainter {
+  const _ArcticCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFF7DD3FC).withValues(alpha: 0.4)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFFC8DCE6)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final ice = Paint()
+      ..color = const Color(0xFF7DD3FC)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.03
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Ice crystals
+      _drawCrystal(canvas, p1, ice, s);
+      _drawCrystal(canvas, p2, ice, s);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), ice);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), ice);
+    // Snowflake center
+    canvas.drawCircle(center, s * 0.03, Paint()..color = const Color(0xFF7DD3FC));
+    for (int i = 0; i < 6; i++) {
+      final angle = i * (3.14159 / 3);
+      final dir = Offset(cos(angle), sin(angle));
+      canvas.drawLine(center, center + dir * (s * 0.07), ice);
+      canvas.drawLine(center + dir * (s * 0.04), center + dir * (s * 0.04) + dir.rotate(0.5) * (s * 0.02), ice);
+      canvas.drawLine(center + dir * (s * 0.04), center + dir * (s * 0.04) + dir.rotate(-0.5) * (s * 0.02), ice);
+    }
+  }
+
+  void _drawCrystal(Canvas canvas, Offset pos, Paint paint, double s) {
+    canvas.drawLine(pos - Offset(s * 0.02, 0), pos + Offset(s * 0.02, 0), paint);
+    canvas.drawLine(pos - Offset(0, s * 0.02), pos + Offset(0, s * 0.02), paint);
+    canvas.drawLine(pos - Offset(s * 0.014, s * 0.014), pos + Offset(s * 0.014, s * 0.014), paint);
+    canvas.drawLine(pos - Offset(s * 0.014, -s * 0.014), pos + Offset(s * 0.014, -s * 0.014), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ArcticCrosshairPainter oldDelegate) => false;
+}
+
+/// Volcanic Magma Bombard — basalt brackets with ember glow
+class _VolcanicCrosshairPainter extends CustomPainter {
+  const _VolcanicCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFFFF6A2B).withValues(alpha: 0.4)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF3A3438)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final magma = Paint()
+      ..color = const Color(0xFFFF6A2B)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.035
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Ember particles
+      canvas.drawCircle(p1, s * 0.025, Paint()..color = const Color(0xFFFF6A2B).withValues(alpha: 0.9));
+      canvas.drawCircle(p2, s * 0.025, Paint()..color = const Color(0xFFFF6A2B).withValues(alpha: 0.9));
+      canvas.drawCircle(p1 + toward1 * (s * 0.04), s * 0.015, Paint()..color = const Color(0xFFFFB454));
+      canvas.drawCircle(p2 + toward2 * (s * 0.04), s * 0.015, Paint()..color = const Color(0xFFFFB454));
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), magma);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), magma);
+    // Crater center
+    canvas.drawCircle(center, s * 0.04, Paint()..color = const Color(0xFF332B2E));
+    canvas.drawCircle(center, s * 0.03, Paint()..color = const Color(0xFFFF6A2B));
+    canvas.drawCircle(center, s * 0.06, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.02 ..color = const Color(0xFFFF6A2B).withValues(alpha: 0.5));
+  }
+  @override
+  bool shouldRepaint(covariant _VolcanicCrosshairPainter oldDelegate) => false;
+}
+
+/// Sci-Fi Ion Lance — holographic brackets with energy field
+class _ScifiCrosshairPainter extends CustomPainter {
+  const _ScifiCrosshairPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final center = Offset(s / 2, s / 2);
+    final bracketLen = s * 0.32;
+    final inset = s * 0.02;
+    final d = s / 2 - inset;
+    final glow = Paint()
+      ..color = const Color(0xFF6FE7FF).withValues(alpha: 0.4)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.12
+      ..strokeCap = StrokeCap.round;
+    final stroke = Paint()
+      ..color = const Color(0xFF2B3550)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.055
+      ..strokeCap = StrokeCap.round;
+    final ion = Paint()
+      ..color = const Color(0xFF6FE7FF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.03
+      ..strokeCap = StrokeCap.round;
+
+    void bracket(Offset corner, Offset toward1, Offset toward2) {
+      final p1 = corner + toward1 * bracketLen;
+      final p2 = corner + toward2 * bracketLen;
+      canvas.drawLine(corner, p1, glow);
+      canvas.drawLine(corner, p2, glow);
+      canvas.drawLine(corner, p1, stroke);
+      canvas.drawLine(corner, p2, stroke);
+      // Holographic corners
+      _drawHoloCorner(canvas, p1, toward1, ion, s);
+      _drawHoloCorner(canvas, p2, toward2, ion, s);
+    }
+
+    const right = Offset(1, 0);
+    const left = Offset(-1, 0);
+    const down = Offset(0, 1);
+    const up = Offset(0, -1);
+    bracket(center + Offset(-d, -d), right, down);
+    bracket(center + Offset(d, -d), left, down);
+    bracket(center + Offset(-d, d), right, up);
+    bracket(center + Offset(d, d), left, up);
+
+    final crossLen = s * 0.14;
+    canvas.drawLine(center - Offset(crossLen, 0), center + Offset(crossLen, 0), ion);
+    canvas.drawLine(center - Offset(0, crossLen), center + Offset(0, crossLen), ion);
+    // Ion center - floating segments
+    canvas.drawCircle(center, s * 0.025, Paint()..color = const Color(0xFF6FE7FF));
+    canvas.drawCircle(center, s * 0.05, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.02 ..color = const Color(0xFF6FE7FF));
+    canvas.drawCircle(center, s * 0.08, Paint()..style = PaintingStyle.stroke ..strokeWidth = s * 0.015 ..color = const Color(0xFF6FE7FF).withValues(alpha: 0.3));
+    // Forked emitter
+    canvas.drawLine(center - Offset(s * 0.03, 0), center + Offset(s * 0.03, 0), ion..strokeWidth = s * 0.025);
+    canvas.drawLine(center, center + Offset(0, -s * 0.04), ion..strokeWidth = s * 0.025);
+  }
+
+  void _drawHoloCorner(Canvas canvas, Offset pos, Offset direction, Paint paint, double s) {
+    final len = s * 0.04;
+    final perp = Offset(-direction.dy, direction.dx);
+    canvas.drawLine(pos, pos + direction * len, paint);
+    canvas.drawLine(pos, pos + perp * len, paint);
+    canvas.drawLine(pos + direction * len, pos + direction * len + perp * (len * 0.5), paint);
+    canvas.drawLine(pos + perp * len, pos + perp * len + direction * (len * 0.5), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScifiCrosshairPainter oldDelegate) => false;
 }
 
 /// Background, gridlines, the placement preview, and every PERSISTENT

@@ -2056,12 +2056,31 @@ class _BattleScreenState extends State<BattleScreen>
     return Container(
       color: Colors.transparent,
       alignment: Alignment.center,
-      child: NeonButton(
-        label: 'CONTINUE',
-        icon: Icons.arrow_forward,
-        color: AppColors.seafoam,
-        compact: true,
-        onPressed: _goToResult,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.45),
+              blurRadius: 18,
+              spreadRadius: 1,
+              offset: const Offset(0, 6),
+            ),
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.28),
+              blurRadius: 32,
+              spreadRadius: 2,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: NeonButton(
+          label: 'CONTINUE',
+          icon: Icons.arrow_forward,
+          color: AppColors.seafoam,
+          compact: true,
+          onPressed: _goToResult,
+        ),
       ),
     );
   }

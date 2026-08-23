@@ -805,7 +805,7 @@ class _ManagedPool {
       } catch (_) {/* we only care that it's finished, not how */}
     }
     final setupCompleter = Completer<void>();
-    _setupDone[player] = setupCompleter;
+    _setupDone[player] = setupCompleter.future;
 
     late final StreamSubscription<void> sub;
     late final Timer safety;

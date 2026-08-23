@@ -297,15 +297,24 @@ class GameController extends ChangeNotifier {
       return ShotResult.duplicate;
     }
 
-    cooldown1 = cooldownMax1;
-
     if (mode == GameMode.hotspot || mode == GameMode.online) {
+      // Cooldown is only for confirmed hits — starting it now and the
+      // real result turns out to be a miss would leave the circle timer
+      // spinning for nothing. The 'result' handler will start it if
+      // needed once the true outcome is known.
       network.sendFire(r, c);
       notifyListeners();
       return ShotResult.hit;
     }
 
     final (result, sunk) = boards[1].receiveShot(r, c);
+    // Only a hit/sunk puts the gun into reload; a miss leaves it
+    // instantly ready so the circle timer never appears for a miss.
+    if (result == ShotResult.hit || result == ShotResult.sunk) {
+      cooldown1 = cooldownMax1;
+    } else {
+      cooldown1 = 0;
+    }
     _registerShot(
       shooterIsP1: true,
       r: r,
@@ -336,9 +345,12 @@ class GameController extends ChangeNotifier {
       return ShotResult.duplicate;
     }
 
-    cooldown2 = cooldownMax2;
-
     final (result, sunk) = boards[0].receiveShot(r, c);
+    if (result == ShotResult.hit || result == ShotResult.sunk) {
+      cooldown2 = cooldownMax2;
+    } else {
+      cooldown2 = 0;
+    }
     _registerShot(
       shooterIsP1: false,
       r: r,
@@ -856,7 +868,13 @@ class GameController extends ChangeNotifier {
       _aiShotPending = false;
 
       if (phase == BattlePhase.battling) {
-        cooldown2 = cooldownMax2;
+        // Only hits keep the gun in reload; misses leave the circle timer
+        // hidden so it matches the removed recoil animation.
+        if (result == ShotResult.hit || result == ShotResult.sunk) {
+          cooldown2 = cooldownMax2;
+        } else {
+          cooldown2 = 0;
+        }
         notifyListeners();
       }
     });
@@ -906,14 +924,14 @@ class GameController extends ChangeNotifier {
         final (result, sunk) =
             boards[0].receiveShot(r, c);
 
-        // Mirror the peer's reload on their on-screen cannon. Purely
-        // cosmetic — nothing gates on `cooldown2` in a network match (the
-        // peer enforces its own) — but without it the opponent's cooldown
-        // ring sits permanently full, which reads as "they can fire
-        // forever". That's most obvious in chaos mode, where both cannons
-        // are visible and firing at once and the ring is the only cue for
-        // when the next incoming shot is due.
-        cooldown2 = cooldownMax2;
+        // Mirror the peer's reload on their on-screen cannon only for
+        // hits — misses leave the gun instantly ready so the circle timer
+        // never spins for a miss (matches the removed recoil animation).
+        if (result == ShotResult.hit || result == ShotResult.sunk) {
+          cooldown2 = cooldownMax2;
+        } else {
+          cooldown2 = 0;
+        }
 
         network.sendResult(
           r,
@@ -957,6 +975,12 @@ class GameController extends ChangeNotifier {
           }
         }
 
+        // Apply reload only on hits; misses clear the circle timer.
+        if (result == ShotResult.hit || result == ShotResult.sunk) {
+          cooldown1 = cooldownMax1;
+        } else {
+          cooldown1 = 0;
+        }
         _registerShot(
           shooterIsP1: true,
           r: r,

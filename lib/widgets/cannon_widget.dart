@@ -361,19 +361,24 @@ class CannonPainter extends CustomPainter {
           rp - Offset(outerR * 0.01, outerR * 0.01), outerR * 0.014, rivetShine);
     }
 
-    // Cooldown sweep arc over the accent ring
-    final arcPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.55)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = outerR * 0.16
-      ..strokeCap = StrokeCap.round;
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: outerR * 0.84),
-      -math.pi / 2,
-      2 * math.pi * cooldown,
-      false,
-      arcPaint,
-    );
+    // Cooldown sweep arc over the accent ring — only visible while
+    // actually reloading. When a shot misses the gun stays instantly
+    // ready (cooldown 1.0) and the circle timer is hidden entirely so
+    // the miss produces no reload visuals at all.
+    if (cooldown < 0.999) {
+      final arcPaint = Paint()
+        ..color = Colors.white.withValues(alpha: 0.55)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = outerR * 0.16
+        ..strokeCap = StrokeCap.round;
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: outerR * 0.84),
+        -math.pi / 2,
+        2 * math.pi * cooldown,
+        false,
+        arcPaint,
+      );
+    }
 
     // ----- Naval cannon barrel -----
     // REDESIGN: the old cannon was a short, stubby round dome with a
@@ -856,21 +861,25 @@ class CannonPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = trackW,
     );
-    canvas.drawArc(
-      Rect.fromCircle(center: mountCenter, radius: sweepR),
-      -math.pi / 2,
-      2 * math.pi * cooldown,
-      false,
-      Paint()
-        // Charging runs the family's trim up to its glow, so the
-        // platform brightens as the gun comes back online instead of
-        // just filling in.
-        ..color = Color.lerp(fam.gun.trim, fam.gun.glow, cooldown)!
-            .withValues(alpha: ready ? 0.95 : 0.72)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = trackW * 0.72
-        ..strokeCap = StrokeCap.round,
-    );
+    // Sweep arc only while reloading — misses leave the gun at 1.0
+    // and show no moving timer, matching the removed recoil animation.
+    if (cooldown < 0.999) {
+      canvas.drawArc(
+        Rect.fromCircle(center: mountCenter, radius: sweepR),
+        -math.pi / 2,
+        2 * math.pi * cooldown,
+        false,
+        Paint()
+          // Charging runs the family's trim up to its glow, so the
+          // platform brightens as the gun comes back online instead of
+          // just filling in.
+          ..color = Color.lerp(fam.gun.trim, fam.gun.glow, cooldown)!
+              .withValues(alpha: ready ? 0.95 : 0.72)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = trackW * 0.72
+          ..strokeCap = StrokeCap.round,
+      );
+    }
 
     canvas.save();
     // The whole gun kicks back, exactly as the standard barrel does.
