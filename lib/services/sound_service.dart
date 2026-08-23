@@ -50,6 +50,22 @@ import 'package:flutter/services.dart';
 ///    note on [_ManagedPool] for why on-demand growth was tried and made
 ///    things worse on real phones), with a timeout-based safety net so a
 ///    stuck player can never be lost for good.
+///
+/// 3. **Reused-player race during fast-paced gameplay.** Even with (1) and
+///    (2) fixed, effects were STILL reported as inconsistently cut off or
+///    silent specifically during active play (hit streaks, multiple
+///    LAN/BLITZ shooters) — i.e. exactly when a pool's fixed players get
+///    reused most often. Two bugs compounded here too: every effect shared
+///    ONE flat, worst-case-sized busy-timeout, so short/frequent effects
+///    (`cannon_fire`, `hit`, `miss`) sat "busy" 3-5x longer than their
+///    actual clip and hit the reuse path far more than their real overlap
+///    needed; and reuse itself didn't wait for a still-in-flight previous
+///    checkout's own `stop`/`resume` calls to finish before dispatching
+///    its own on the same physical player, so two calls could genuinely
+///    race on one player. Fixed by sizing each effect's busy-timeout to
+///    its own clip length (see [SoundService._safetyTimeoutFor]) and by
+///    serializing reuse behind a per-player "previous checkout finished"
+///    gate (see the ROOT-CAUSE FIX note on [_ManagedPool.play]).
 class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
@@ -134,6 +150,49 @@ class SoundService {
   /// robot repeating the exact same clip.
   static const _variedPitch = {'cannon_fire', 'hit', 'miss', 'click'};
 
+  /// Measured length, in milliseconds, of each effect's `.wav` asset (see
+  /// `assets/sfx/`, produced by `tool/gen_sounds.dart`) — used to size that
+  /// effect's [_ManagedPool.safetyTimeout] (see there for why one flat
+  /// value shared by every effect was itself a bug). If
+  /// `tool/gen_sounds.dart` ever changes to produce a meaningfully longer
+  /// clip for one of these, bump the matching entry here too.
+  static const Map<String, int> _clipMs = {
+    'cannon_fire': 720,
+    'hit': 420,
+    'miss': 600,
+    'sunk': 1350,
+    'victory': 1900,
+    'defeat': 1300,
+    'place': 160,
+    'click': 60,
+    'denied': 280,
+    'whir': 500,
+    'turn_pass': 550,
+    'cannon_ready': 300,
+    'count_beep': 130,
+    'count_go': 300,
+  };
+
+  /// Padding added on top of a clip's measured length so its pool's safety
+  /// timeout comfortably outlasts normal platform-channel jitter instead
+  /// of racing the clip's own natural end.
+  static const _safetyMarginMs = 350;
+
+  /// Floor so a very short clip (e.g. `click` at 60ms) still gets a
+  /// reasonable window rather than an unrealistically tight one.
+  static const _minSafetyMs = 500;
+
+  /// Conservative fallback for any effect key missing from [_clipMs] (e.g.
+  /// a new SFX added later without updating that table) — matches the
+  /// flat value every effect used to share.
+  static const _fallbackSafetyMs = 2200;
+
+  static Duration _safetyTimeoutFor(String key) {
+    final clip = _clipMs[key];
+    if (clip == null) return const Duration(milliseconds: _fallbackSafetyMs);
+    return Duration(milliseconds: math.max(_minSafetyMs, clip + _safetyMarginMs));
+  }
+
   /// Non-exclusive audio context shared by every player this service
   /// creates (pooled effects AND menu music). `AndroidAudioFocus.none`
   /// means we never ask Android's `AudioManager` for focus at all — so our
@@ -183,6 +242,7 @@ class SoundService {
           asset: entry.value,
           size: size,
           audioContext: _sfxAudioContext,
+          safetyTimeout: _safetyTimeoutFor(entry.key),
         ),
       );
       await pool.warmUp();
@@ -578,6 +638,7 @@ class _ManagedPool {
     required this.asset,
     required this.size,
     required this.audioContext,
+    required this.safetyTimeout,
   });
 
   final String asset;
@@ -594,13 +655,35 @@ class _ManagedPool {
   /// pool: Android's SoundPool has no completion callback, so
   /// `onPlayerComplete` never fires for `PlayerMode.lowLatency` (the
   /// listener below is kept purely for the platforms where it does work).
-  /// The old 6s value therefore pinned every player for 6 seconds after a
-  /// 0.4s sound, so pools were almost permanently exhausted and nearly
-  /// every play fell through to the steal-the-oldest path. Every gameplay
-  /// clip in `assets/sfx/` is short (longest is victory at ~1.9s), so this
-  /// comfortably outlasts any of them while letting a pool actually
-  /// recycle between shots.
-  static const _safetyTimeout = Duration(milliseconds: 2200);
+  ///
+  /// ROOT-CAUSE FIX (audio still inconsistent — cut off / silent —
+  /// specifically during fast-paced gameplay, even after the pooling and
+  /// audio-focus fixes above): this used to be ONE flat value
+  /// (2200ms) shared by every effect, sized to comfortably outlast the
+  /// LONGEST clip (`victory`, ~1.9s). That safely covered `victory`, but it
+  /// meant every SHORT, frequently-fired gameplay effect — `cannon_fire`
+  /// (~0.72s), `hit` (~0.42s), `miss` (~0.6s) — held its player "busy" for
+  /// up to 3-5x its own actual audible length. A HIT grants an immediate
+  /// extra shot, so a hit streak (or multiple simultaneous shooters in
+  /// LAN/BLITZ chaos mode) routinely fires a pool's fixed handful of
+  /// players faster than that inflated busy-window could ever free them,
+  /// forcing the steal-the-oldest fallback to trigger far more often than
+  /// the pool's actual concurrent-overlap headroom should ever require.
+  /// Every extra steal is an extra opportunity for two independent `play()`
+  /// calls to end up touching the exact same physical player around the
+  /// same time (see the ROOT-CAUSE FIX note on [play] for that race and
+  /// its fix) — so shrinking how often stealing happens at all, not just
+  /// making a steal itself safe, is part of the fix. Sizing this per
+  /// effect (see [SoundService._safetyTimeoutFor]) — that effect's actual
+  /// clip length plus a fixed margin, instead of one ceiling sized for the
+  /// longest outlier — lets short effects recycle back to idle 2-4x
+  /// faster, so a normal hit streak comfortably stays within a pool's
+  /// warm supply instead of routinely exhausting it.
+  final Duration safetyTimeout;
+
+  /// Per-player "is a previous checkout still mid-flight on this exact
+  /// physical player" gate — see the ROOT-CAUSE FIX note on [play].
+  final Map<AudioPlayer, Future<void>> _setupDone = {};
 
   /// Creates every player this pool will ever hold. Called once from
   /// [SoundService.init] (fire-and-forget, well before any gameplay
@@ -659,16 +742,15 @@ class _ManagedPool {
         player = _idle.removeLast();
       } else if (_busy.isNotEmpty) {
         // Every one of this pool's fixed players is genuinely busy at
-        // once — reuse the oldest, but AWAIT its stop before replaying it
-        // so this can never race that still-in-flight playback. Detach it
-        // from its OLD checkout directly (just unsubscribing/cancelling
-        // that checkout's own listeners) rather than through that
-        // checkout's normal completion path, which would incorrectly hand
-        // it straight back to the idle pool at the same moment we're
-        // about to reuse it right here — i.e. a player briefly sitting in
-        // both `_idle` and `_busy` at once, which a concurrent play() call
-        // could then also check out. That's exactly the "reuse while
-        // still playing" race this whole pool exists to prevent.
+        // once — reuse the oldest. Detach it from its OLD checkout
+        // directly (just unsubscribing/cancelling that checkout's own
+        // listeners) rather than through that checkout's normal
+        // completion path, which would incorrectly hand it straight back
+        // to the idle pool at the same moment we're about to reuse it
+        // right here — i.e. a player briefly sitting in both `_idle` and
+        // `_busy` at once, which a concurrent play() call could then also
+        // check out. That's exactly the "reuse while still playing" race
+        // this whole pool exists to prevent.
         //
         // Deliberately NOT `_create()`-ing a fresh player here even
         // though one used to be an option — see the class doc: doing
@@ -676,9 +758,6 @@ class _ManagedPool {
         // regression this pool now avoids.
         final oldest = _busy.keys.first;
         _busy.remove(oldest)?.call();
-        try {
-          await oldest.stop();
-        } catch (_) {}
         player = oldest;
       } else {
         // Only reachable if warmUp() never managed to create a single
@@ -692,6 +771,41 @@ class _ManagedPool {
       }
       return;
     }
+
+    // ROOT-CAUSE FIX (audio randomly cut off or silent, worse the faster
+    // shots come in — hit streaks, multiple LAN/BLITZ shooters): cancelling
+    // the OLD checkout's listeners above (so ITS timer/onPlayerComplete
+    // can't fire `release()` on a player we're about to reuse) stops that
+    // OLD checkout from *finishing* on this player behind our back, but it
+    // does NOT stop that OLD checkout's own `play()` call from *still being
+    // mid-flight* right here — it may be sitting on an unfinished `await
+    // player.resume()` (or `stop()`/`setVolume()`/`setPlaybackRate()`) at
+    // the exact moment we steal it. Once that old, unrelated await finally
+    // gets its platform-channel response, that OLD call resumes running
+    // and dispatches ITS next step on this SAME physical player — now
+    // WHILE we're independently configuring and playing it for a
+    // completely different shot. Two calls issuing `stop`/`resume`
+    // out of order on one player is exactly "sometimes cut off, sometimes
+    // silent": whichever call's `resume()` lands on the native side last
+    // wins, and a trailing `stop()` from the other can silence a clip the
+    // instant after it started.
+    //
+    // Fixed by giving every player a "setup in flight" gate: before this
+    // checkout issues a single platform call, it waits for whatever the
+    // PREVIOUS checkout of this exact player was still doing to fully
+    // finish (normally an imperceptible few ms — this only ever waits on
+    // genuine in-flight work, never on the OLD checkout's full audible
+    // clip). That serializes every checkout of a given player, so only
+    // one `play()` call is EVER mid-dispatch on it at a time, whether the
+    // player came from `_idle` or was just stolen above.
+    final previousSetup = _setupDone[player];
+    if (previousSetup != null) {
+      try {
+        await previousSetup;
+      } catch (_) {/* we only care that it's finished, not how */}
+    }
+    final setupCompleter = Completer<void>();
+    _setupDone[player] = setupCompleter;
 
     late final StreamSubscription<void> sub;
     late final Timer safety;
@@ -708,7 +822,7 @@ class _ManagedPool {
     }
 
     sub = player.onPlayerComplete.listen((_) => release());
-    safety = Timer(_safetyTimeout, release);
+    safety = Timer(safetyTimeout, release);
     // The busy-map entry only cancels this checkout's OWN listeners — see
     // the steal-path comment above for why it must not also perform
     // `release`'s idle-return side effect.
@@ -763,6 +877,11 @@ class _ManagedPool {
         debugPrint('SoundService: play failed for $asset ($e)');
       }
       release();
+    } finally {
+      // Unblock whichever checkout (if any) is already waiting on
+      // `previousSetup` for THIS checkout, now that our own dispatch —
+      // success or failure — is fully done.
+      if (!setupCompleter.isCompleted) setupCompleter.complete();
     }
   }
 
@@ -802,6 +921,7 @@ class _ManagedPool {
     }
     _idle.clear();
     _busy.clear();
+    _setupDone.clear();
   }
 
   /// Tears down and recreates every player in this pool — see the bugfix
