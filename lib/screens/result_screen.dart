@@ -13,6 +13,7 @@ import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'lan_mode_screen.dart';
+import 'placement_screen.dart';
 
 /// Victory / defeat screen — cartoon badge, RP reveal, chunky buttons.
 class ResultScreen extends StatefulWidget {
@@ -209,7 +210,8 @@ class _ResultScreenState extends State<ResultScreen>
                                 style: AppText.title(
                                   size: 30,
                                   color: controller.rpDelta == 0
-                                      ? AppColors.inkSoft
+                                      ? AppColors.cream
+                                          .withValues(alpha: 0.9)
                                       : controller.rpDelta > 0
                                           ? AppColors.gold
                                           : AppColors.hit,
@@ -291,7 +293,7 @@ class _ResultScreenState extends State<ResultScreen>
               label: 'REMATCH',
               icon: Icons.refresh,
               color: AppColors.green,
-              onPressed: () => _leaveToMenu(controller),
+              onPressed: () => _rematchNonLan(controller),
             ),
           ),
           const SizedBox(width: 12),
@@ -404,6 +406,28 @@ class _ResultScreenState extends State<ResultScreen>
     controller.reset();
     controller.network.stop();
     Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
+  void _rematchNonLan(GameController controller) {
+    final mode = controller.mode;
+    final diff = controller.difficulty;
+    controller.reset();
+    controller.network.stop();
+    if (mode == GameMode.vsAI) {
+      controller.mode = GameMode.vsAI;
+      controller.difficulty = diff;
+      controller.startPlacement();
+    } else if (mode == GameMode.local) {
+      controller.mode = GameMode.local;
+      controller.resetLocalLoadouts();
+      controller.startPlacement();
+    } else {
+      controller.startPlacement();
+    }
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const PlacementScreen()),
+      (route) => route.isFirst,
+    );
   }
 
   Widget _summaryPip(String label, String value, Color color) {

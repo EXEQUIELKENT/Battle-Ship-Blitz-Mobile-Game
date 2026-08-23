@@ -71,9 +71,19 @@ class _PlacementScreenState extends State<PlacementScreen> {
   bool _showHandoff = false;
   static const double _dockH = 64;
 
-  /// Height of the cannon bay strip under the grid — see the "Cannon bay"
-  /// section of `build()`.
+  // Former fixed cannon bay height (92) — now the cannon overhangs the
+  // grid instead of stealing height from it, so this is kept only for
+  // reference.
+  // ignore: unused_field
   static const double _cannonBayH = 92;
+
+  // Dock icon keys so RANDOM can pull ships directly from their preview
+  // slots instead of from a generic point underneath.
+  final Map<ShipKind, GlobalKey> _dockKeys = {
+    for (final s in kFleet) s.kind: GlobalKey(),
+  };
+  final GlobalKey _stackKey = GlobalKey();
+  List<_StagingShip> _staging = [];
 
   /// True while a RANDOM-triggered reshuffle is staggering ships into
   /// their new spots (see [_randomize]) — disables the RANDOM/SAVE
@@ -286,94 +296,158 @@ class _PlacementScreenState extends State<PlacementScreen> {
   }
 
   Future<void> _runRandomize() async {
-    final target = Board.random();
-    // Captured before any ship lands: by the time the first one is added
-    // below, `_board.ships` is no longer empty, so this has to be decided
-    // up front rather than re-checked each iteration of the deal loop.
     final startedEmpty = _board.ships.isEmpty;
-    // Shuffle whoosh right as the button is pressed — the cue that a new
-    // layout is being dealt out, ahead of any ship actually moving.
+    Board target;
+    if (startedEmpty) {
+      target = Board.random();
+    } else {
+      target = Board();
+      for (final s in _board.ships) {
+        target.ships.add(PlacedShip(
+          spec: s.spec,
+          row: s.row,
+          col: s.col,
+          horizontal: s.horizontal,
+        ));
+      }
+      final rnd = math.Random();
+      for (final spec in kFleet) {
+        if (target.shipOfKind(spec.kind) != null) continue;
+        var placed2 = false;
+        for (var a = 0; a < 500 && !placed2; a++) {
+          final h = rnd.nextBool();
+          final r = rnd.nextInt(kBoardSize);
+          final c = rnd.nextInt(kBoardSize);
+          if (target.canPlace(spec, r, c, h)) {
+            target.place(spec, r, c, h);
+            placed2 = true;
+          }
+        }
+        if (!placed2) {
+          for (var r = 0; r < kBoardSize && !placed2; r++) {
+            for (var c = 0; c < kBoardSize && !placed2; c++) {
+              for (final h in [true, false]) {
+                if (target.canPlace(spec, r, c, h)) {
+                  target.place(spec, r, c, h);
+                  placed2 = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
     SoundService.instance.whir();
     setState(() {
       _randomizing = true;
-      _entranceDeal = _entranceDeal || startedEmpty;
       _selected = null;
       _previewShip = null;
     });
-
-    if (startedEmpty) {
-      // BUGFIX (first deal just popped ships in instead of sliding them):
-      // `AnimatedPositioned` (see `_animatedShipBox` in `battle_grid.dart`)
-      // only ever eases a ship from its OLD board position to a new one —
-      // with the board starting completely empty there is no old position
-      // for any ship to ease FROM yet, so every hull used to just blink
-      // straight onto its landing cell simultaneously, each one appearing
-      // out of nowhere at its own random spot, instead of visibly sliding
-      // there like every later RANDOM press already does.
-      //
-      // Fixed by dealing every ship onto a shared staging spot FIRST, in a
-      // single frame with no animation (there's nothing to ease from on a
-      // widget's very first frame either way). That gives each ship a
-      // real prior position on the board, so the staggered loop below —
-      // which is exactly the same loop every reshuffle already runs — now
-      // has something real to slide FROM, producing the "dealt out"
-      // motion on the very first press.
-      //
-      // BUGFIX (ships popped in at the BOARD'S CENTRE, then visibly
-      // hopped out to their real spot): staging used to anchor on
-      // `kBoardSize ~/ 2`, dead in the middle of the grid — a location
-      // that means nothing to the player, so the deal read as "ships
-      // appear from nowhere in the middle, then jump to where they
-      // actually belong" instead of a deliberate deal.
-      //
-      // The dock tray directly above the grid (see the `_DockShip` row
-      // below) is where every ship already visually "lives" before it's
-      // placed — it's the same tray a manual drag pulls a ship out of.
-      // Staging there instead makes the very first RANDOM press read as
-      // "pulled from the dock, then dropped at its spot", matching how
-      // every ordinary manual placement already looks and feels, rather
-      // than inventing a second, unrelated motion just for this one case.
-      //
-      // The staging row is placed far enough above row 0 (scaled to each
-      // ship's own length) that its `AnimatedPositioned` box sits
-      // entirely outside the grid's own `Container` — which clips its
-      // contents (`clipBehavior: Clip.antiAlias`, see `BattleGrid.build`)
-      // — so the ship is genuinely invisible up in the dock the instant
-      // it's staged, not just off to one side of the visible board. The
-      // staggered loop below then slides it DOWN into view and across to
-      // its landing cell in one motion, instead of the old pop-then-hop.
-      // Staging columns are spread left-to-right in dock order (the same
-      // order `target.ships` is built in — see `Board.random`) so ships
-      // stage roughly under their own dock icon rather than all stacked
-      // on one spot.
-      setState(() {
-        for (var i = 0; i < target.ships.length; i++) {
-          final ship = target.ships[i];
-          final size = ship.spec.size;
-          final stagingRow = -size;
-          final stagingCol = (((i + 0.5) / target.ships.length * kBoardSize) -
-                  size / 2)
-              .round()
-              .clamp(0, kBoardSize - size)
-              .toInt();
-          _board.ships.add(PlacedShip(
-            spec: ship.spec,
-            row: stagingRow,
-            col: stagingCol,
-            horizontal: true,
-          ));
+    final unplaced = target.ships
+        .where((s) => _board.shipOfKind(s.spec.kind) == null)
+        .toList();
+    if (unplaced.isNotEmpty) {
+      final stackBox =
+          _stackKey.currentContext?.findRenderObject() as RenderBox?;
+      final gridBox =
+          _gridKey.currentContext?.findRenderObject() as RenderBox?;
+      if (stackBox != null && gridBox != null) {
+        final cell = gridBox.size.width / kBoardSize;
+        setState(() {
+          _staging = [
+            for (final ship in unplaced)
+              () {
+                final dockKey = _dockKeys[ship.spec.kind]!;
+                final dockBox = dockKey.currentContext?.findRenderObject()
+                    as RenderBox?;
+                final Offset startStack;
+                if (dockBox != null) {
+                  final dockCenterGlobal =
+                      dockBox.localToGlobal(dockBox.size.center(Offset.zero));
+                  startStack = stackBox.globalToLocal(dockCenterGlobal);
+                } else {
+                  startStack = Offset(
+                    stackBox.size.width / 2,
+                    (stackBox.size.height - gridBox.size.width) / 2 - 20,
+                  );
+                }
+                final targetCenterLocal = Offset(
+                  ship.col * cell +
+                      (ship.horizontal
+                          ? ship.spec.size * cell / 2
+                          : cell / 2),
+                  ship.row * cell +
+                      (ship.horizontal ? cell / 2 : ship.spec.size * cell / 2),
+                );
+                final targetCenterGlobal =
+                    gridBox.localToGlobal(targetCenterLocal);
+                final endStack = stackBox.globalToLocal(targetCenterGlobal);
+                final boardW = ship.spec.size * cell - 2;
+                final boardH = cell - 2;
+                const dockUnit = 11.0;
+                final dockW = dockUnit * ship.spec.size + 14;
+                final startScale = (dockW / boardW).clamp(0.35, 0.75);
+                return _StagingShip(
+                  kind: ship.spec.kind,
+                  spec: ship.spec,
+                  start: startStack,
+                  end: endStack,
+                  boardW: boardW,
+                  boardH: boardH,
+                  startScale: startScale,
+                  targetHorizontal: ship.horizontal,
+                );
+              }(),
+          ];
+        });
+        await Future.delayed(const Duration(milliseconds: 16));
+        if (!mounted) return;
+        for (final ship in unplaced) {
+          if (!mounted) return;
+          setState(() {
+            final s = _staging.firstWhere((e) => e.kind == ship.spec.kind);
+            s.arrived = true;
+          });
+          SoundService.instance.place();
+          await Future.delayed(const Duration(milliseconds: 90));
         }
-      });
-      // Let that staging frame actually get painted before moving
-      // anything — without at least one rendered frame at the staging
-      // spot, `AnimatedPositioned` still has nothing to interpolate from
-      // and this collapses right back into the old instant-appear bug.
-      await Future.delayed(const Duration(milliseconds: 16));
-      if (!mounted) return;
+        await Future.delayed(const Duration(milliseconds: 420));
+        if (!mounted) return;
+        setState(() {
+          for (final ship in unplaced) {
+            _board.ships.add(ship);
+          }
+          _staging.clear();
+        });
+        if (startedEmpty) {
+          if (mounted) setState(() => _randomizing = false);
+          return;
+        }
+      } else {
+        setState(() {
+          for (final ship in unplaced) {
+            _board.ships.add(PlacedShip(
+              spec: ship.spec,
+              row: -3,
+              col: 0,
+              horizontal: true,
+            ));
+          }
+        });
+        await Future.delayed(const Duration(milliseconds: 16));
+        if (!mounted) return;
+      }
     }
-
     for (final ship in target.ships) {
       if (!mounted) return;
+      final existing = _board.shipOfKind(ship.spec.kind);
+      if (existing != null &&
+          existing.row == ship.row &&
+          existing.col == ship.col &&
+          existing.horizontal == ship.horizontal) {
+        continue;
+      }
       setState(() {
         _board.ships.removeWhere((s) => s.spec.kind == ship.spec.kind);
         _board.ships.add(ship);
@@ -883,10 +957,12 @@ class _PlacementScreenState extends State<PlacementScreen> {
                     children: [
                       for (final spec in kFleet)
                         _DockShip(
+                          key: _dockKeys[spec.kind],
                           spec: spec,
                           skin: skin,
                           cell: cellSize,
-                          placed: _board.shipOfKind(spec.kind) != null,
+                          placed: _board.shipOfKind(spec.kind) != null ||
+                              _staging.any((s) => s.kind == spec.kind),
                           selected: _selected == spec.kind,
                           rotated: widget.isPlayer2,
                           onTap: () {
@@ -902,217 +978,259 @@ class _PlacementScreenState extends State<PlacementScreen> {
                   ),
                 ),
 
-                // ---------- Grid (drop target) ----------
-                // No side padding and no size cap: the grid fills all the
-                // room the Expanded region gives it (still a square, via
-                // BattleGrid's own AspectRatio), rather than the old
-                // 16px-padded, 440px-capped box.
+                // ---------- Grid (drop target) + cannon overhang ----------
+                // The grid now fills the whole Expanded region (battle does
+                // the same per-half) instead of the old 16px-padded, 440px-
+                // capped box. The cannon is NOT a separate 92px strip that
+                // steals height from the grid — it is overlaid so only its
+                // pointy muzzle peeks onto the deck, exactly like the battle
+                // screen's parked cannon. That fixes two things at once:
+                // the grid is as large as in battle, and every family's
+                // barrel tip is visible on the deck even when parked at the
+                // back (stubby guns used to hide completely behind the old
+                // bay's deck strip).
                 Expanded(
-                  child: Center(
-                    child: DragTarget<({ShipKind kind, bool horizontal})>(
-                      onWillAcceptWithDetails: (_) => true,
-                      onMove: (details) {
-                        final spec = kFleet.firstWhere(
-                          (s) => s.kind == details.data.kind,
-                        );
-                        final gridBox =
-                            _gridKey.currentContext?.findRenderObject()
-                                as RenderBox?;
-                        if (gridBox == null) return;
-                        final cell = gridBox.size.width / kBoardSize;
-                        final local = _dropOrigin(gridBox, details.offset,
-                            spec, details.data.horizontal, cell);
-                        var c = (local.dx / cell).floor();
-                        var r = (local.dy / cell).floor();
-                        final h = details.data.horizontal;
-                        if (h && c + spec.size > kBoardSize) {
-                          c = kBoardSize - spec.size;
-                        }
-                        if (!h && r + spec.size > kBoardSize) {
-                          r = kBoardSize - spec.size;
-                        }
-                        r = r.clamp(0, kBoardSize - 1);
-                        c = c.clamp(0, kBoardSize - 1);
-                        setState(() {
-                          _previewShip = PlacedShip(
-                            spec: spec,
-                            row: r,
-                            col: c,
-                            horizontal: h,
-                          );
-                          _previewValid = _board.canPlace(spec, r, c, h);
-                        });
-                      },
-                      onLeave: (_) => setState(() => _previewShip = null),
-                      onAcceptWithDetails: (details) {
-                        final spec = kFleet.firstWhere(
-                          (s) => s.kind == details.data.kind,
-                        );
-                        final gridBox =
-                            _gridKey.currentContext?.findRenderObject()
-                                as RenderBox?;
-                        if (gridBox == null) return;
-                        final cell = gridBox.size.width / kBoardSize;
-                        final local = _dropOrigin(gridBox, details.offset,
-                            spec, details.data.horizontal, cell);
-                        var c = (local.dx / cell).floor();
-                        var r = (local.dy / cell).floor();
-                        final h = details.data.horizontal;
-                        if (h && c + spec.size > kBoardSize) {
-                          c = kBoardSize - spec.size;
-                        }
-                        if (!h && r + spec.size > kBoardSize) {
-                          r = kBoardSize - spec.size;
-                        }
-                        r = r.clamp(0, kBoardSize - 1);
-                        c = c.clamp(0, kBoardSize - 1);
-                        if (_board.canPlace(spec, r, c, h)) {
-                          _board.place(spec, r, c, h);
-                          SoundService.instance.place();
-                          setState(() {
-                            _selected = null;
-                            _previewShip = null;
-                          });
-                        } else {
-                          SoundService.instance.denied();
-                          setState(() => _previewShip = null);
-                        }
-                      },
-                      builder: (context, candidates, rejected) {
-                        return Container(
-                          key: _gridKey,
-                          // Cross-faded on the theme id AND the hull skin
-                          // id so switching EITHER battlefield OR hull in
-                          // the GEAR dialog dissolves from one board to
-                          // the next — the grid paints the placed ships
-                          // itself, so a hull-only change used to just
-                          // pop the new ships in mid-frame. A family
-                          // board/hull is real artwork rather than a
-                          // palette, so there is nothing to tween between
-                          // — two boards briefly stacked and faded is the
-                          // only honest way to make either change smooth.
-                          //
-                          // The key stays on the Container OUTSIDE this,
-                          // so the drop maths keeps measuring one stable
-                          // box while the switch is in flight.
-                          child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 320),
-                            child: BattleGrid(
-                              key: ValueKey('${theme.id}::${skin?.id}'),
-                              shots: List.generate(
-                                kBoardSize,
-                                (_) => List.filled(kBoardSize, 0),
-                              ),
-                              ships: _board.ships,
-                              skin: skin,
-                              cellColor: theme.grid,
-                              glowColor: theme.accent,
-                              gridLineColor: theme.gridLine,
-                              boardFamily: boardFamily,
-                              previewShip: _previewShip,
-                              previewValid: _previewValid,
-                              // Locked while a random shuffle is dealing
-                              // ships out (`_randomizing`) so a tap/drag
-                              // can't land mid-animation and fight the
-                              // in-flight reshuffle.
-                              onTapCell: _randomizing ? null : _onGridTap,
-                              onShipTap: _randomizing ? null : _rotateShip,
-                              onShipDragEnd: _randomizing ? null : _moveShip,
-                              onShipDragUpdate: _onShipDragPreview,
-                              animateEntrance: _entranceDeal,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final w = constraints.maxWidth;
+                      final h = constraints.maxHeight;
+                      final gridSide = math.min(w, h);
+                      final gridLeft = (w - gridSide) / 2;
+                      final gridTop = (h - gridSide) / 2;
+                      final gridBottom = gridTop + gridSide;
+                      final cannonSize = gridSide * 0.24;
+                      final scale =
+                          CannonWidget.gameplaySizeScaleOf(loadout.cannonSkin);
+                      final renderSize = cannonSize * scale;
+                      final muzzleFrac = CannonWidget.muzzleFractionOf(
+                          loadout.cannonSkin);
+                      final cannonCenterY =
+                          gridBottom + renderSize * (muzzleFrac - 0.07);
+                      return Stack(
+                        key: _stackKey,
+                        clipBehavior: Clip.none,
+                        children: [
+                          Positioned(
+                            left: gridLeft,
+                            top: gridTop,
+                            width: gridSide,
+                            height: gridSide,
+                            child: DragTarget<({ShipKind kind, bool horizontal})>(
+                              onWillAcceptWithDetails: (_) => true,
+                              onMove: (details) {
+                                final spec = kFleet.firstWhere(
+                                  (s) => s.kind == details.data.kind,
+                                );
+                                final gridBox =
+                                    _gridKey.currentContext?.findRenderObject()
+                                        as RenderBox?;
+                                if (gridBox == null) return;
+                                final cell = gridBox.size.width / kBoardSize;
+                                final local = _dropOrigin(
+                                    gridBox,
+                                    details.offset,
+                                    spec,
+                                    details.data.horizontal,
+                                    cell);
+                                var c = (local.dx / cell).floor();
+                                var r = (local.dy / cell).floor();
+                                final hh = details.data.horizontal;
+                                if (hh && c + spec.size > kBoardSize) {
+                                  c = kBoardSize - spec.size;
+                                }
+                                if (!hh && r + spec.size > kBoardSize) {
+                                  r = kBoardSize - spec.size;
+                                }
+                                r = r.clamp(0, kBoardSize - 1);
+                                c = c.clamp(0, kBoardSize - 1);
+                                setState(() {
+                                  _previewShip = PlacedShip(
+                                    spec: spec,
+                                    row: r,
+                                    col: c,
+                                    horizontal: hh,
+                                  );
+                                  _previewValid =
+                                      _board.canPlace(spec, r, c, hh);
+                                });
+                              },
+                              onLeave: (_) =>
+                                  setState(() => _previewShip = null),
+                              onAcceptWithDetails: (details) {
+                                final spec = kFleet.firstWhere(
+                                  (s) => s.kind == details.data.kind,
+                                );
+                                final gridBox = _gridKey.currentContext
+                                        ?.findRenderObject() as RenderBox?;
+                                if (gridBox == null) return;
+                                final cell = gridBox.size.width / kBoardSize;
+                                final local = _dropOrigin(
+                                    gridBox,
+                                    details.offset,
+                                    spec,
+                                    details.data.horizontal,
+                                    cell);
+                                var c = (local.dx / cell).floor();
+                                var r = (local.dy / cell).floor();
+                                final hh = details.data.horizontal;
+                                if (hh && c + spec.size > kBoardSize) {
+                                  c = kBoardSize - spec.size;
+                                }
+                                if (!hh && r + spec.size > kBoardSize) {
+                                  r = kBoardSize - spec.size;
+                                }
+                                r = r.clamp(0, kBoardSize - 1);
+                                c = c.clamp(0, kBoardSize - 1);
+                                if (_board.canPlace(spec, r, c, hh)) {
+                                  _board.place(spec, r, c, hh);
+                                  SoundService.instance.place();
+                                  setState(() {
+                                    _selected = null;
+                                    _previewShip = null;
+                                  });
+                                } else {
+                                  SoundService.instance.denied();
+                                  setState(() => _previewShip = null);
+                                }
+                              },
+                              builder: (context, candidates, rejected) {
+                                return Container(
+                                  key: _gridKey,
+                                  // Cross-faded on the theme id AND the hull skin
+                                  // id so switching EITHER battlefield OR hull in
+                                  // the GEAR dialog dissolves from one board to
+                                  // the next — the grid paints the placed ships
+                                  // itself, so a hull-only change used to just
+                                  // pop the new ships in mid-frame. A family
+                                  // board/hull is real artwork rather than a
+                                  // palette, so there is nothing to tween between
+                                  // — two boards briefly stacked and faded is the
+                                  // only honest way to make either change smooth.
+                                  //
+                                  // The key stays on the Container OUTSIDE this,
+                                  // so the drop maths keeps measuring one stable
+                                  // box while the switch is in flight.
+                                  child: AnimatedSwitcher(
+                                    duration: const Duration(milliseconds: 320),
+                                    child: BattleGrid(
+                                      key: ValueKey('${theme.id}::${skin?.id}'),
+                                      shots: List.generate(
+                                        kBoardSize,
+                                        (_) => List.filled(kBoardSize, 0),
+                                      ),
+                                      ships: _board.ships,
+                                      skin: skin,
+                                      cellColor: theme.grid,
+                                      glowColor: theme.accent,
+                                      gridLineColor: theme.gridLine,
+                                      boardFamily: boardFamily,
+                                      previewShip: _previewShip,
+                                      previewValid: _previewValid,
+                                      onTapCell:
+                                          _randomizing ? null : _onGridTap,
+                                      onShipTap:
+                                          _randomizing ? null : _rotateShip,
+                                      onShipDragEnd:
+                                          _randomizing ? null : _moveShip,
+                                      onShipDragUpdate: _onShipDragPreview,
+                                      animateEntrance: _entranceDeal,
+                                      clip: false,
+                                    ),
+                                  ),
+                                );
+                              },
                             ),
                           ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-
-                // ---------- Cannon bay (equipped cannon preview) ----------
-                // Mirrors the dock tray above the grid: same fixed height
-                // band, same deck-accent background, an outline border on
-                // the facing edge (top here, bottom up there) so the grid
-                // reads as sitting "between" the ships and the guns. Purely
-                // decorative here — this isn't the interactive firing
-                // cannon from battle_screen.dart (no `onFire`/cooldown
-                // ticking, nothing to tap) — it exists so a captain can see
-                // the gun they're about to go into battle with, and it
-                // already keys off `loadout.cannonSkin` the same way the
-                // grid above keys off `boardFamily`/`skin`, so picking a
-                // new cannon in the GEAR dialog updates it live, without
-                // navigating away to the battle screen to find out what it
-                // looks like.
-                Container(
-                  height: _cannonBayH,
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  decoration: BoxDecoration(
-                    color: theme.deckAccent,
-                    border: const Border(
-                      top: BorderSide(color: AppColors.outline, width: 3),
-                    ),
-                  ),
-                  child: Center(
-                    child: IgnorePointer(
-                      // Cross-faded on the cannon skin id so picking a new
-                      // gun in the GEAR dialog dissolves from one cannon
-                      // to the next instead of swapping instantly — same
-                      // 320ms the deck/grid use, so every piece of gear
-                      // that can change here lands together.
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 320),
-                        transitionBuilder: (child, anim) => FadeTransition(
-                          opacity: anim,
-                          child: ScaleTransition(
-                            scale: Tween(begin: 0.86, end: 1.0).animate(
-                              CurvedAnimation(
-                                parent: anim,
-                                curve: Curves.easeOut,
+                          // Cannon — decorative only, like the battle screen's
+                          // parked gun. Overlaps the grid's bottom edge so
+                          // only the pointy muzzle peeks onto the deck (same
+                          // 0.07 overlap the battle screen uses). In the old
+                          // layout this was a separate 92px strip below the
+                          // grid that shrank the board.
+                          Positioned(
+                            left: w / 2 - renderSize / 2,
+                            top: cannonCenterY - renderSize / 2,
+                            width: renderSize,
+                            height: renderSize,
+                            child: IgnorePointer(
+                              child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 320),
+                                transitionBuilder: (child, anim) =>
+                                    FadeTransition(
+                                  opacity: anim,
+                                  child: ScaleTransition(
+                                    scale:
+                                        Tween(begin: 0.86, end: 1.0).animate(
+                                      CurvedAnimation(
+                                        parent: anim,
+                                        curve: Curves.easeOut,
+                                      ),
+                                    ),
+                                    child: child,
+                                  ),
+                                ),
+                                child: CannonWidget(
+                                  key: ValueKey(loadout.cannonSkinId),
+                                  skin: loadout.cannonSkin,
+                                  cooldownFraction: 1,
+                                  size: renderSize,
+                                ),
                               ),
                             ),
-                            child: child,
                           ),
-                        ),
-                        child: CannonWidget(
-                          key: ValueKey(loadout.cannonSkinId),
-                          skin: loadout.cannonSkin,
-                          // Always drawn "loaded and ready" — there is no
-                          // cooldown to track before battle actually starts,
-                          // and `ready` (cooldownFraction >= 1 && enabled) is
-                          // what lets the widget paint its real accent color
-                          // and run its gentle idle pulse instead of the
-                          // flat, dim "reloading" look.
-                          cooldownFraction: 1,
-                          size: _cannonBayH - 16,
-                          // No wiring to fire/ready streams and no onFire —
-                          // this cannon never actually shoots from here.
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-                // ---------- Hint ----------
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                  child: Text(
-                    _selectedSpec != null
-                        ? 'TAP THE GRID TO PLACE: ${_selectedSpec!.name.toUpperCase()}'
-                        : _allPlaced
-                        ? 'FLEET READY — HIT SAVE TO ENTER BATTLE!'
-                        : 'TAP A SHIP ABOVE, OR RANDOM TO AUTO-DEPLOY',
-                    textAlign: TextAlign.center,
-                    // Ink from the deck's own luminance now that the deck
-                    // is the equipped battlefield's and can be anything
-                    // from Cinder Straits' near-black to Rime Field's
-                    // near-white. A fixed navy hint vanished on the dark
-                    // ones.
-                    style: AppText.label(
-                      size: 11,
-                      color: theme.deck.computeLuminance() > 0.5
-                          ? AppColors.navy
-                          : AppColors.cream,
-                    ),
+                          // Staging ships for RANDOM — visibly pulled
+                          // directly from their dock preview slots. Square
+                          // box avoids morph when rotating to vertical.
+                          for (final s in _staging)
+                            Builder(builder: (context) {
+                              final boxSize = s.boardW > s.boardH
+                                  ? s.boardW
+                                  : s.boardH;
+                              final square = boxSize + 8;
+                              return AnimatedPositioned(
+                                duration: const Duration(milliseconds: 420),
+                                curve: Curves.easeInOutCubic,
+                                left:
+                                    (s.arrived ? s.end.dx : s.start.dx) -
+                                        square / 2,
+                                top: (s.arrived ? s.end.dy : s.start.dy) -
+                                    square / 2,
+                                width: square,
+                                height: square,
+                                child: IgnorePointer(
+                                  child: AnimatedScale(
+                                    duration:
+                                        const Duration(milliseconds: 420),
+                                    curve: Curves.easeInOutCubic,
+                                    scale: s.arrived ? 1.0 : s.startScale,
+                                    child: AnimatedRotation(
+                                      duration: const Duration(
+                                          milliseconds: 420),
+                                      curve: Curves.easeInOutCubic,
+                                      turns: s.arrived &&
+                                              !s.targetHorizontal
+                                          ? 0.25
+                                          : 0,
+                                      child: Center(
+                                        child: SizedBox(
+                                          width: s.boardW,
+                                          height: s.boardH,
+                                          child: CustomPaint(
+                                            painter: ShipPainter(
+                                              spec: s.spec,
+                                              skin: skin,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ],
@@ -1124,6 +1242,28 @@ class _PlacementScreenState extends State<PlacementScreen> {
   }
 
   final GlobalKey _gridKey = GlobalKey();
+}
+
+class _StagingShip {
+  final ShipKind kind;
+  final ShipSpec spec;
+  final Offset start;
+  final Offset end;
+  final double boardW;
+  final double boardH;
+  final double startScale;
+  final bool targetHorizontal;
+  bool arrived = false;
+  _StagingShip({
+    required this.kind,
+    required this.spec,
+    required this.start,
+    required this.end,
+    required this.boardW,
+    required this.boardH,
+    required this.startScale,
+    required this.targetHorizontal,
+  });
 }
 
 /// A dock-tray ship icon; tap to select, drag to drop onto the grid.
@@ -1147,6 +1287,7 @@ class _DockShip extends StatelessWidget {
   final bool rotated;
 
   const _DockShip({
+    super.key,
     required this.spec,
     required this.skin,
     required this.placed,

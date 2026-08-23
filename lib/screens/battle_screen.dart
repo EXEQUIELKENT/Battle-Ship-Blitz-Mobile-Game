@@ -625,12 +625,24 @@ class _BattleScreenState extends State<BattleScreen>
     final to = targetGeom.cellCenterScreen(r, c) +
         _mouthDir(targetGeom) * (targetGeom.cannonSize * 0.25);
     final proj = byP1 ? _projP1 : _projP2;
+    // Adaptive lob: keep the classic 3-cell peak as a floor, but grow it
+    // when the shot spans a long vertical gap so the shell still arrives
+    // dipping downwards (up-then-down) instead of flat. Without this a
+    // bottom-to-top shot (~400px) never dips — the linear drop outruns the
+    // fixed arc and the pointy shells arrive pointing sideways/left, the
+    // "turns left" bug. Desired final vy ≈ 1.2*cell downwards.
+    final dy = to.dy - from.dy;
+    final desiredDown = targetGeom.cell * 1.2;
+    final needH = (-dy + desiredDown) / (math.pi * targetGeom.cell);
+    final hFactor = needH.clamp(3.0, 5.5);
+    final arcH = targetGeom.cell * hFactor;
     setState(() {
       proj
         ..pendingCell = [r, c]
         ..from = from
         ..to = to
         ..cell = targetGeom.cell
+        ..arcHeight = arcH
         ..visible = true;
     });
     SoundService.instance.cannonFire();
@@ -1098,11 +1110,13 @@ class _BattleScreenState extends State<BattleScreen>
                 ? familyShellIsDirectional(shellFamily.id)
                 : legacyShellIsDirectional(legacyShellId!);
             // Vertical ARC for the up-and-down lob effect, reused for the
-            // ball itself and its trail.
+            // ball itself and its trail. Height is per-shot (see
+            // _launchBall) so a long cross-board lob still dips before
+            // impact instead of arriving flat.
             Offset posAt(double tt) {
               final cl = tt.clamp(0.0, 1.0);
               final base = Offset.lerp(p.from, p.to, cl)!;
-              final arc = math.sin(cl * math.pi) * p.cell * 3.0;
+              final arc = math.sin(cl * math.pi) * p.arcHeight;
               return base - Offset(0, arc);
             }
 
@@ -1117,7 +1131,7 @@ class _BattleScreenState extends State<BattleScreen>
             double angleAt(double tt) {
               final cl = tt.clamp(0.0, 1.0);
               final vx = p.to.dx - p.from.dx;
-              final arcRate = math.pi * p.cell * 3.0 * math.cos(cl * math.pi);
+              final arcRate = math.pi * p.arcHeight * math.cos(cl * math.pi);
               final vy = (p.to.dy - p.from.dy) - arcRate;
               if (vx == 0 && vy == 0) return 0;
               return math.atan2(vx, -vy);
@@ -1492,9 +1506,18 @@ class _BattleScreenState extends State<BattleScreen>
         // its circle covered the grid's outer rows. The half's Stack uses
         // Clip.none, so spilling past the half's own edge is fine and by
         // design; covering the board is not.
+        //
+        // Per-family back offset: the legacy gun's 0.55 factor was tuned so
+        // its muzzle tip sits 0.07*size just inside the grid edge when
+        // parked — the "pointy part peeking" look. Every family has a
+        // different barrel length, so a fixed 0.55 hides the stubby ones
+        // (Arctic, etc.) entirely behind the deck. Solve for the same
+        // 0.07 overlap for every gun instead.
+        final muzzleFrac = CannonWidget.muzzleFractionOf(_cannonSkinFor(halfIsP1));
+        final backOffset = cannonRenderSize * (muzzleFrac - 0.07);
         final cannonCenter = flipLayout
-            ? Offset(w / 2, gridTop - cannonRenderSize * 0.55)
-            : Offset(w / 2, gridTop + gridSide + cannonRenderSize * 0.55);
+            ? Offset(w / 2, gridTop - backOffset)
+            : Offset(w / 2, gridTop + gridSide + backOffset);
         // Which way the barrel points, in this half's own local space.
         final muzzleLocalDir = flipLayout ? 1.0 : -1.0;
 
@@ -2170,6 +2193,11 @@ class _Projectile {
 
   /// Target grid's cell size, which the ball is scaled against.
   double cell = 32;
+
+  /// Peak height of the lob, in logical pixels. Computed per-shot so
+  /// a long cross-board shot still dips visibly before impact instead
+  /// of arriving flat — the "turns left" bug on pointy shells.
+  double arcHeight = 96;
 
   /// Whether a ball is airborne in this slot right now.
   bool visible = false;

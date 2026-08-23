@@ -673,15 +673,61 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
             ),
           ),
           const SizedBox(width: 6),
-          _historyAddButton(online, entry),
+          _historyActionButtons(online, entry),
         ],
       ),
     );
   }
 
-  /// ADD when this opponent isn't a friend yet, PENDING once a request
-  /// is already out, or a plain FRIENDS label once they are one — so the
-  /// row never offers to re-send a request that would just bounce.
+  Widget _historyActionButtons(OnlineService online, MatchHistoryEntry entry) {
+    final isFriend = online.isFriend(entry.opponentId);
+    final hasPending = online.hasOutgoingRequest(entry.opponentId);
+    // Invite is only for existing friends who are online and not already
+    // in a match — same rule as the Friends tab.
+    OnlinePlayer? friend;
+    if (isFriend) {
+      for (final f in online.friends) {
+        if (f.id == entry.opponentId) {
+          friend = f;
+          break;
+        }
+      }
+    }
+    final canInvite = friend != null && friend.online && online.match == null;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (!isFriend && !hasPending)
+          NeonButton(
+            label: 'ADD',
+            icon: Icons.person_add,
+            color: AppColors.green,
+            compact: true,
+            onPressed: () => _addFromHistory(online, entry),
+          )
+        else if (!isFriend && hasPending)
+          Text('PENDING',
+              style: AppText.label(size: 8.5, color: AppColors.inkSoft))
+        else
+          Text('FRIENDS',
+              style: AppText.label(size: 8.5, color: AppColors.inkSoft)),
+        if (canInvite) ...[
+          const SizedBox(width: 6),
+          NeonButton(
+            label: 'INVITE',
+            icon: Icons.sports_esports,
+            color: AppColors.ember,
+            compact: true,
+            onPressed: () => _inviteFromHistory(online, entry),
+          ),
+        ],
+      ],
+    );
+  }
+
+  // Kept for reference; history rows now use [_historyActionButtons].
+  // ignore: unused_element
   Widget _historyAddButton(OnlineService online, MatchHistoryEntry entry) {
     if (online.isFriend(entry.opponentId)) {
       return Text('FRIENDS',
@@ -708,6 +754,18 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       ok
           ? 'Request sent to ${entry.opponentName}.'
           : (online.lastError ?? 'Could not send that request.'),
+      type: ok ? AppNoticeType.success : AppNoticeType.error,
+    );
+  }
+
+  Future<void> _inviteFromHistory(
+      OnlineService online, MatchHistoryEntry entry) async {
+    final ok = await online.invite(entry.opponentId);
+    if (!mounted) return;
+    _toast(
+      ok
+          ? 'Invite sent to ${entry.opponentName}.'
+          : (online.lastError ?? 'Could not send that invite.'),
       type: ok ? AppNoticeType.success : AppNoticeType.error,
     );
   }

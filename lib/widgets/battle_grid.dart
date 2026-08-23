@@ -127,7 +127,13 @@ class BattleGrid extends StatefulWidget {
     this.onShipDragUpdate,
     this.movableShips,
     this.animateEntrance = false,
+    this.clip = true,
   });
+
+  /// When false the grid does not clip its children — used on the deploy
+  /// screen so the RANDOM deal can visibly slide ships in from the dock
+  /// tray above the board instead of popping in from just underneath it.
+  final bool clip;
 
   @override
   State<BattleGrid> createState() => _BattleGridState();
@@ -358,7 +364,7 @@ class _BattleGridState extends State<BattleGrid>
                     ),
                   ],
                 ),
-                clipBehavior: Clip.antiAlias,
+                clipBehavior: widget.clip ? Clip.antiAlias : Clip.none,
                 child: Stack(
                   children: [
                     RepaintBoundary(
