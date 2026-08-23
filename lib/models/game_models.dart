@@ -300,6 +300,59 @@ class Board {
   }
 }
 
+/// Finds the closest legal top-left anchor for a hull of [size] cells in
+/// the given [horizontal] orientation, searching outward from
+/// ([anchorRow], [anchorCol]) — the spot a flip was actually attempted at.
+///
+/// Used to improve turning a ship in place (deployment's tap-to-rotate,
+/// and Manoeuvre/Blitz's in-battle version): the straightforward approach
+/// only ever tries the ship's own current anchor, nudged back on-grid if
+/// the new orientation would run off an edge, and simply refuses the turn
+/// if THAT one spot happens to be blocked (by another hull during
+/// deployment, or additionally by a cell the enemy has already shot at
+/// mid-battle) — even when the new orientation would fit perfectly fine a
+/// couple of cells over. This searches every remaining legal anchor for
+/// the requested orientation and returns whichever is nearest (by simple
+/// row+column distance) to where the flip was tried, so a blocked turn
+/// still finds somewhere to land instead of just failing outright.
+///
+/// [canPlaceAt] supplies the actual legality check for a candidate
+/// top-left anchor, so the same search serves both a fresh deployment
+/// (backed by [Board.canPlace]) and an in-battle manoeuvre (backed by
+/// [Board.canRelocateTo]) without this needing to know which rule set is
+/// in play. Returns null only when literally no anchor anywhere on the
+/// board can legally hold this orientation.
+({int row, int col})? findNearestRotationAnchor({
+  required int size,
+  required bool horizontal,
+  required int anchorRow,
+  required int anchorCol,
+  required bool Function(int row, int col) canPlaceAt,
+}) {
+  final maxRow = horizontal ? kBoardSize - 1 : kBoardSize - size;
+  final maxCol = horizontal ? kBoardSize - size : kBoardSize - 1;
+  if (maxRow < 0 || maxCol < 0) return null;
+
+  int? bestRow;
+  int? bestCol;
+  var bestDist = 1 << 30;
+  for (var r = 0; r <= maxRow; r++) {
+    for (var c = 0; c <= maxCol; c++) {
+      if (!canPlaceAt(r, c)) continue;
+      final dist = (r - anchorRow).abs() + (c - anchorCol).abs();
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestRow = r;
+        bestCol = c;
+        if (dist == 0) break;
+      }
+    }
+    if (bestDist == 0) break;
+  }
+  if (bestRow == null || bestCol == null) return null;
+  return (row: bestRow, col: bestCol);
+}
+
 /// How a LAN (hotspot / online) match plays out. Both players vote for
 /// one of these before deploying their fleets — see the vote protocol in
 /// `NetworkService` and `LanModeScreen`.

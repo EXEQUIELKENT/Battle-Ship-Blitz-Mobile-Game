@@ -753,17 +753,49 @@ class _BattleScreenState extends State<BattleScreen>
   }
 
   /// Tapping a ship turns it on the spot, same as during deployment.
+  ///
+  /// Shared by both modes that let a fleet move mid-battle — Manoeuvre and
+  /// Blitz — and by both LAN and online play, since all four route
+  /// through this one handler (`manoeuvring`, above, is what gates when
+  /// it's wired up) and through `GameController.relocateOwnShip`, which
+  /// is what actually mirrors the result to the opponent.
   void _rotateOwnShip(GameController controller, ShipKind kind) {
-    final ship = controller.boards[0].shipOfKind(kind);
+    final board = controller.boards[0];
+    final ship = board.shipOfKind(kind);
     if (ship == null) return;
+    final spec = ship.spec;
     final horizontal = !ship.horizontal;
     var r = ship.row;
     var c = ship.col;
-    if (horizontal && c + ship.spec.size > kBoardSize) {
-      c = kBoardSize - ship.spec.size;
+    if (horizontal && c + spec.size > kBoardSize) {
+      c = kBoardSize - spec.size;
     }
-    if (!horizontal && r + ship.spec.size > kBoardSize) {
-      r = kBoardSize - ship.spec.size;
+    if (!horizontal && r + spec.size > kBoardSize) {
+      r = kBoardSize - spec.size;
+    }
+    // IMPROVEMENT (rotate now finds a way to turn): the direct anchor
+    // above is blocked whenever another hull sits where the newly
+    // oriented ship would land, or — the rule specific to a live battle —
+    // the new footprint would cover a cell the enemy has already fired
+    // at (see `Board.canRelocateTo`). The old behaviour just refused the
+    // whole turn right there. Instead, search the rest of the board for
+    // the nearest anchor where the new orientation is actually legal, and
+    // turn there instead — same fallback the deployment screen's rotate
+    // now uses (see `_rotateShip` in `placement_screen.dart`). Only when
+    // NOTHING on the board can legally hold this orientation does the
+    // rotation actually fail.
+    if (!board.canRelocateTo(ship, r, c, horizontal)) {
+      final found = findNearestRotationAnchor(
+        size: spec.size,
+        horizontal: horizontal,
+        anchorRow: ship.row,
+        anchorCol: ship.col,
+        canPlaceAt: (rr, cc) => board.canRelocateTo(ship, rr, cc, horizontal),
+      );
+      if (found != null) {
+        r = found.row;
+        c = found.col;
+      }
     }
     if (controller.relocateOwnShip(kind, r, c, horizontal)) {
       SoundService.instance.place();
@@ -1831,11 +1863,26 @@ class _BattleScreenState extends State<BattleScreen>
     //
     // Measured rather than fixed, because the row's width is not fixed:
     // the chat tab takes a slice of it when it is swiped open, and a
-    // narrow phone has less to give in the first place. At a hard 11.5
-    // the five hulls total 195px of unshrinkable content and the Row
-    // simply overflows once the space drops below that. The cap keeps
-    // the size the strip has always had whenever there is room for it.
-    const maxUnit = 11.5;
+    // narrow phone has less to give in the first place. At a hard cap
+    // the five hulls total `maxUnit * fleetCells` px of unshrinkable
+    // content and the Row simply overflows once the space drops below
+    // that. The cap keeps the size the strip has always had whenever
+    // there is room for it.
+    //
+    // BUGFIX (ships stayed the same size after the strip's own left/right
+    // insets were trimmed): this used to sit at a flat 11.5 regardless of
+    // how much width `_buildMiddleBand` actually handed the row. That was
+    // fine while the insets were fixed, but once they were slimmed down
+    // (see `leftInset`/`rightInset` in `_buildMiddleBand`) the row simply
+    // had more spare width to spread as extra gap between icons via
+    // `spaceEvenly` — the icons themselves never grew, because they were
+    // already pinned at the OLD cap before the insets even changed. Raised
+    // to match the width actually freed up, so trimming the margins now
+    // visibly grows the ships instead of just adding empty space around
+    // them. `beam` below is unaffected: it's defined as a fraction of
+    // `maxUnit`, so it lands back on the same ~26px tall icon it always
+    // has whenever `unit` is capped — this only widens each hull.
+    const maxUnit = 13.0;
     // Total cells across the whole fleet (5+4+3+3+2), plus a little
     // breathing room so the ships never quite touch.
     const fleetCells = 17.0;

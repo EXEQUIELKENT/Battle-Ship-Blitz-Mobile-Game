@@ -125,23 +125,49 @@ class _PlacementScreenState extends State<PlacementScreen> {
   void _rotateShip(ShipKind kind) {
     final ship = _board.shipOfKind(kind);
     if (ship == null) return;
+    final spec = ship.spec;
+    final origRow = ship.row;
+    final origCol = ship.col;
+    final origHorizontal = ship.horizontal;
     _board.removeShip(kind);
-    final newHorizontal = !ship.horizontal;
-    // Try rotated at same anchor; nudge back on-grid if needed.
-    var r = ship.row;
-    var c = ship.col;
-    if (newHorizontal && c + ship.spec.size > kBoardSize) {
-      c = kBoardSize - ship.spec.size;
+    final newHorizontal = !origHorizontal;
+    // Try rotated at same anchor first; nudge back on-grid if needed.
+    var r = origRow;
+    var c = origCol;
+    if (newHorizontal && c + spec.size > kBoardSize) {
+      c = kBoardSize - spec.size;
     }
-    if (!newHorizontal && r + ship.spec.size > kBoardSize) {
-      r = kBoardSize - ship.spec.size;
+    if (!newHorizontal && r + spec.size > kBoardSize) {
+      r = kBoardSize - spec.size;
     }
-    if (_board.canPlace(ship.spec, r, c, newHorizontal)) {
-      _board.place(ship.spec, r, c, newHorizontal);
+    // IMPROVEMENT (rotate now finds a way to turn): the direct anchor
+    // above is blocked whenever another hull sits where the newly
+    // oriented ship would land — the old behaviour just gave up right
+    // there and snapped the ship back to how it was. Instead, search the
+    // rest of the board for the nearest anchor where the new orientation
+    // actually fits, and turn there instead. Only when NOTHING on the
+    // whole board can hold this orientation does the rotation actually
+    // fail.
+    if (!_board.canPlace(spec, r, c, newHorizontal)) {
+      final found = findNearestRotationAnchor(
+        size: spec.size,
+        horizontal: newHorizontal,
+        anchorRow: origRow,
+        anchorCol: origCol,
+        canPlaceAt: (rr, cc) => _board.canPlace(spec, rr, cc, newHorizontal),
+      );
+      if (found != null) {
+        r = found.row;
+        c = found.col;
+      }
+    }
+    if (_board.canPlace(spec, r, c, newHorizontal)) {
+      _board.place(spec, r, c, newHorizontal);
       SoundService.instance.place();
     } else {
-      // Rotation blocked — put it back as it was.
-      _board.place(ship.spec, ship.row, ship.col, ship.horizontal);
+      // Truly nowhere on the board can hold this orientation — put it
+      // back exactly as it was.
+      _board.place(spec, origRow, origCol, origHorizontal);
       SoundService.instance.denied();
     }
     setState(() {});
@@ -269,6 +295,49 @@ class _PlacementScreenState extends State<PlacementScreen> {
       _selected = null;
       _previewShip = null;
     });
+
+    if (startedEmpty) {
+      // BUGFIX (first deal just popped ships in instead of sliding them):
+      // `AnimatedPositioned` (see `_animatedShipBox` in `battle_grid.dart`)
+      // only ever eases a ship from its OLD board position to a new one —
+      // with the board starting completely empty there is no old position
+      // for any ship to ease FROM yet, so every hull used to just blink
+      // straight onto its landing cell simultaneously, each one appearing
+      // out of nowhere at its own random spot, instead of visibly sliding
+      // there like every later RANDOM press already does.
+      //
+      // Fixed by dealing every ship onto one shared staging spot at the
+      // centre of the grid FIRST, in a single frame with no animation
+      // (there's nothing to ease from on a widget's very first frame
+      // either way, so this part is still an instant "pop" — it's just
+      // one shared, centred pop instead of five scattered ones). That
+      // gives each ship a real prior position on the board, so the
+      // staggered loop below — which is exactly the same loop every
+      // reshuffle already runs — now has something real to slide FROM,
+      // producing the same "dealt out" motion on the very first press.
+      final stagingRow = kBoardSize ~/ 2;
+      setState(() {
+        for (final ship in target.ships) {
+          final size = ship.spec.size;
+          final stagingCol = ((kBoardSize - size) ~/ 2)
+              .clamp(0, kBoardSize - size)
+              .toInt();
+          _board.ships.add(PlacedShip(
+            spec: ship.spec,
+            row: stagingRow,
+            col: stagingCol,
+            horizontal: true,
+          ));
+        }
+      });
+      // Let that staging frame actually get painted before moving
+      // anything — without at least one rendered frame at the staging
+      // spot, `AnimatedPositioned` still has nothing to interpolate from
+      // and this collapses right back into the old instant-appear bug.
+      await Future.delayed(const Duration(milliseconds: 16));
+      if (!mounted) return;
+    }
+
     for (final ship in target.ships) {
       if (!mounted) return;
       setState(() {
