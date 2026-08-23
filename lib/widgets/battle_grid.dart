@@ -9,6 +9,16 @@ import '../models/game_models.dart';
 import '../services/storage_service.dart';
 import 'ship_painter.dart';
 
+/// dart:ui's [Offset] has no built-in rotation method. This rotates the
+/// offset (treated as a vector from the origin) by [angle] radians.
+extension _OffsetRotate on Offset {
+  Offset rotate(double angle) {
+    final cosA = cos(angle);
+    final sinA = sin(angle);
+    return Offset(dx * cosA - dy * sinA, dx * sinA + dy * cosA);
+  }
+}
+
 /// A transient cell effect (explosion / splash).
 class CellFx {
   final int row;
@@ -139,10 +149,6 @@ const BattleGrid({
   /// screen so the RANDOM deal can visibly slide ships in from the dock
   /// tray above the board instead of popping in from just underneath it.
   final bool clip;
-
-  /// The equipped cannon skin ID — used to draw a unique crosshair
-  /// design that matches the cannon's theme and identity.
-  final String? cannonSkinId;
 
   @override
   State<BattleGrid> createState() => _BattleGridState();
