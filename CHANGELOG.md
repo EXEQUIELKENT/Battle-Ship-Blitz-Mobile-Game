@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.4](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.3...battleship_blitz-v1.4.4) (2026-08-23)
+
+
+### Bug Fixes
+
+* Fix placement randomization and entry animations ([416d764](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/416d76426170d21da1ba6d02e0d3b528e84b0abc))
+
 ## [1.4.3](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.2...battleship_blitz-v1.4.3) (2026-08-23)
 
 
