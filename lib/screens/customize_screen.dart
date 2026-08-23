@@ -428,6 +428,25 @@ class _ShipsTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // Legacy leads now: the nine original hulls are the cheap,
+        // simple recolours, so they're what a new captain sees — and can
+        // actually afford — first. The bespoke family hulls, which now
+        // cost more to match how much more they carry, sit below.
+        _LegacyShelf(
+          summary: 'Steel · Crimson · Midnight · six more',
+          note:
+              'The nine original hulls, kept as one shelf. '
+              'Owned ones stay owned.',
+          ownedCount: legacy.where((s) => profile.ownsShip(s.id)).length,
+          total: legacy.length,
+          containsEquipped: legacy.any((s) => s.id == profile.shipSkinId),
+          grid: true,
+          children: [
+            for (final skin in legacy)
+              _LegacyHullCard(profile: profile, skin: skin),
+          ],
+        ),
+        const SizedBox(height: 16),
         GridView.count(
           crossAxisCount: 2,
           mainAxisSpacing: 12,
@@ -441,20 +460,6 @@ class _ShipsTab extends StatelessWidget {
           children: [
             for (final skin in families)
               _FamilyHullCard(profile: profile, skin: skin),
-          ],
-        ),
-        _LegacyShelf(
-          summary: 'Steel · Crimson · Midnight · six more',
-          note:
-              'The nine original hulls, kept as one shelf. '
-              'Owned ones stay owned.',
-          ownedCount: legacy.where((s) => profile.ownsShip(s.id)).length,
-          total: legacy.length,
-          containsEquipped: legacy.any((s) => s.id == profile.shipSkinId),
-          grid: true,
-          children: [
-            for (final skin in legacy)
-              _LegacyHullCard(profile: profile, skin: skin),
           ],
         ),
         const SizedBox(height: 12),
@@ -715,8 +720,10 @@ class _CannonsTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        for (final cannon in families)
-          _CannonCard(profile: profile, cannon: cannon),
+        // Legacy leads now: the nine original guns are the cheap, simple
+        // recolours, so they're what a new captain sees — and can
+        // actually afford — first. The bespoke family cannons, which now
+        // cost more to match how much more they carry, sit below.
         _LegacyShelf(
           summary: 'MK-I Standard · Tesla · Void · six more',
           note:
@@ -730,6 +737,9 @@ class _CannonsTab extends StatelessWidget {
               _CannonCard(profile: profile, cannon: cannon),
           ],
         ),
+        const SizedBox(height: 16),
+        for (final cannon in families)
+          _CannonCard(profile: profile, cannon: cannon),
         const SizedBox(height: 12),
       ],
     );
@@ -994,8 +1004,11 @@ class _DeckTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        for (final theme in families)
-          _ThemeCard(profile: profile, theme: theme),
+        // Legacy leads now: the four original palettes are the cheap,
+        // simple recolours, so they're what a new captain sees — and can
+        // actually afford — first. The bespoke family battlefields,
+        // which now cost more to match how much more they carry, sit
+        // below.
         _LegacyShelf(
           summary: 'Classic Deck · Arctic Front · Deep Sea · Sunset Siege',
           note:
@@ -1009,6 +1022,9 @@ class _DeckTab extends StatelessWidget {
               _ThemeCard(profile: profile, theme: theme),
           ],
         ),
+        const SizedBox(height: 16),
+        for (final theme in families)
+          _ThemeCard(profile: profile, theme: theme),
         const SizedBox(height: 12),
       ],
     );

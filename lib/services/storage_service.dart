@@ -88,18 +88,22 @@ class Catalog {
     ShipSkin('midnight', 'Midnight Ops', Color(0xFF0F172A), Color(0xFF38BDF8), 1100),
     ShipSkin('toxic', 'Toxic Wreckers', Color(0xFF365314), Color(0xFFA3E635), 1250),
     // ---- Thematic families: five bespoke hull classes each ----
+    // Priced ABOVE every legacy hull (top out at Toxic Wreckers, 1250):
+    // five distinct hull classes and a real board to match are worth
+    // more than a shared silhouette in a second tint, and the price tag
+    // should say so rather than undercut it.
     ShipSkin('f_pirate', 'Blackpowder Fleet', Color(0xFF8A5A2B),
-        Color(0xFFC98A3E), 650, familyKey: 'pirate'),
-    ShipSkin('f_naval', 'Iron Pact', Color(0xFF5A6B78), Color(0xFF8CA0AD), 800,
-        familyKey: 'naval'),
+        Color(0xFFC98A3E), 1500, familyKey: 'pirate'),
+    ShipSkin('f_naval', 'Iron Pact', Color(0xFF5A6B78), Color(0xFF8CA0AD),
+        1750, familyKey: 'naval'),
     ShipSkin('f_arctic', 'Rime Wardens', Color(0xFFC8DCE6), Color(0xFF8FC3D8),
-        900, familyKey: 'arctic'),
+        2000, familyKey: 'arctic'),
     ShipSkin('f_steam', 'Brass Consortium', Color(0xFF7A5A34),
-        Color(0xFFC99A3F), 1200, familyKey: 'steam'),
+        Color(0xFFC99A3F), 2400, familyKey: 'steam'),
     ShipSkin('f_volcanic', 'Cinder Hold', Color(0xFF3A3438), Color(0xFF514247),
-        1600, familyKey: 'volcanic'),
+        2900, familyKey: 'volcanic'),
     ShipSkin('f_scifi', 'Helios Drift', Color(0xFF1B2138), Color(0xFF6E8FD8),
-        2800, familyKey: 'scifi'),
+        3600, familyKey: 'scifi'),
   ];
 
   static const List<CannonSkin> cannonSkins = [
@@ -119,23 +123,27 @@ class Catalog {
     CannonSkin('sunfire', 'Sunfire Battery', Color(0xFFB45309), Color(0xFFFDE047), 'High-energy golden shell launcher.', 0.90, 1400),
     CannonSkin('void', 'Void Annihilator', Color(0xFF111827), Color(0xFFEC4899), 'Dark-matter launcher. 10% faster reload!', 0.90, 1800),
     // ---- Thematic families: each gun ships with its own shell ----
+    // Priced ABOVE every legacy cannon (top out at Void Annihilator,
+    // 1800): a gun with its own silhouette, shell AND muzzle geometry is
+    // worth more than a recoloured MK-I, and used to cost less than half
+    // of one.
     CannonSkin('f_pirate', 'Bell-Mouth Broadside', Color(0xFF8A5A2B),
         Color(0xFF4A4038), 'Timber carriage, bronze bell muzzle. Round shot.',
-        1.0, 600, familyKey: 'pirate'),
+        1.0, 2000, familyKey: 'pirate'),
     CannonSkin('f_naval', 'MK-IV Autoloader', Color(0xFF5A6B78),
         Color(0xFF6B7A87), 'Long barrel, muzzle brake. Finned sabot shell.',
-        0.95, 700, familyKey: 'naval'),
+        0.95, 2200, familyKey: 'naval'),
     CannonSkin('f_steam', 'Pressure Battery', Color(0xFF7A5A34),
         Color(0xFFC99A3F), 'Three boiler drums and a bypass pipe. Gear sphere.',
-        1.0, 900, familyKey: 'steam'),
+        1.0, 2450, familyKey: 'steam'),
     CannonSkin('f_arctic', 'Icebreaker Mortar', Color(0xFFC8DCE6),
         Color(0xFFBBDCEA), 'Two-stage barrel behind a collar of crystal.',
-        0.95, 1000, familyKey: 'arctic'),
+        0.95, 2700, familyKey: 'arctic'),
     CannonSkin('f_volcanic', 'Magma Bombard', Color(0xFF3A3438),
         Color(0xFF332B2E), 'Rock-slab mortar. Ember slug, crater impact.',
-        0.90, 1400, familyKey: 'volcanic'),
+        0.90, 3100, familyKey: 'volcanic'),
     CannonSkin('f_scifi', 'Ion Lance', Color(0xFF2B3550), Color(0xFF232B45),
-        'Floating segments, forked emitter. 15% faster reload!', 0.85, 2600,
+        'Floating segments, forked emitter. 15% faster reload!', 0.85, 3800,
         familyKey: 'scifi'),
   ];
 
@@ -145,30 +153,35 @@ class Catalog {
     GameplayTheme('deep','Deep Sea','Dark ocean tones for a tactical match.',Color(0xFF173A4D),Color(0xFF2A607D),Color(0xFF214E63),Color(0xFF4A879C),Color(0xFF6B8792),Color(0xFF22D3EE),1200),
     GameplayTheme('sunset','Sunset Siege','Warm orange water and gold targeting effects.',Color(0xFFB8664F),Color(0xFFF5B48F),Color(0xFF4B718A),Color(0xFFD99D68),Color(0xFF8E9EAA),Color(0xFFFFD166),1500),
     // ---- Thematic families: a whole battlefield, not a palette ----
+    // Priced ABOVE every legacy palette (top out at Sunset Siege, 1500):
+    // a family board replaces the tiles, gridlines AND hit/miss markers
+    // wholesale, so it should never be the cheaper pick next to a flat
+    // four-colour palette swap — Pirate Seas used to undercut even
+    // Arctic Front.
     GameplayTheme('f_pirate', 'Pirate Seas',
         'Brine cells, rope grid, drifting swell.', Color(0xFF1F3B3C),
         Color(0xFF2C5A5C), Color(0xFF2C5A5C), Color(0xFF8FAE8A),
-        Color(0xFFBEE3D8), Color(0xFFC98A3E), 800, familyKey: 'pirate'),
+        Color(0xFFBEE3D8), Color(0xFFC98A3E), 1700, familyKey: 'pirate'),
     GameplayTheme('f_naval', 'Fleet Command',
         'Steel cells, range rings, row ticks.', Color(0xFF2A3843),
         Color(0xFF3B4E5C), Color(0xFF305064), Color(0xFF7FB2CC),
-        Color(0xFF9FB6C4), Color(0xFFCFE0EA), 950, familyKey: 'naval'),
+        Color(0xFF9FB6C4), Color(0xFFCFE0EA), 1900, familyKey: 'naval'),
     GameplayTheme('f_arctic', 'Rime Field',
         'Floes over open water. Snowfall, aurora band.', Color(0xFFCFE6EE),
         Color(0xFFEAF7FC), Color(0xFF4E86A6), Color(0xFFDFF4FC),
-        Color(0xFFEAFBFF), Color(0xFFBDF1FF), 1100, familyKey: 'arctic'),
+        Color(0xFFEAFBFF), Color(0xFFBDF1FF), 2100, familyKey: 'arctic'),
     GameplayTheme('f_steam', 'Brass Works',
         'Riveted quarter-plates with bolted seams.', Color(0xFF4A3927),
         Color(0xFF6B5537), Color(0xFF57432E), Color(0xFFB89056),
-        Color(0xFFC99A3F), Color(0xFFC99A3F), 1150, familyKey: 'steam'),
+        Color(0xFFC99A3F), Color(0xFFC99A3F), 2300, familyKey: 'steam'),
     GameplayTheme('f_volcanic', 'Cinder Straits',
         'Basalt slabs, molten seams, rising embers.', Color(0xFF241B1B),
         Color(0xFF3A2A26), Color(0xFF33262A), Color(0xFF7A6A62),
-        Color(0xFF8A8079), Color(0xFFFF6A2B), 1600, familyKey: 'volcanic'),
+        Color(0xFF8A8079), Color(0xFFFF6A2B), 2700, familyKey: 'volcanic'),
     GameplayTheme('f_scifi', 'Helios Grid',
         'Lattice, corner ticks, travelling scan band.', Color(0xFF0E1428),
         Color(0xFF1B2138), Color(0xFF16223E), Color(0xFF3A5A9E),
-        Color(0xFF6FE7FF), Color(0xFF6FE7FF), 2200, familyKey: 'scifi'),
+        Color(0xFF6FE7FF), Color(0xFF6FE7FF), 3300, familyKey: 'scifi'),
   ];
 
   static ShipSkin shipById(String id) =>

@@ -981,13 +981,16 @@ class _PlacementScreenState extends State<PlacementScreen> {
                       builder: (context, candidates, rejected) {
                         return Container(
                           key: _gridKey,
-                          // Cross-faded on the theme id so switching
-                          // battlefield in the GEAR dialog dissolves from
-                          // one board to the next. A family board is real
-                          // artwork rather than a palette, so there is
-                          // nothing to tween between — two boards briefly
-                          // stacked and faded is the only honest way to
-                          // make that change smooth.
+                          // Cross-faded on the theme id AND the hull skin
+                          // id so switching EITHER battlefield OR hull in
+                          // the GEAR dialog dissolves from one board to
+                          // the next — the grid paints the placed ships
+                          // itself, so a hull-only change used to just
+                          // pop the new ships in mid-frame. A family
+                          // board/hull is real artwork rather than a
+                          // palette, so there is nothing to tween between
+                          // — two boards briefly stacked and faded is the
+                          // only honest way to make either change smooth.
                           //
                           // The key stays on the Container OUTSIDE this,
                           // so the drop maths keeps measuring one stable
@@ -995,7 +998,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
                           child: AnimatedSwitcher(
                             duration: const Duration(milliseconds: 320),
                             child: BattleGrid(
-                              key: ValueKey(theme.id),
+                              key: ValueKey('${theme.id}::${skin?.id}'),
                               shots: List.generate(
                                 kBoardSize,
                                 (_) => List.filled(kBoardSize, 0),
@@ -1051,18 +1054,39 @@ class _PlacementScreenState extends State<PlacementScreen> {
                   ),
                   child: Center(
                     child: IgnorePointer(
-                      child: CannonWidget(
-                        skin: loadout.cannonSkin,
-                        // Always drawn "loaded and ready" — there is no
-                        // cooldown to track before battle actually starts,
-                        // and `ready` (cooldownFraction >= 1 && enabled) is
-                        // what lets the widget paint its real accent color
-                        // and run its gentle idle pulse instead of the
-                        // flat, dim "reloading" look.
-                        cooldownFraction: 1,
-                        size: _cannonBayH - 16,
-                        // No wiring to fire/ready streams and no onFire —
-                        // this cannon never actually shoots from here.
+                      // Cross-faded on the cannon skin id so picking a new
+                      // gun in the GEAR dialog dissolves from one cannon
+                      // to the next instead of swapping instantly — same
+                      // 320ms the deck/grid use, so every piece of gear
+                      // that can change here lands together.
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 320),
+                        transitionBuilder: (child, anim) => FadeTransition(
+                          opacity: anim,
+                          child: ScaleTransition(
+                            scale: Tween(begin: 0.86, end: 1.0).animate(
+                              CurvedAnimation(
+                                parent: anim,
+                                curve: Curves.easeOut,
+                              ),
+                            ),
+                            child: child,
+                          ),
+                        ),
+                        child: CannonWidget(
+                          key: ValueKey(loadout.cannonSkinId),
+                          skin: loadout.cannonSkin,
+                          // Always drawn "loaded and ready" — there is no
+                          // cooldown to track before battle actually starts,
+                          // and `ready` (cooldownFraction >= 1 && enabled) is
+                          // what lets the widget paint its real accent color
+                          // and run its gentle idle pulse instead of the
+                          // flat, dim "reloading" look.
+                          cooldownFraction: 1,
+                          size: _cannonBayH - 16,
+                          // No wiring to fire/ready streams and no onFire —
+                          // this cannon never actually shoots from here.
+                        ),
                       ),
                     ),
                   ),
@@ -1140,11 +1164,29 @@ class _DockShip extends StatelessWidget {
     // alike — rendering inside the same fixed 68px box.
     const dockUnit = 11.0;
     const dockBeam = 30.0;
-    final icon = AnimatedShip(
-      spec: spec,
-      skin: skin,
-      width: dockUnit * spec.size + 14,
-      height: dockBeam,
+    // Cross-faded on the hull skin id: picking a new hull in the GEAR
+    // dialog used to swap every dock icon on the very next frame, which
+    // read as a glitch next to the grid/deck's own 320ms dissolve. Same
+    // fade+scale treatment as the cannon bay below, just quicker since
+    // these icons are much smaller.
+    final icon = AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child: ScaleTransition(
+          scale: Tween(begin: 0.85, end: 1.0).animate(
+            CurvedAnimation(parent: anim, curve: Curves.easeOut),
+          ),
+          child: child,
+        ),
+      ),
+      child: AnimatedShip(
+        key: ValueKey(skin.id),
+        spec: spec,
+        skin: skin,
+        width: dockUnit * spec.size + 14,
+        height: dockBeam,
+      ),
     );
 
     final child = GestureDetector(
