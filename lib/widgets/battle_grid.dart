@@ -879,33 +879,58 @@ class _ShipWithRotate extends StatelessWidget {
       hitIndices: ship.hitIndices,
     );
 
-    Widget assembly = SizedBox(
+    final hull = SizedBox(
       width: long,
       height: short,
       child: CustomPaint(painter: painter, size: Size(long, short)),
     );
 
-    if (showRotate) {
-      assembly = Stack(
-        clipBehavior: Clip.none,
-        children: [
-          assembly,
-          // Rotate arrows hugging the ship's natural (pre-rotation) top-left
-          // / bottom-right corners — rotating with it below instead of
-          // needing their own orientation-conditioned offsets.
-          Positioned(
-            left: -cell * 0.22,
-            top: -cell * 0.22,
-            child: const _RotateArrow(Icons.rotate_left),
+    // BUGFIX (rotate arrows abruptly popped into view): `showRotate`
+    // used to gate whether this Stack/arrows existed in the tree AT ALL —
+    // so the moment it flipped true (e.g. RANDOM finishing a reshuffle,
+    // which unlocks rotation the instant `_randomizing` clears) the arrows
+    // would blink on with no transition, which read as extra jank right on
+    // top of whatever else was settling into place that same frame. The
+    // arrows are now ALWAYS in the tree, just transparent (and
+    // non-interactive) when hidden, so an `AnimatedOpacity` element
+    // persists across the `showRotate` flip instead of being torn down
+    // and recreated, and can actually fade the icons in/out instead of
+    // popping them.
+    final assembly = Stack(
+      clipBehavior: Clip.none,
+      children: [
+        hull,
+        // Rotate arrows hugging the ship's natural (pre-rotation) top-left
+        // / bottom-right corners — rotating with it below instead of
+        // needing their own orientation-conditioned offsets.
+        Positioned(
+          left: -cell * 0.22,
+          top: -cell * 0.22,
+          child: IgnorePointer(
+            ignoring: !showRotate,
+            child: AnimatedOpacity(
+              opacity: showRotate ? 1.0 : 0.0,
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOut,
+              child: const _RotateArrow(Icons.rotate_left),
+            ),
           ),
-          Positioned(
-            right: -cell * 0.22,
-            bottom: -cell * 0.22,
-            child: const _RotateArrow(Icons.rotate_right),
+        ),
+        Positioned(
+          right: -cell * 0.22,
+          bottom: -cell * 0.22,
+          child: IgnorePointer(
+            ignoring: !showRotate,
+            child: AnimatedOpacity(
+              opacity: showRotate ? 1.0 : 0.0,
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOut,
+              child: const _RotateArrow(Icons.rotate_right),
+            ),
           ),
-        ],
-      );
-    }
+        ),
+      ],
+    );
 
     return Center(
       child: AnimatedRotation(

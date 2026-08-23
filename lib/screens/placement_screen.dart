@@ -85,6 +85,13 @@ class _PlacementScreenState extends State<PlacementScreen> {
   final GlobalKey _stackKey = GlobalKey();
   List<_StagingShip> _staging = [];
 
+  /// How long a staged ship's ghost fades out ON TOP of the real on-grid
+  /// ship once RANDOM hands it off (see the handoff comment in
+  /// `_runRandomize`). Shared between the delay that gates the handoff and
+  /// the `AnimatedOpacity` that actually plays it, so the two can never
+  /// drift out of sync.
+  static const _handoffFade = Duration(milliseconds: 180);
+
   /// True while a RANDOM-triggered reshuffle is staggering ships into
   /// their new spots (see [_randomize]) — disables the RANDOM/SAVE
   /// buttons and drag/tap interaction so the player can't yank a ship or
@@ -404,10 +411,42 @@ class _PlacementScreenState extends State<PlacementScreen> {
         }
         await Future.delayed(const Duration(milliseconds: 420));
         if (!mounted) return;
+        // BUGFIX (ship visibly shifts a few px right as the rotate arrows
+        // pop in): this used to add the ships to the real board AND clear
+        // `_staging` in the same `setState` — instantly deleting the
+        // staging ghost the same frame the real, cell-positioned
+        // `BattleGrid` widget took over. The ghost's resting spot is
+        // measured by converting the target cell through
+        // `RenderBox.localToGlobal`/`globalToLocal` (see `endStack`
+        // above); the real widget positions itself directly from
+        // `row`/`col` * `cell` (see `BattleGrid._animatedShipBox`). Those
+        // two routes agree on paper, but in practice they're computed at
+        // different times off different `RenderBox`es, and any tiny
+        // drift between them — invisible on its own — used to read as a
+        // little "settle" pop right as the ship landed, made worse by the
+        // rotate arrows appearing in that exact same frame (`_randomizing`
+        // flipping false is what unlocks `showRotate`).
+        //
+        // Fixed by not tearing the ghost down the instant the real ship
+        // exists: the real ship is added to `_board.ships` now (so it's
+        // already sitting, motionless, at its correct spot underneath),
+        // but the staging ghost stays mounted a little longer and FADES
+        // OUT on top of it instead of just vanishing — masking any tiny
+        // leftover offset instead of revealing it as a jump. `_randomizing`
+        // (which gates the rotate arrows) doesn't clear until the ghost
+        // has fully faded, so the arrows never pop in in the same frame as
+        // a position change either.
         setState(() {
           for (final ship in unplaced) {
             _board.ships.add(ship);
           }
+          for (final s in _staging) {
+            s.handoff = true;
+          }
+        });
+        await Future.delayed(_handoffFade);
+        if (!mounted) return;
+        setState(() {
           _staging.clear();
         });
         if (startedEmpty) {
@@ -1225,27 +1264,40 @@ class _PlacementScreenState extends State<PlacementScreen> {
                                 width: square,
                                 height: square,
                                 child: IgnorePointer(
-                                  child: AnimatedScale(
-                                    duration:
-                                        const Duration(milliseconds: 420),
-                                    curve: Curves.easeInOutCubic,
-                                    scale: s.arrived ? 1.0 : s.startScale,
-                                    child: AnimatedRotation(
-                                      duration: const Duration(
-                                          milliseconds: 420),
+                                  // Fades the ghost out ON TOP of the real
+                                  // ship once `_runRandomize` hands off —
+                                  // see the handoff bugfix note there. The
+                                  // real ship underneath never moves during
+                                  // this fade, so any tiny leftover offset
+                                  // between the two positioning systems is
+                                  // covered by the crossfade instead of
+                                  // reading as a last-second jump.
+                                  child: AnimatedOpacity(
+                                    opacity: s.handoff ? 0.0 : 1.0,
+                                    duration: _handoffFade,
+                                    curve: Curves.easeOut,
+                                    child: AnimatedScale(
+                                      duration:
+                                          const Duration(milliseconds: 420),
                                       curve: Curves.easeInOutCubic,
-                                      turns: s.arrived &&
-                                              !s.targetHorizontal
-                                          ? 0.25
-                                          : 0,
-                                      child: Center(
-                                        child: SizedBox(
-                                          width: s.boardW,
-                                          height: s.boardH,
-                                          child: CustomPaint(
-                                            painter: ShipPainter(
-                                              spec: s.spec,
-                                              skin: skin,
+                                      scale: s.arrived ? 1.0 : s.startScale,
+                                      child: AnimatedRotation(
+                                        duration: const Duration(
+                                            milliseconds: 420),
+                                        curve: Curves.easeInOutCubic,
+                                        turns: s.arrived &&
+                                                !s.targetHorizontal
+                                            ? 0.25
+                                            : 0,
+                                        child: Center(
+                                          child: SizedBox(
+                                            width: s.boardW,
+                                            height: s.boardH,
+                                            child: CustomPaint(
+                                              painter: ShipPainter(
+                                                spec: s.spec,
+                                                skin: skin,
+                                              ),
                                             ),
                                           ),
                                         ),
@@ -1281,6 +1333,11 @@ class _StagingShip {
   final double startScale;
   final bool targetHorizontal;
   bool arrived = false;
+
+  /// True once the real, cell-positioned ship has been added to the board
+  /// underneath this ghost and it's time to fade the ghost out (see the
+  /// handoff bugfix note in `_runRandomize`).
+  bool handoff = false;
   _StagingShip({
     required this.kind,
     required this.spec,
