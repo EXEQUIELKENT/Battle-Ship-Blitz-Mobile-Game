@@ -297,47 +297,20 @@ class _PlacementScreenState extends State<PlacementScreen> {
 
   Future<void> _runRandomize() async {
     final startedEmpty = _board.ships.isEmpty;
-    Board target;
-    if (startedEmpty) {
-      target = Board.random();
-    } else {
-      target = Board();
-      for (final s in _board.ships) {
-        target.ships.add(PlacedShip(
-          spec: s.spec,
-          row: s.row,
-          col: s.col,
-          horizontal: s.horizontal,
-        ));
-      }
-      final rnd = math.Random();
-      for (final spec in kFleet) {
-        if (target.shipOfKind(spec.kind) != null) continue;
-        var placed2 = false;
-        for (var a = 0; a < 500 && !placed2; a++) {
-          final h = rnd.nextBool();
-          final r = rnd.nextInt(kBoardSize);
-          final c = rnd.nextInt(kBoardSize);
-          if (target.canPlace(spec, r, c, h)) {
-            target.place(spec, r, c, h);
-            placed2 = true;
-          }
-        }
-        if (!placed2) {
-          for (var r = 0; r < kBoardSize && !placed2; r++) {
-            for (var c = 0; c < kBoardSize && !placed2; c++) {
-              for (final h in [true, false]) {
-                if (target.canPlace(spec, r, c, h)) {
-                  target.place(spec, r, c, h);
-                  placed2 = true;
-                  break;
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+    // BUGFIX (RANDOM did nothing on a full board / left already-placed
+    // ships untouched on a partial one): this used to only build a fresh
+    // random layout when the board started completely empty. Otherwise it
+    // copied every already-placed ship's row/col/orientation STRAIGHT into
+    // `target` unchanged and only rolled positions for the still-unplaced
+    // ships — so a fully-deployed fleet had nothing left to randomize
+    // (`target` was byte-for-byte identical to the current board, so the
+    // "did it move" check below skipped every ship) and a partially-placed
+    // one only ever reshuffled the ships still sitting in the dock. Always
+    // dealing a brand new `Board.random()` layout — regardless of what's
+    // already on the board — means every ship, placed or not, gets a new
+    // spot; the "did it move" check further down still only animates the
+    // ones that actually landed somewhere different.
+    final target = Board.random();
     SoundService.instance.whir();
     setState(() {
       _randomizing = true;
@@ -449,8 +422,29 @@ class _PlacementScreenState extends State<PlacementScreen> {
         continue;
       }
       setState(() {
-        _board.ships.removeWhere((s) => s.spec.kind == ship.spec.kind);
-        _board.ships.add(ship);
+        // BUGFIX (ship visibly nudges right before it settles): this used
+        // to `removeWhere` + `add`, which drops the ship out of its
+        // current slot in `_board.ships` and re-appends it at the END of
+        // the list. `_shipWidgets` renders ships in list order, so that
+        // silently reordered this ship's paint position — behind ships
+        // it used to be in front of, or vice versa — for the rest of the
+        // shuffle. Because each ship's hit-box is a square sized to its
+        // OWN long axis (see `_animatedShipBox`), it can briefly overlap
+        // a neighbour's box mid-slide even when their hulls don't touch,
+        // and a z-order flip during that overlap reads as a little
+        // shift/pop right as the ship arrives. Replacing the entry AT ITS
+        // EXISTING INDEX (falling back to `add` only if it's genuinely
+        // new — shouldn't happen here, since `existing != null` failing
+        // is the only other way in) keeps every ship's paint order
+        // stable through the whole reshuffle, so only its position
+        // actually animates.
+        final idx =
+            _board.ships.indexWhere((s) => s.spec.kind == ship.spec.kind);
+        if (idx == -1) {
+          _board.ships.add(ship);
+        } else {
+          _board.ships[idx] = ship;
+        }
       });
       SoundService.instance.place();
       await Future.delayed(const Duration(milliseconds: 90));
@@ -1183,10 +1177,26 @@ class _PlacementScreenState extends State<PlacementScreen> {
                           // box avoids morph when rotating to vertical.
                           for (final s in _staging)
                             Builder(builder: (context) {
-                              final boxSize = s.boardW > s.boardH
-                                  ? s.boardW
-                                  : s.boardH;
-                              final square = boxSize + 8;
+                              // BUGFIX (ship visibly twitches right as it
+                              // lands on the deck): this box used to be
+                              // rendered 8px bigger than the real on-board
+                              // ship box (`boxSide` in
+                              // `BattleGrid._animatedShipBox`, which is
+                              // exactly `s.boardW` — see how `boardW`/
+                              // `boardH` are derived above). Both boxes
+                              // are centered on the same point, so that
+                              // extra 8px was invisible while this staging
+                              // widget was still sliding in — but the
+                              // instant `_staging` is cleared and the real
+                              // board widget takes over (see
+                              // `_runRandomize`), the ship's square
+                              // suddenly shrank by 8px around its own
+                              // center, reading as a little pop/shift
+                              // right as it "settles". Sizing this to
+                              // exactly match the real box removes that
+                              // seam — the swap is now pixel-identical.
+                              final square =
+                                  s.boardW > s.boardH ? s.boardW : s.boardH;
                               return AnimatedPositioned(
                                 duration: const Duration(milliseconds: 420),
                                 curve: Curves.easeInOutCubic,

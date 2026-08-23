@@ -352,6 +352,32 @@ class _BattleGridState extends State<BattleGrid>
               onPanUpdate: _onPanUpdate(cell),
               onPanEnd: _onPanEnd(cell),
               child: Container(
+                // BUGFIX (staged ship snaps a few px right after landing):
+                // `Container` derives its own `padding` from
+                // `decoration.padding` whenever `padding` isn't set
+                // explicitly — and for a `BoxDecoration` with a `border`,
+                // that's the border's own width on every side. So without
+                // this, the `border: Border.all(width: 3.5)` below was
+                // silently insetting the `Stack` (grid paint, every ship,
+                // the drag ghost, the crosshair — everything below) by
+                // 3.5px from this Container's actual edge, even though
+                // every one of those children positions itself using
+                // `cell`/`size` derived from the FULL, un-inset box.
+                // Invisible internally, since the grid paint and the
+                // ships were both shifted by the same amount and so still
+                // lined up with each other — but the placement screen's
+                // RANDOM-button "flight" animation measures THIS
+                // Container from the outside (`_gridKey`) to compute
+                // where a staged ship should land, with no idea about an
+                // inner inset it can't see. The flying ship would arrive
+                // at the outer-box coordinate; the instant it becomes a
+                // real on-grid ship inside the actually-inset `Stack`, it
+                // snapped ~3.5px down-and-right into its true spot. Fixed
+                // at the source: an explicit zero `padding` overrides the
+                // decoration-derived one, so the `Stack` sits flush with
+                // this box and every internal coordinate genuinely is
+                // relative to the same origin the outside world measures.
+                padding: EdgeInsets.zero,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppColors.outline, width: 3.5),
