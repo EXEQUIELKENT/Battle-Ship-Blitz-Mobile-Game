@@ -12,6 +12,7 @@ import '../services/game_controller.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/battle_grid.dart';
+import '../widgets/cannon_widget.dart';
 import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ship_painter.dart';
@@ -69,6 +70,10 @@ class _PlacementScreenState extends State<PlacementScreen> {
   ShipKind? _selected; // currently chosen dock ship
   bool _showHandoff = false;
   static const double _dockH = 64;
+
+  /// Height of the cannon bay strip under the grid — see the "Cannon bay"
+  /// section of `build()`.
+  static const double _cannonBayH = 92;
 
   /// True while a RANDOM-triggered reshuffle is staggering ships into
   /// their new spots (see [_randomize]) — disables the RANDOM/SAVE
@@ -306,20 +311,49 @@ class _PlacementScreenState extends State<PlacementScreen> {
       // out of nowhere at its own random spot, instead of visibly sliding
       // there like every later RANDOM press already does.
       //
-      // Fixed by dealing every ship onto one shared staging spot at the
-      // centre of the grid FIRST, in a single frame with no animation
-      // (there's nothing to ease from on a widget's very first frame
-      // either way, so this part is still an instant "pop" — it's just
-      // one shared, centred pop instead of five scattered ones). That
-      // gives each ship a real prior position on the board, so the
-      // staggered loop below — which is exactly the same loop every
-      // reshuffle already runs — now has something real to slide FROM,
-      // producing the same "dealt out" motion on the very first press.
-      final stagingRow = kBoardSize ~/ 2;
+      // Fixed by dealing every ship onto a shared staging spot FIRST, in a
+      // single frame with no animation (there's nothing to ease from on a
+      // widget's very first frame either way). That gives each ship a
+      // real prior position on the board, so the staggered loop below —
+      // which is exactly the same loop every reshuffle already runs — now
+      // has something real to slide FROM, producing the "dealt out"
+      // motion on the very first press.
+      //
+      // BUGFIX (ships popped in at the BOARD'S CENTRE, then visibly
+      // hopped out to their real spot): staging used to anchor on
+      // `kBoardSize ~/ 2`, dead in the middle of the grid — a location
+      // that means nothing to the player, so the deal read as "ships
+      // appear from nowhere in the middle, then jump to where they
+      // actually belong" instead of a deliberate deal.
+      //
+      // The dock tray directly above the grid (see the `_DockShip` row
+      // below) is where every ship already visually "lives" before it's
+      // placed — it's the same tray a manual drag pulls a ship out of.
+      // Staging there instead makes the very first RANDOM press read as
+      // "pulled from the dock, then dropped at its spot", matching how
+      // every ordinary manual placement already looks and feels, rather
+      // than inventing a second, unrelated motion just for this one case.
+      //
+      // The staging row is placed far enough above row 0 (scaled to each
+      // ship's own length) that its `AnimatedPositioned` box sits
+      // entirely outside the grid's own `Container` — which clips its
+      // contents (`clipBehavior: Clip.antiAlias`, see `BattleGrid.build`)
+      // — so the ship is genuinely invisible up in the dock the instant
+      // it's staged, not just off to one side of the visible board. The
+      // staggered loop below then slides it DOWN into view and across to
+      // its landing cell in one motion, instead of the old pop-then-hop.
+      // Staging columns are spread left-to-right in dock order (the same
+      // order `target.ships` is built in — see `Board.random`) so ships
+      // stage roughly under their own dock icon rather than all stacked
+      // on one spot.
       setState(() {
-        for (final ship in target.ships) {
+        for (var i = 0; i < target.ships.length; i++) {
+          final ship = target.ships[i];
           final size = ship.spec.size;
-          final stagingCol = ((kBoardSize - size) ~/ 2)
+          final stagingRow = -size;
+          final stagingCol = (((i + 0.5) / target.ships.length * kBoardSize) -
+                  size / 2)
+              .round()
               .clamp(0, kBoardSize - size)
               .toInt();
           _board.ships.add(PlacedShip(
@@ -987,6 +1021,49 @@ class _PlacementScreenState extends State<PlacementScreen> {
                           ),
                         );
                       },
+                    ),
+                  ),
+                ),
+
+                // ---------- Cannon bay (equipped cannon preview) ----------
+                // Mirrors the dock tray above the grid: same fixed height
+                // band, same deck-accent background, an outline border on
+                // the facing edge (top here, bottom up there) so the grid
+                // reads as sitting "between" the ships and the guns. Purely
+                // decorative here — this isn't the interactive firing
+                // cannon from battle_screen.dart (no `onFire`/cooldown
+                // ticking, nothing to tap) — it exists so a captain can see
+                // the gun they're about to go into battle with, and it
+                // already keys off `loadout.cannonSkin` the same way the
+                // grid above keys off `boardFamily`/`skin`, so picking a
+                // new cannon in the GEAR dialog updates it live, without
+                // navigating away to the battle screen to find out what it
+                // looks like.
+                Container(
+                  height: _cannonBayH,
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  decoration: BoxDecoration(
+                    color: theme.deckAccent,
+                    border: const Border(
+                      top: BorderSide(color: AppColors.outline, width: 3),
+                    ),
+                  ),
+                  child: Center(
+                    child: IgnorePointer(
+                      child: CannonWidget(
+                        skin: loadout.cannonSkin,
+                        // Always drawn "loaded and ready" — there is no
+                        // cooldown to track before battle actually starts,
+                        // and `ready` (cooldownFraction >= 1 && enabled) is
+                        // what lets the widget paint its real accent color
+                        // and run its gentle idle pulse instead of the
+                        // flat, dim "reloading" look.
+                        cooldownFraction: 1,
+                        size: _cannonBayH - 16,
+                        // No wiring to fire/ready streams and no onFire —
+                        // this cannon never actually shoots from here.
+                      ),
                     ),
                   ),
                 ),

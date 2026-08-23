@@ -171,6 +171,32 @@ class _BattleGridState extends State<BattleGrid>
   int _dragPreviewCol = 0;
   bool _dragging = false;
 
+  /// Which ship kinds have already played their [_ShipEntrance] pop-in at
+  /// least once, for as long as this [_BattleGridState] itself has been
+  /// alive (survives ordinary rebuilds — it's State, not build-local).
+  ///
+  /// BUGFIX (moving a placed ship replayed the RANDOM-deal "pop"): a ship
+  /// currently being dragged is deliberately left OUT of [_shipWidgets] —
+  /// `_dragGhost` stands in for it — so `_onPanStart`/`_onPanEnd` toggling
+  /// `_dragKind` makes that ship's `ValueKey` disappear from the built
+  /// children for the duration of the drag and then reappear once it
+  /// ends. That reappearance is, as far as `AnimatedPositioned`/
+  /// `_ShipEntrance` can tell, a brand-new element with no prior frame to
+  /// ease from — exactly the situation `_ShipEntrance` exists to animate.
+  /// So on any placement session where `animateEntrance` had already
+  /// turned on (i.e. after the RANDOM button's first deal onto an empty
+  /// board — see `PlacementScreen._entranceDeal`), every ordinary manual
+  /// drag afterward re-triggered the same fade + settle-scale "pop" the
+  /// instant the ship was dropped, instead of the plain instant
+  /// reposition ordinary drag-and-drop has always had.
+  ///
+  /// Fixed by remembering, per ship kind, whether it has already played
+  /// that entrance once — the drag-exclusion remount can then only ever
+  /// find a kind here and suppress the replay, while the very first
+  /// mount (RANDOM's staged deal — see `_animatedShipBox`) still gets to
+  /// animate exactly once, same as before.
+  final Set<ShipKind> _shipsEnteredOnce = {};
+
   @override
   void initState() {
     super.initState();
@@ -518,6 +544,17 @@ class _BattleGridState extends State<BattleGrid>
     final centerY = ship.row * cell + h / 2;
     final boxSide = long - 2; // same 2px inset the old per-orientation box used
 
+    // Per-ship-kind latch on top of `widget.animateEntrance` — see
+    // `_shipsEnteredOnce` for why the blanket widget flag alone isn't
+    // enough to keep a later manual drag from replaying this. Marked the
+    // instant it's consulted (not in a `setState`) so a ship's SECOND
+    // mount under the same build — e.g. immediately re-queried by a
+    // hot-reload or a parent rebuild before `initState` below has even
+    // run — can't slip through and animate twice either.
+    final playEntrance =
+        widget.animateEntrance && !_shipsEnteredOnce.contains(ship.spec.kind);
+    if (playEntrance) _shipsEnteredOnce.add(ship.spec.kind);
+
     // AnimatedPositioned (rather than a plain Positioned) so that whenever
     // a ship's row/col/orientation changes in the underlying board state —
     // a drag, a rotation, or the placement screen's RANDOM button
@@ -552,7 +589,7 @@ class _BattleGridState extends State<BattleGrid>
       // GPUs in a way they simply are not on a desktop GPU, which is why
       // this looked harmless in local testing. See `build()`.
       child: _ShipEntrance(
-        animate: widget.animateEntrance,
+        animate: playEntrance,
         child: _ShipWithRotate(
           ship: ship,
           skin: widget.skin!,
