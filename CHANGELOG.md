@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.5](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.4...battleship_blitz-v1.4.5) (2026-08-24)
+
+
+### Bug Fixes
+
+* Simplify RANDOM placement; remove staging ghosts ([57014c4](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/57014c4f0a3c452eed9fd0ca50672ce84b98478d))
+
 ## [1.4.4](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.3...battleship_blitz-v1.4.4) (2026-08-23)
 
 
