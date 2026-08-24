@@ -120,6 +120,47 @@ class BattleGrid extends StatefulWidget {
   /// `PlacementScreen._runRandomize`.
   final bool animateEntrance;
 
+  /// Per-ship-kind starting scale for ships the RANDOM button is currently
+  /// pulling out of their dock preview slot (see `PlacementScreen
+  /// ._runRandomize`). A ship with an entry here is rendered starting at
+  /// roughly its own dock icon's on-screen size and animates up to full
+  /// size in step with `_animatedShipBox`'s position tween — so it reads
+  /// as being visibly pulled and grown out of the preview, not as a
+  /// full-size ship that simply appears above the board and slides down.
+  ///
+  /// Deliberately a scale on the SAME real, row/col-positioned ship widget
+  /// rather than a second overlay: an earlier version drew a separate
+  /// "ghost" sized and positioned from independently-measured dock/board
+  /// geometry, which could drift a pixel or two from the real widget's own
+  /// row/col math and read as a tiny settle-jump when the two were swapped
+  /// at handoff. A scale on the one real widget has nothing to drift
+  /// against.
+  ///
+  /// A kind is only ever consulted once per `BattleGrid` session (see
+  /// `_shipsPulledOnce`) — later rebuilds render it at a constant 1.0, so
+  /// leaving a stale entry in this map after a ship has landed is
+  /// harmless. `null` or a missing kind means "no pull-in", which is what
+  /// ordinary drag-and-drop placement has always looked like.
+  final Map<ShipKind, double>? pullInScales;
+
+  /// Per-ship-kind PRECISE starting center — in this same `BattleGrid`'s
+  /// own local coordinate space (i.e. `RenderBox.globalToLocal` through
+  /// the same box `cell` is measured from) — for a ship currently being
+  /// pulled from its dock preview slot. Paired with [pullInScales]; see
+  /// `PlacementScreen._runRandomize` for how it's measured.
+  ///
+  /// The ship's actual off-grid spawn `row`/`col` in the board model only
+  /// needs to land it SOMEWHERE reasonable above the board — converting a
+  /// continuous on-screen icon position into a whole cell necessarily
+  /// rounds off up to half a cell of error, which reads as the ship
+  /// starting from a vague spot near the dock rather than the icon
+  /// itself. This corrects that: `_animatedShipBox` renders the ship at
+  /// this EXACT point on its very first frame and eases the small
+  /// leftover gap to its row/col-computed spot down to zero (see
+  /// `_ShipPullIn`) — a correction, not a second position system, so
+  /// there's still only one thing ever deciding where the ship really is.
+  final Map<ShipKind, Offset>? pullInFrom;
+
 const BattleGrid({
     super.key,
     required this.shots,
@@ -142,6 +183,8 @@ const BattleGrid({
     this.onShipDragUpdate,
     this.movableShips,
     this.animateEntrance = false,
+    this.pullInScales,
+    this.pullInFrom,
     this.clip = true,
   });
 
@@ -217,6 +260,15 @@ class _BattleGridState extends State<BattleGrid>
   /// mount (RANDOM's staged deal — see `_animatedShipBox`) still gets to
   /// animate exactly once, same as before.
   final Set<ShipKind> _shipsEnteredOnce = {};
+
+  /// Which ship kinds have already played their dock "pull-in" scale (see
+  /// `widget.pullInScales`) at least once, for as long as this
+  /// `_BattleGridState` has been alive. Same reasoning as
+  /// `_shipsEnteredOnce`: a ship that briefly leaves `widget.ships` (goes
+  /// back to the dock) and later reappears gets a brand-new element for
+  /// its `ValueKey`, with no memory of having pulled in before — this set
+  /// is what stops that remount from replaying the effect.
+  final Set<ShipKind> _shipsPulledOnce = {};
 
   @override
   void initState() {
@@ -602,6 +654,29 @@ class _BattleGridState extends State<BattleGrid>
         widget.animateEntrance && !_shipsEnteredOnce.contains(ship.spec.kind);
     if (playEntrance) _shipsEnteredOnce.add(ship.spec.kind);
 
+    // Same one-shot-per-kind latch as `playEntrance` above, but for the
+    // dock pull-in scale — see `_shipsPulledOnce`.
+    final pullStart = widget.pullInScales?[ship.spec.kind];
+    final playPull =
+        pullStart != null && !_shipsPulledOnce.contains(ship.spec.kind);
+    if (pullStart != null) _shipsPulledOnce.add(ship.spec.kind);
+
+    // The gap between this ship's row/col-quantized spawn point (`ship
+    // .row`/`ship.col`, rounded to the nearest whole cell — see
+    // `PlacementScreen._runRandomize`) and its TRUE dock icon position
+    // (`widget.pullInFrom`, measured continuously in pixels). Rendered as
+    // an extra translate on top of the row/col position below and eased
+    // to zero over the same span as the scale, so the ship visibly starts
+    // AT the icon and the up-to-half-a-cell rounding gap is invisible —
+    // without ever making the row/col position itself anything other
+    // than exactly `ship.row * cell` / `ship.col * cell`. See
+    // `_ShipPullIn`.
+    final pullFrom = widget.pullInFrom?[ship.spec.kind];
+    final pullOffset =
+        (playPull && pullFrom != null)
+            ? pullFrom - Offset(centerX, centerY)
+            : null;
+
     // AnimatedPositioned (rather than a plain Positioned) so that whenever
     // a ship's row/col/orientation changes in the underlying board state —
     // a drag, a rotation, or the placement screen's RANDOM button
@@ -637,12 +712,16 @@ class _BattleGridState extends State<BattleGrid>
       // this looked harmless in local testing. See `build()`.
       child: _ShipEntrance(
         animate: playEntrance,
-        child: _ShipWithRotate(
-          ship: ship,
-          skin: widget.skin!,
-          cell: cell,
-          showRotate:
-              widget.onShipTap != null && !ship.isSunk && _movable(ship),
+        child: _ShipPullIn(
+          startScale: playPull ? pullStart : null,
+          startOffset: pullOffset,
+          child: _ShipWithRotate(
+            ship: ship,
+            skin: widget.skin!,
+            cell: cell,
+            showRotate:
+                widget.onShipTap != null && !ship.isSunk && _movable(ship),
+          ),
         ),
       ),
     );
@@ -793,6 +872,97 @@ class _ShipEntranceState extends State<_ShipEntrance>
     return FadeTransition(
       opacity: _fade,
       child: ScaleTransition(scale: _scale, child: widget.child),
+    );
+  }
+}
+
+/// One-shot scale-up + pixel-snap for a ship being pulled out of its dock
+/// preview slot by the RANDOM button (see `BattleGrid.pullInScales` /
+/// `.pullInFrom`). Renders the child at [startScale] and offset by
+/// [startOffset] from wherever `_animatedShipBox`'s `AnimatedPositioned`
+/// has it this frame, then eases scale to `1.0` and offset to zero over
+/// the same duration/curve as that position tween — so the ship visibly
+/// starts exactly at its dock icon, small, and grows to full size in
+/// lockstep with its slide onto the board, instead of the two finishing
+/// at different moments or the start point missing the icon by a
+/// fraction of a cell.
+///
+/// [startOffset] is applied OUTSIDE the scale (translate wraps the
+/// `ScaleTransition`, not the other way around) so it's a fixed pixel
+/// correction regardless of how small the child currently is — halfway
+/// through the grow, a scaled-down offset would undershoot the icon.
+///
+/// Both are read once, in `initState` — same one-render-per-element
+/// contract as `_ShipEntrance`, and for the same reason: this sits inside
+/// `_animatedShipBox`'s keyed `AnimatedPositioned`, so its State is created
+/// exactly once per ship for as long as that key stays continuously
+/// present, and reused (never re-run) on every later rebuild. `null`
+/// means "not currently pulling in" — the child is simply held at a
+/// constant `1.0` scale with no offset, identical to a ship placed by an
+/// ordinary drag.
+class _ShipPullIn extends StatefulWidget {
+  final Widget child;
+  final double? startScale;
+  final Offset? startOffset;
+  const _ShipPullIn({
+    required this.child,
+    required this.startScale,
+    this.startOffset,
+  });
+
+  @override
+  State<_ShipPullIn> createState() => _ShipPullInState();
+}
+
+class _ShipPullInState extends State<_ShipPullIn>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
+  late final Animation<Offset> _offset;
+
+  @override
+  void initState() {
+    super.initState();
+    // Same 420ms/easeInOutCubic timing `_animatedShipBox`'s
+    // `AnimatedPositioned` uses for position, so both the scale-up and
+    // the offset-snap finish exactly as the ship arrives at its dealt
+    // cell rather than settling early or late.
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 420),
+    );
+    final curve = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOutCubic);
+    _scale = Tween<double>(
+      begin: widget.startScale ?? 1.0,
+      end: 1.0,
+    ).animate(curve);
+    _offset = Tween<Offset>(
+      begin: widget.startOffset ?? Offset.zero,
+      end: Offset.zero,
+    ).animate(curve);
+    if (widget.startScale != null || widget.startOffset != null) {
+      _ctrl.forward();
+    } else {
+      // Ordinary drag-placed ship — no pull-in, just hold at rest.
+      _ctrl.value = 1.0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      child: widget.child,
+      builder: (context, child) => Transform.translate(
+        offset: _offset.value,
+        child: ScaleTransition(scale: _scale, child: child),
+      ),
     );
   }
 }

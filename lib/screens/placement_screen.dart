@@ -84,6 +84,24 @@ class _PlacementScreenState extends State<PlacementScreen> {
   };
   final GlobalKey _stackKey = GlobalKey();
 
+  /// Per-ship starting scale for the RANDOM button's dock "pull" (see
+  /// `BattleGrid.pullInScales`), computed fresh each time a ship leaves
+  /// the dock in `_runRandomize` from that ship's own dock icon size vs.
+  /// its full on-board size — the same ratio the old ghost overlay used,
+  /// so a Cruiser doesn't shrink by the same amount a Carrier does. Left
+  /// in place (not cleared) once a ship lands; `BattleGrid` only ever
+  /// consults an entry once per ship kind, so a stale one afterward is
+  /// harmless.
+  final Map<ShipKind, double> _pullInScales = {};
+
+  /// Per-ship PRECISE starting center (see `BattleGrid.pullInFrom`) for
+  /// the RANDOM button's dock "pull" — the dock icon's true on-screen
+  /// center, converted into the grid's own local coordinate space, kept
+  /// at full pixel precision rather than rounded to a cell. Computed
+  /// alongside `_pullInScales`; same "stale entries are harmless" note
+  /// applies.
+  final Map<ShipKind, Offset> _pullInFrom = {};
+
   /// True while a RANDOM-triggered reshuffle is staggering ships into
   /// their new spots (see [_randomize]) — disables the RANDOM/SAVE
   /// buttons and drag/tap interaction so the player can't yank a ship or
@@ -375,6 +393,23 @@ class _PlacementScreenState extends State<PlacementScreen> {
               startCol =
                   ((localCenter.dx - (ship.spec.size * cell) / 2) / cell)
                       .round();
+              // The TRUE dock icon center, kept at full pixel precision
+              // (unlike `startRow`/`startCol` above, which round it off to
+              // the nearest whole cell purely so the board model has
+              // somewhere valid to put this ship). `BattleGrid` uses this
+              // to render the ship's very first frame exactly on the
+              // icon and ease away the small rounding gap — see
+              // `pullInFrom` / `_ShipPullIn`.
+              _pullInFrom[ship.spec.kind] = localCenter;
+              // Same dock-vs-board size ratio the old ghost overlay used
+              // to pick its `startScale` — a ship starts at roughly its
+              // own dock icon's footprint and grows to full size as it
+              // eases onto the board (see `_ShipPullIn`).
+              const dockUnit = 11.0;
+              final dockW = dockUnit * ship.spec.size + 14;
+              final boardW = ship.spec.size * cell - 2;
+              _pullInScales[ship.spec.kind] =
+                  boardW > 0 ? (dockW / boardW).clamp(0.35, 0.75) : 1.0;
             } else {
               // Dock icon not laid out yet (shouldn't normally happen) —
               // fall back to a rough spread by dock order so ships still
@@ -1120,6 +1155,8 @@ class _PlacementScreenState extends State<PlacementScreen> {
                                           _randomizing ? null : _moveShip,
                                       onShipDragUpdate: _onShipDragPreview,
                                       animateEntrance: _entranceDeal,
+                                      pullInScales: _pullInScales,
+                                      pullInFrom: _pullInFrom,
                                       clip: false,
                                     ),
                                   ),
