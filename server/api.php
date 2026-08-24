@@ -63,6 +63,19 @@ function db(array $config): PDO
             PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES   => false,
+            // Every action on this file is a brand-new PHP process/request
+            // (there is no app server keeping state between them), so
+            // without this, EVERY call — including `relay_send` on every
+            // shot fired and each iteration of the matchmaking/relay long
+            // polls re-connecting on the next request — pays a fresh TCP
+            // (and on some hosts, auth) handshake to MySQL before it can
+            // even run its first query. A persistent connection is keyed
+            // to the (host, user, db) triple and reused by the *same* PHP
+            // worker process on its next request, which is exactly the
+            // pattern a poll-then-immediately-repoll loop produces. Safe
+            // here because nothing in this file opens a transaction that
+            // could be left dangling for the next request to inherit.
+            PDO::ATTR_PERSISTENT         => true,
         ]);
     } catch (PDOException $e) {
         // Deliberately vague to the client, specific in the server log:
@@ -219,7 +232,103 @@ function sweep_matchmaking(PDO $pdo, int $queueTtl, int $pairTtl, int $avoidTtl)
     )->execute([$avoidTtl]);
 }
 
-// ----------------------------------------------------------------- routing
+/**
+ * Everything the friends/matchmaking screens need in one shot: friends
+ * with live presence, incoming/outgoing requests, the one live match (if
+ * any), and whether this player is still in the find-a-match queue.
+ * Pulled out of the `poll` action so the lobby long-poll below can call
+ * it repeatedly without duplicating the queries.
+ */
+function poll_state(PDO $pdo, array $me, int $window): array
+{
+    // Every placeholder is distinct even where the value repeats:
+    // native (non-emulated) prepares will not let one named parameter
+    // be bound to several positions.
+    $stmt = $pdo->prepare(
+        "SELECT p.*, TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) AS seconds_since_seen,
+                f.status, f.requester_id
+         FROM friendships f
+         JOIN players p
+           ON p.id = IF(f.requester_id = :me_side, f.addressee_id, f.requester_id)
+         WHERE f.requester_id = :me_req OR f.addressee_id = :me_addr
+         ORDER BY (TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) <= :win) DESC, p.name ASC"
+    );
+    $stmt->execute([
+        'me_side' => $me['id'],
+        'me_req'  => $me['id'],
+        'me_addr' => $me['id'],
+        'win'     => $window,
+    ]);
+
+    $friends = [];
+    $incoming = [];
+    $outgoing = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $entry = public_player($row, $window);
+        if ($row['status'] === 'accepted') {
+            $friends[] = $entry;
+        } elseif ((int) $row['requester_id'] === (int) $me['id']) {
+            $outgoing[] = $entry;
+        } else {
+            $incoming[] = $entry;
+        }
+    }
+
+    // Any live match involving me — an invitation I have been sent, one
+    // I have sent, a matchmaking pairing waiting on accepts, or a game
+    // already under way.
+    $stmt = $pdo->prepare(
+        "SELECT m.*, h.name AS host_name, g.name AS guest_name
+         FROM matches m
+         JOIN players h ON h.id = m.host_id
+         JOIN players g ON g.id = m.guest_id
+         WHERE (m.host_id = ? OR m.guest_id = ?) AND m.status <> 'done'
+         ORDER BY m.id DESC LIMIT 1"
+    );
+    $stmt->execute([$me['id'], $me['id']]);
+    $matchRow = $stmt->fetch();
+    $match = $matchRow ? match_payload($matchRow, (int) $me['id']) : null;
+
+    // Am I still standing in the find-a-match queue?
+    $stmt = $pdo->prepare('SELECT 1 FROM matchmaking WHERE player_id = ?');
+    $stmt->execute([$me['id']]);
+    $searching = (bool) $stmt->fetchColumn();
+
+    return [
+        'friends'   => $friends,
+        'incoming'  => $incoming,
+        'outgoing'  => $outgoing,
+        'match'     => $match,
+        'searching' => $searching,
+    ];
+}
+
+/**
+ * A fingerprint of only the parts of [poll_state] worth waking a long
+ * poll up for: a pairing found, an accept landing, a request arriving,
+ * search state flipping. Deliberately excludes anything that free-runs
+ * on its own — `seconds_since_seen`/`online` tick over on a timer with
+ * no real event behind them — or the very first recheck inside the hold
+ * would already look "changed" and the long poll would never actually
+ * hold, defeating the point.
+ */
+function poll_fingerprint(array $state): string
+{
+    $ids = static fn(array $players) => array_map(
+        static fn(array $p) => (int) $p['id'],
+        $players
+    );
+    $m = $state['match'];
+    return md5(json_encode([
+        'f' => $ids($state['friends']),
+        'i' => $ids($state['incoming']),
+        'o' => $ids($state['outgoing']),
+        's' => $state['searching'],
+        'm' => $m === null
+            ? null
+            : [$m['id'], $m['status'], $m['youAccepted'], $m['peerAccepted']],
+    ]));
+}
 
 $in     = body();
 $action = str_field($in, 'a', 32);
@@ -285,65 +394,41 @@ switch ($action) {
     // screen shows — friends with live presence and stats, incoming and
     // outgoing requests, and any invitation waiting — so presence costs
     // no extra traffic beyond what the UI already needs.
+    //
+    // `wait: true` (sent only by the matchmaking screen's fast heartbeat,
+    // see `OnlineService.startHeartbeat`) turns this into a long poll,
+    // the same idea `relay_poll` uses for the match itself: if nothing
+    // matchmaking-relevant has changed since the caller's `sinceHash`,
+    // hold the connection and recheck for up to `lobby_poll_hold_seconds`
+    // instead of answering "nothing new" immediately. That is what makes
+    // "they accepted!" land in a blink rather than on the next fixed
+    // interval — without it, this action was a plain read fired every
+    // 1.2s by a client-side timer regardless of whether anything had
+    // actually happened, which is both slower to notice a real change
+    // (up to a full tick late) and busier than it needed to be (a request
+    // every 1.2s for as long as the screen is open, change or not).
     case 'poll': {
         $me = require_player($pdo, $in);
 
-        // Every placeholder is distinct even where the value repeats:
-        // native (non-emulated) prepares will not let one named parameter
-        // be bound to several positions.
-        $stmt = $pdo->prepare(
-            "SELECT p.*, TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) AS seconds_since_seen,
-                    f.status, f.requester_id
-             FROM friendships f
-             JOIN players p
-               ON p.id = IF(f.requester_id = :me_side, f.addressee_id, f.requester_id)
-             WHERE f.requester_id = :me_req OR f.addressee_id = :me_addr
-             ORDER BY (TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) <= :win) DESC, p.name ASC"
-        );
-        $stmt->execute([
-            'me_side' => $me['id'],
-            'me_req'  => $me['id'],
-            'me_addr' => $me['id'],
-            'win'     => $window,
-        ]);
+        $wait = !empty($in['wait']);
+        $sinceHash = str_field($in, 'sinceHash', 32);
 
-        $friends = [];
-        $incoming = [];
-        $outgoing = [];
-        foreach ($stmt->fetchAll() as $row) {
-            $entry = public_player($row, $window);
-            if ($row['status'] === 'accepted') {
-                $friends[] = $entry;
-            } elseif ((int) $row['requester_id'] === (int) $me['id']) {
-                $outgoing[] = $entry;
-            } else {
-                $incoming[] = $entry;
+        $state = poll_state($pdo, $me, $window);
+        $hash = poll_fingerprint($state);
+
+        if ($wait && $sinceHash !== '' && $hash === $sinceHash) {
+            ignore_user_abort(false);
+            @set_time_limit((int) $config['lobby_poll_hold_seconds'] + 10);
+            $deadline = microtime(true) + (float) $config['lobby_poll_hold_seconds'];
+            while (microtime(true) < $deadline) {
+                usleep((int) $config['lobby_poll_interval_us']);
+                $state = poll_state($pdo, $me, $window);
+                $hash = poll_fingerprint($state);
+                if ($hash !== $sinceHash) {
+                    break;
+                }
             }
         }
-
-        // Any live match involving me — an invitation I have been sent, one
-        // I have sent, a matchmaking pairing waiting on accepts, or a game
-        // already under way.
-        $stmt = $pdo->prepare(
-            "SELECT m.*, h.name AS host_name, g.name AS guest_name
-             FROM matches m
-             JOIN players h ON h.id = m.host_id
-             JOIN players g ON g.id = m.guest_id
-             WHERE (m.host_id = ? OR m.guest_id = ?) AND m.status <> 'done'
-             ORDER BY m.id DESC LIMIT 1"
-        );
-        $stmt->execute([$me['id'], $me['id']]);
-        $matchRow = $stmt->fetch();
-
-        $match = null;
-        if ($matchRow) {
-            $match = match_payload($matchRow, (int) $me['id']);
-        }
-
-        // Am I still standing in the find-a-match queue?
-        $stmt = $pdo->prepare('SELECT 1 FROM matchmaking WHERE player_id = ?');
-        $stmt->execute([$me['id']]);
-        $searching = (bool) $stmt->fetchColumn();
 
         respond([
             'ok'        => true,
@@ -351,11 +436,12 @@ switch ($action) {
                 $me + ['seconds_since_seen' => 0],
                 $window
             ),
-            'friends'   => $friends,
-            'incoming'  => $incoming,
-            'outgoing'  => $outgoing,
-            'match'     => $match,
-            'searching' => $searching,
+            'friends'   => $state['friends'],
+            'incoming'  => $state['incoming'],
+            'outgoing'  => $state['outgoing'],
+            'match'     => $state['match'],
+            'searching' => $state['searching'],
+            'stateHash' => $hash,
         ]);
     }
 

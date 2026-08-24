@@ -339,6 +339,18 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     style: AppText.label(size: 10, color: AppColors.inkSoft),
                   ),
                 ),
+                if (net.localIps.length > 1) ...[
+                  const SizedBox(height: 2),
+                  Center(
+                    child: Text(
+                      'Scan not finding it? Try entering one of: '
+                      '${net.localIps.skip(1).join(", ")}',
+                      style: AppText.label(
+                          size: 8.5, color: AppColors.inkSoft),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 const Center(
                   child: SizedBox(

@@ -460,13 +460,42 @@ class OnlineService extends ChangeNotifier {
     }
   }
 
+  /// The fingerprint the server handed back with the last successful
+  /// [refresh] — sent as `sinceHash` on the next long-polling call so it
+  /// knows what "nothing new" means for THIS player. Reset whenever a
+  /// plain (non-waiting) refresh runs, since that already has fresh data
+  /// and there is nothing to compare against a stale hash for.
+  String? _stateHash;
+
   /// One request that returns everything the friends screen shows AND
   /// keeps this player marked online — presence costs no extra traffic
   /// because any request at all counts as "I am here".
-  Future<void> refresh() async {
-    if (!signedIn) return;
+  ///
+  /// [wait] asks the server to hold the connection and only answer once
+  /// something matchmaking-relevant has actually changed (or a few
+  /// seconds pass), the way [RelayLink]'s poll already does for a live
+  /// match — see `poll`'s own doc in `server/api.php`. Only the fast
+  /// matchmaking heartbeat below sets it; the plain friends-screen pace
+  /// stays a quick, immediate read, since holding a connection open just
+  /// to watch an idle friends list has nothing to buy.
+  ///
+  /// Returns whether the call actually reached the server, so the fast
+  /// heartbeat loop knows whether to back off before trying again.
+  Future<bool> refresh({bool wait = false}) async {
+    if (!signedIn) return false;
+    var ok = true;
     try {
-      final res = await api.call('poll');
+      final hash = _stateHash;
+      final res = await api.call(
+        'poll',
+        args: wait
+            ? {'wait': true, if (hash != null) 'sinceHash': hash}
+            : const {},
+        // The server's own hold is `lobby_poll_hold_seconds` (4s by
+        // default); this must comfortably outlast that; the plain call
+        // keeps the shorter default timeout.
+        timeout: wait ? const Duration(seconds: 9) : const Duration(seconds: 12),
+      );
       friends = _players(res['friends']);
       incomingRequests = _players(res['incoming']);
       outgoingRequests = _players(res['outgoing']);
@@ -481,6 +510,7 @@ class OnlineService extends ChangeNotifier {
         myName = (me['name'] as String?) ?? myName;
         myId = (me['id'] as num?)?.toInt() ?? myId;
       }
+      _stateHash = res['stateHash'] as String?;
       reachable = true;
       lastError = null;
     } on OnlineError catch (e) {
@@ -488,8 +518,10 @@ class OnlineService extends ChangeNotifier {
       // entry, mid-search heartbeats, invites — one message, one fix.
       lastError = e.offline ? _offlineMessage : e.message;
       if (e.offline) reachable = false;
+      ok = false;
     }
     notifyListeners();
+    return ok;
   }
 
   List<OnlinePlayer> _players(Object? raw) {
@@ -500,22 +532,59 @@ class OnlineService extends ChangeNotifier {
         .toList();
   }
 
+  /// Bumped on every [startHeartbeat]/[stopHeartbeat] so the fast-mode
+  /// poll loop below knows to stop after the call it is currently
+  /// awaiting returns, even though nothing can cancel an in-flight HTTP
+  /// request directly.
+  int _heartbeatGen = 0;
+
   /// Starts the presence heartbeat. Runs only while a screen that needs
   /// it is open — there is no reason to advertise as online from inside a
   /// single-player match against the AI.
   ///
-  /// [fast] halves-and-halves-again the interval: while a matchmaking
-  /// screen is up, "opponent accepted" should land in a blink, not on the
-  /// next five-second tick.
+  /// [fast] switches from a plain 5-second timer to a continuous long
+  /// poll: while a matchmaking screen is up, "opponent accepted" should
+  /// land in a blink, not on the next tick. That only works as a tight
+  /// loop rather than its own fixed-interval timer — the request itself
+  /// now blocks on the server for up to a few seconds when there is
+  /// nothing new to report, so a 1.2s timer alongside it would just pile
+  /// up overlapping calls.
   void startHeartbeat({bool fast = false}) {
     _heartbeat?.cancel();
+    _heartbeat = null;
+    _heartbeatGen++;
     if (!signedIn) return;
     _fastPolling = fast;
-    unawaited(refresh());
-    _heartbeat = Timer.periodic(
-      fast ? const Duration(milliseconds: 1200) : const Duration(seconds: 5),
-      (_) => unawaited(refresh()),
-    );
+    if (fast) {
+      _stateHash = null; // nothing to compare against yet on this pass
+      unawaited(_fastLoop(_heartbeatGen));
+    } else {
+      unawaited(refresh());
+      _heartbeat = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => unawaited(refresh()),
+      );
+    }
+  }
+
+  /// Keeps re-issuing the long-polling [refresh] for as long as fast
+  /// mode is still the current heartbeat. [gen] pins this loop to the
+  /// [startHeartbeat]/[stopHeartbeat] call that started it — if either
+  /// runs again meanwhile, `gen` no longer matches [_heartbeatGen] once
+  /// the in-flight request returns, and this loop quietly stops instead
+  /// of racing whatever heartbeat replaced it.
+  Future<void> _fastLoop(int gen) async {
+    while (_fastPolling && gen == _heartbeatGen) {
+      final ok = await refresh(wait: true);
+      if (!_fastPolling || gen != _heartbeatGen) return;
+      // A failed call already means the connection is unhappy; re-firing
+      // instantly would just hammer it. A healthy call, by contrast, is
+      // safe to re-issue immediately — the server's own hold is what
+      // paces those, not this loop.
+      if (!ok) {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+      }
+    }
   }
 
   /// Switches an already-running heartbeat between the normal friends
@@ -549,6 +618,11 @@ class OnlineService extends ChangeNotifier {
   void stopHeartbeat() {
     _heartbeat?.cancel();
     _heartbeat = null;
+    _fastPolling = false;
+    // Lets a `_fastLoop` that's mid-`await` on the server's hold notice,
+    // the moment it returns, that it's no longer the current heartbeat —
+    // see `_fastLoop`'s own doc.
+    _heartbeatGen++;
   }
 
   // ------------------------------------------------------------ FRIENDS ---
@@ -712,7 +786,10 @@ class OnlineService extends ChangeNotifier {
 
   @override
   void dispose() {
-    _heartbeat?.cancel();
+    // `stopHeartbeat` also bumps `_heartbeatGen`, which is what makes a
+    // `_fastLoop` mid-`await` on the server's hold stop after that call
+    // returns instead of continuing to poll through a disposed service.
+    stopHeartbeat();
     api.close();
     super.dispose();
   }

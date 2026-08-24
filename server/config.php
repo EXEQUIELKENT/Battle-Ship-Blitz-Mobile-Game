@@ -36,6 +36,22 @@ $defaults = [
     'poll_fast_interval_us'    => 20000,   // 20ms during the fast phase
     'poll_slow_interval_us'    => 100000,  // 100ms after backing off
 
+    // How long the LOBBY long-poll (the `poll` action, when the
+    // matchmaking screen asks it to `wait`) holds the connection open
+    // waiting for something matchmaking-relevant to change — a pairing
+    // found, an accept landing, a release. Shorter than
+    // `poll_hold_seconds` on purpose: this is a background screen
+    // watching for one of a few discrete events, not a live match, so
+    // there is no reason to tie up a worker as long.
+    'lobby_poll_hold_seconds' => 4,
+
+    // How often the lobby long-poll rechecks while holding. Coarser than
+    // the in-match `poll_fast_interval_us` — matchmaking events (another
+    // human tapping accept) don't need 20ms precision the way a shot
+    // landing mid-rally does, and this loop is competing with every
+    // other matchmaking player's own hold for the same database.
+    'lobby_poll_interval_us' => 150000, // 150ms
+
     // How long a "MATCH FOUND" prompt stays open while waiting for both
     // captains to accept. After this with no second yes, the pairing is
     // released and both players go back to searching.

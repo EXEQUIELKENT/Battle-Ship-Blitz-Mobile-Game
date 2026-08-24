@@ -119,6 +119,12 @@ class NetworkService extends ChangeNotifier {
   String statusMessage = '';
   String roomCode = '';
   String localIp = '';
+
+  /// Every address this device answers to across all its active network
+  /// interfaces — not just the one [localIp] happens to be. See
+  /// [_localIps]/[_startBeacon] for why the beacon needs all of them, not
+  /// a single guess.
+  List<String> localIps = const [];
   String peerName = 'Opponent';
   List<RoomInfo> foundRooms = [];
 
@@ -194,19 +200,41 @@ class NetworkService extends ChangeNotifier {
 
   bool get _networkAvailable => !kIsWeb;
 
-  Future<String> _localIp() async {
+  /// Every non-loopback IPv4 address this device currently has, one per
+  /// active network interface.
+  ///
+  /// A phone that is hosting its own Wi-Fi hotspot while ALSO still
+  /// signed on to mobile data has (at least) two of these at once — the
+  /// hotspot's own address (something like `192.168.43.1`) and the
+  /// cellular interface's — and `NetworkInterface.list` gives no
+  /// guarantee about which comes back first. [_startBeacon] broadcasts
+  /// on every one of them for exactly that reason: picking just one and
+  /// hoping is how a room can end up advertised on an interface the
+  /// joining phone has no route to at all, which shows up to a player as
+  /// "my hotspot match doesn't show up in the scan" even though both
+  /// phones are on the same hotspot.
+  Future<List<String>> _localIps() async {
     try {
       final ifaces = await NetworkInterface.list(
         type: InternetAddressType.IPv4,
         includeLinkLocal: false,
       );
+      final out = <String>[];
       for (final iface in ifaces) {
         for (final addr in iface.addresses) {
-          if (!addr.isLoopback) return addr.address;
+          if (addr.isLoopback || out.contains(addr.address)) continue;
+          out.add(addr.address);
         }
       }
-    } catch (_) {}
-    return '127.0.0.1';
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<String> _localIp() async {
+    final all = await _localIps();
+    return all.isNotEmpty ? all.first : '127.0.0.1';
   }
 
   String _newCode() {
@@ -230,7 +258,8 @@ class NetworkService extends ChangeNotifier {
     _selfName = playerName;
     try {
       await _ensureServer();
-      localIp = await _localIp();
+      localIps = await _localIps();
+      localIp = localIps.isNotEmpty ? localIps.first : await _localIp();
       roomCode = _newCode();
       await _startBeacon(resumable: false);
 
@@ -275,22 +304,65 @@ class NetworkService extends ChangeNotifier {
   /// Broadcasts this room on the LAN once a second so joiners can find it
   /// with SCAN FOR GAMES. [resumable] marks the beacon as a match already
   /// in progress with a seat held open.
+  ///
+  /// Sent once per address in [localIps], each aimed at THAT address's own
+  /// subnet-directed broadcast (e.g. `192.168.43.255` for a host at
+  /// `192.168.43.1`) rather than the single global `255.255.255.255`.
+  /// That distinction matters specifically on a phone hosting a hotspot:
+  /// the global broadcast address has no subnet of its own, so the OS
+  /// resolves it through the ordinary routing table — commonly the same
+  /// interface used for the phone's own default/mobile-data route, NOT
+  /// the hotspot's AP interface, since the AP interface serves clients
+  /// rather than being where this device goes to reach the internet. A
+  /// directed broadcast, by contrast, targets an address that is only
+  /// reachable via the one interface actually attached to that subnet, so
+  /// the kernel's more-specific connected route wins and the packet goes
+  /// out the right radio regardless of what the default route is. The
+  /// plain global broadcast is still sent too, as a harmless extra that
+  /// costs nothing and still helps on networks where it works fine.
   Future<void> _startBeacon({required bool resumable}) async {
     _stopBeacon();
-    if (localIp.isEmpty) localIp = await _localIp();
+    if (localIps.isEmpty) localIps = await _localIps();
+    if (localIp.isEmpty && localIps.isNotEmpty) localIp = localIps.first;
     _udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 45679);
     _udp!.broadcastEnabled = true;
     _beaconTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      final payload = jsonEncode({
-        'magic': _magic,
-        'code': roomCode,
-        'host': localIp,
-        'name': _selfName,
-        if (resumable) 'resume': 1,
-      });
-      _udp?.send(
-          utf8.encode(payload), InternetAddress('255.255.255.255'), 45679);
+      for (final ip in localIps) {
+        final bytes = utf8.encode(jsonEncode({
+          'magic': _magic,
+          'code': roomCode,
+          'host': ip,
+          'name': _selfName,
+          if (resumable) 'resume': 1,
+        }));
+        final directed = _subnetBroadcastOf(ip);
+        if (directed != null) {
+          _udp?.send(bytes, InternetAddress(directed), 45679);
+        }
+      }
+      if (localIps.isNotEmpty) {
+        final bytes = utf8.encode(jsonEncode({
+          'magic': _magic,
+          'code': roomCode,
+          'host': localIps.first,
+          'name': _selfName,
+          if (resumable) 'resume': 1,
+        }));
+        _udp?.send(
+            bytes, InternetAddress('255.255.255.255'), 45679);
+      }
     });
+  }
+
+  /// The subnet-directed broadcast address for [ip], assuming a /24 —
+  /// the same assumption `ServerDiscovery`'s own LAN sweep already makes
+  /// elsewhere in this project, and true of every common phone hotspot
+  /// and home router. Null for anything not shaped like a plain IPv4
+  /// dotted quad.
+  String? _subnetBroadcastOf(String ip) {
+    final octets = ip.split('.');
+    if (octets.length != 4) return null;
+    return '${octets[0]}.${octets[1]}.${octets[2]}.255';
   }
 
   void _stopBeacon() {
