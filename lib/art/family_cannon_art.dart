@@ -31,7 +31,32 @@ void paintFamilyCannon(
   final p = paletteOverride ?? family.gun;
   final c = FamilyCanvas.fit(canvas, size, _gunBox);
   if (shadow) {
-    c.ellipse(70, 70, 74, 30, fillColor: Colors.black, fillOpacity: 0.20);
+    // Per-family ground shadow — the old 74×30 oval fit the round
+    // mount but left Pirate's wheels, Steam's bypass pipe and
+    // Volcanic's rock slab hanging shadowless. Each family now
+    // gets a footprint that matches its own base width.
+    switch (family.id) {
+      case FleetFamilyId.pirate:
+        c.ellipse(70, 72, 164, 36, fillColor: Colors.black, fillOpacity: 0.20);
+        c.ellipse(4, 78, 36, 18, fillColor: Colors.black, fillOpacity: 0.14);
+        c.ellipse(136, 78, 36, 18, fillColor: Colors.black, fillOpacity: 0.14);
+        break;
+      case FleetFamilyId.naval:
+        c.ellipse(70, 70, 138, 30, fillColor: Colors.black, fillOpacity: 0.20);
+        break;
+      case FleetFamilyId.steam:
+        c.ellipse(70, 72, 152, 32, fillColor: Colors.black, fillOpacity: 0.20);
+        break;
+      case FleetFamilyId.arctic:
+        c.ellipse(70, 72, 148, 32, fillColor: Colors.black, fillOpacity: 0.20);
+        break;
+      case FleetFamilyId.volcanic:
+        c.ellipse(70, 74, 172, 38, fillColor: Colors.black, fillOpacity: 0.20);
+        break;
+      case FleetFamilyId.scifi:
+        c.ellipse(70, 68, 126, 26, fillColor: Colors.black, fillOpacity: 0.16);
+        break;
+    }
   }
   switch (family.id) {
     case FleetFamilyId.pirate:

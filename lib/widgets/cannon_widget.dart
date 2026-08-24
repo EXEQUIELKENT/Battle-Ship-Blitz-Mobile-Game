@@ -814,23 +814,93 @@ class CannonPainter extends CustomPainter {
         Offset(side / 2, fam.gunY(side, fam.mountCy) + recoilPull);
     final platformR = fam.platformRadius(side);
 
-    // Ground shadow, under the platform rather than under the gun — the
-    // art's own shadow is switched off below so there is only ever one.
-    //
-    // Drawn as a full circle a little WIDER than the platform itself
-    // (rather than a squashed oval sized to roughly match it), so a ring
-    // of shadow is always visible peeking out from behind the plate all
-    // the way round — the same "hard shadow" read a legacy gun gets from
-    // its own ring in `CannonPainter.paint`'s "Soft ground shadow
-    // ellipse" above. A shadow sized to match the plate mostly ends up
-    // hidden UNDER it once the opaque disc is painted on top; oversizing
-    // it here is what actually keeps it visible on every gun, not just
-    // the ones with a wide enough mount to poke past a tight oval.
-    canvas.drawCircle(
-      mountCenter + Offset(0, platformR * 0.12),
-      platformR * 1.18,
-      Paint()..color = Colors.black.withValues(alpha: 0.24),
-    );
+    // Ground shadow — per-family silhouette, not a single legacy oval.
+    // The old family shadow reused the legacy oval (platformR*2.2) for
+    // all six families. That fits a round mount but not the new
+    // silhouettes: Pirate's spoked wheels sit 40px outside the plate,
+    // Steam's bypass pipe and Volcanic's rock slab overhang the disc,
+    // while Sci-Fi floats and needs a tighter, softer contact patch.
+    // Each family now draws a shadow whose footprint matches its own
+    // base width/height so no overhanging part appears shadowless.
+    final shadowPaint = Paint()..color = Colors.black.withValues(alpha: 0.24);
+    switch (fam.id) {
+      case FleetFamilyId.pirate:
+        // Wide timber carriage + two wheels: main plate shadow plus
+        // two wheel contact patches.
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: mountCenter + Offset(0, platformR * 0.38),
+            width: platformR * 3.4,
+            height: platformR * 1.05,
+          ),
+          shadowPaint,
+        );
+        // Wheel shadows
+        for (final dx in const [-1.05, 1.05]) {
+          canvas.drawOval(
+            Rect.fromCenter(
+              center: mountCenter + Offset(dx * platformR, platformR * 0.52),
+              width: platformR * 0.95,
+              height: platformR * 0.55,
+            ),
+            Paint()..color = Colors.black.withValues(alpha: 0.18),
+          );
+        }
+        break;
+      case FleetFamilyId.naval:
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: mountCenter + Offset(0, platformR * 0.34),
+            width: platformR * 2.75,
+            height: platformR * 0.95,
+          ),
+          shadowPaint,
+        );
+        break;
+      case FleetFamilyId.steam:
+        // Broad boiler base + bypass pipe overhang
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: mountCenter + Offset(0, platformR * 0.36),
+            width: platformR * 3.05,
+            height: platformR * 1.0,
+          ),
+          shadowPaint,
+        );
+        break;
+      case FleetFamilyId.arctic:
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: mountCenter + Offset(0, platformR * 0.36),
+            width: platformR * 2.9,
+            height: platformR * 1.0,
+          ),
+          shadowPaint,
+        );
+        break;
+      case FleetFamilyId.volcanic:
+        // Rock slab is widest and most irregular
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: mountCenter + Offset(0, platformR * 0.38),
+            width: platformR * 3.2,
+            height: platformR * 1.15,
+          ),
+          shadowPaint,
+        );
+        break;
+      case FleetFamilyId.scifi:
+        // Floating segments — smaller, softer contact patch
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: mountCenter + Offset(0, platformR * 0.30),
+            width: platformR * 2.55,
+            height: platformR * 0.82,
+          ),
+          Paint()..color = Colors.black.withValues(alpha: 0.20),
+        );
+        break;
+    }
 
     // Rim, then the plate itself — the same two-tone build as the
     // standard mount, in this family's metal.
