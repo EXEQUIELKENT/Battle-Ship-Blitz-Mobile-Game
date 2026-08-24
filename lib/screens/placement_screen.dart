@@ -343,12 +343,32 @@ class _PlacementScreenState extends State<PlacementScreen> {
     // already on the board — means every ship, placed or not, gets a new
     // spot; the "did it move" check further down still only animates the
     // ones that actually landed somewhere different.
+    //
+    // BUGFIX (ships popped in at full size, overlapping the dock tray):
+    // `_entranceDeal` is what tells `BattleGrid` (via `animateEntrance`)
+    // to play `_ShipEntrance`'s fade + grow-from-nothing pop the moment a
+    // ship mounts at its off-grid dock-measured starting spot — see the
+    // doc comment on `_entranceDeal`. Nothing ever actually SET it to
+    // true, though, so `BattleGrid.animateEntrance` was always false and
+    // `_ShipEntrance` always took its `else` branch (`_ctrl.value = 1.0`,
+    // "same instant appearance drag-and-drop placement has always had").
+    // That meant a freshly-dealt ship was full-size and fully-opaque on
+    // the very first frame it appeared — right on top of its tiny dock
+    // icon, up under the header — and only THEN started sliding via
+    // `AnimatedPositioned`, instead of visibly growing out of its preview
+    // slot as it flew to its dealt cell. Captured before `target` is dealt
+    // (dealing doesn't touch `_board`, but reads better ahead of the
+    // mutation below) and only for a board that started genuinely empty —
+    // matching `_entranceDeal`'s own contract — so a reshuffle of an
+    // already-deployed fleet still repositions with a plain slide, no pop.
+    final startedEmpty = _board.ships.isEmpty;
     final target = Board.random();
     SoundService.instance.whir();
     setState(() {
       _randomizing = true;
       _selected = null;
       _previewShip = null;
+      if (startedEmpty) _entranceDeal = true;
     });
     // Ships still sitting in the dock get a starting spot measured from
     // their OWN dock icon's actual on-screen position, so each one
