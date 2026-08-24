@@ -83,14 +83,6 @@ class _PlacementScreenState extends State<PlacementScreen> {
     for (final s in kFleet) s.kind: GlobalKey(),
   };
   final GlobalKey _stackKey = GlobalKey();
-  List<_StagingShip> _staging = [];
-
-  /// How long a staged ship's ghost fades out ON TOP of the real on-grid
-  /// ship once RANDOM hands it off (see the handoff comment in
-  /// `_runRandomize`). Shared between the delay that gates the handoff and
-  /// the `AnimatedOpacity` that actually plays it, so the two can never
-  /// drift out of sync.
-  static const _handoffFade = Duration(milliseconds: 180);
 
   /// True while a RANDOM-triggered reshuffle is staggering ships into
   /// their new spots (see [_randomize]) — disables the RANDOM/SAVE
@@ -320,7 +312,6 @@ class _PlacementScreenState extends State<PlacementScreen> {
   }
 
   Future<void> _runRandomize() async {
-    final startedEmpty = _board.ships.isEmpty;
     // BUGFIX (RANDOM did nothing on a full board / left already-placed
     // ships untouched on a partial one): this used to only build a fresh
     // random layout when the board started completely empty. Otherwise it
@@ -341,132 +332,78 @@ class _PlacementScreenState extends State<PlacementScreen> {
       _selected = null;
       _previewShip = null;
     });
+    // Ships still sitting in the dock get a starting spot measured from
+    // their OWN dock icon's actual on-screen position, so each one
+    // visibly enters from right where its preview slot sits — not an
+    // approximate evenly-spread guess. This adds the REAL ship straight
+    // into `_board.ships` at that off-grid spot; the loop below then
+    // eases it down into its dealt cell using `BattleGrid`'s own
+    // row/col-driven `AnimatedPositioned` (see `_animatedShipBox`) — the
+    // exact same position tween an ordinary reposition already uses.
+    //
+    // The dock icon's position is still measured with
+    // `RenderBox.localToGlobal`/`globalToLocal` (through `_dockKeys` and
+    // `_gridKey`), same as the old ghost system — but the result is only
+    // ever used ONCE, to pick this ship's *starting row/col*, using the
+    // exact same center = col*cell + w/2 relationship `_animatedShipBox`
+    // itself uses to place the real widget (solved in reverse here). That
+    // means there is only ever the one real, row/col-positioned widget
+    // for this ship, from the very first frame it's drawn — no separate
+    // pixel-measured ghost overlay computing a second, competing position
+    // that could ever drift out of sync with it and need a crossfade to
+    // mask the seam.
     final unplaced = target.ships
         .where((s) => _board.shipOfKind(s.spec.kind) == null)
         .toList();
     if (unplaced.isNotEmpty) {
-      final stackBox =
-          _stackKey.currentContext?.findRenderObject() as RenderBox?;
-      final gridBox =
-          _gridKey.currentContext?.findRenderObject() as RenderBox?;
-      if (stackBox != null && gridBox != null) {
-        final cell = gridBox.size.width / kBoardSize;
-        setState(() {
-          _staging = [
-            for (final ship in unplaced)
-              () {
-                final dockKey = _dockKeys[ship.spec.kind]!;
-                final dockBox = dockKey.currentContext?.findRenderObject()
-                    as RenderBox?;
-                final Offset startStack;
-                if (dockBox != null) {
-                  final dockCenterGlobal =
-                      dockBox.localToGlobal(dockBox.size.center(Offset.zero));
-                  startStack = stackBox.globalToLocal(dockCenterGlobal);
-                } else {
-                  startStack = Offset(
-                    stackBox.size.width / 2,
-                    (stackBox.size.height - gridBox.size.width) / 2 - 20,
-                  );
-                }
-                final targetCenterLocal = Offset(
-                  ship.col * cell +
-                      (ship.horizontal
-                          ? ship.spec.size * cell / 2
-                          : cell / 2),
-                  ship.row * cell +
-                      (ship.horizontal ? cell / 2 : ship.spec.size * cell / 2),
-                );
-                final targetCenterGlobal =
-                    gridBox.localToGlobal(targetCenterLocal);
-                final endStack = stackBox.globalToLocal(targetCenterGlobal);
-                final boardW = ship.spec.size * cell - 2;
-                final boardH = cell - 2;
-                const dockUnit = 11.0;
-                final dockW = dockUnit * ship.spec.size + 14;
-                final startScale = (dockW / boardW).clamp(0.35, 0.75);
-                return _StagingShip(
-                  kind: ship.spec.kind,
-                  spec: ship.spec,
-                  start: startStack,
-                  end: endStack,
-                  boardW: boardW,
-                  boardH: boardH,
-                  startScale: startScale,
-                  targetHorizontal: ship.horizontal,
-                );
-              }(),
-          ];
-        });
-        await Future.delayed(const Duration(milliseconds: 16));
-        if (!mounted) return;
+      final gridBox = _gridKey.currentContext?.findRenderObject() as RenderBox?;
+      final cell = gridBox == null ? null : gridBox.size.width / kBoardSize;
+      setState(() {
         for (final ship in unplaced) {
-          if (!mounted) return;
-          setState(() {
-            final s = _staging.firstWhere((e) => e.kind == ship.spec.kind);
-            s.arrived = true;
-          });
-          SoundService.instance.place();
-          await Future.delayed(const Duration(milliseconds: 90));
+          int startRow = -3;
+          int startCol = 0;
+          final span = kBoardSize - ship.spec.size;
+          if (gridBox != null && cell != null) {
+            final dockBox = _dockKeys[ship.spec.kind]
+                ?.currentContext
+                ?.findRenderObject() as RenderBox?;
+            if (dockBox != null) {
+              final dockCenterGlobal =
+                  dockBox.localToGlobal(dockBox.size.center(Offset.zero));
+              final localCenter = gridBox.globalToLocal(dockCenterGlobal);
+              startRow = ((localCenter.dy - cell / 2) / cell).round();
+              startCol =
+                  ((localCenter.dx - (ship.spec.size * cell) / 2) / cell)
+                      .round();
+            } else {
+              // Dock icon not laid out yet (shouldn't normally happen) —
+              // fall back to a rough spread by dock order so ships still
+              // enter from distinct, plausible-looking columns.
+              final slot = kFleet.indexWhere((s) => s.kind == ship.spec.kind);
+              startCol = kFleet.length > 1
+                  ? ((slot.clamp(0, kFleet.length - 1) * span) /
+                          (kFleet.length - 1))
+                      .round()
+                  : 0;
+            }
+          }
+          if (startCol < 0) startCol = 0;
+          if (startCol > span) startCol = span;
+          _board.ships.add(PlacedShip(
+            spec: ship.spec,
+            row: startRow,
+            col: startCol,
+            horizontal: true,
+          ));
         }
-        await Future.delayed(const Duration(milliseconds: 420));
-        if (!mounted) return;
-        // BUGFIX (ship visibly shifts a few px right as the rotate arrows
-        // pop in): this used to add the ships to the real board AND clear
-        // `_staging` in the same `setState` — instantly deleting the
-        // staging ghost the same frame the real, cell-positioned
-        // `BattleGrid` widget took over. The ghost's resting spot is
-        // measured by converting the target cell through
-        // `RenderBox.localToGlobal`/`globalToLocal` (see `endStack`
-        // above); the real widget positions itself directly from
-        // `row`/`col` * `cell` (see `BattleGrid._animatedShipBox`). Those
-        // two routes agree on paper, but in practice they're computed at
-        // different times off different `RenderBox`es, and any tiny
-        // drift between them — invisible on its own — used to read as a
-        // little "settle" pop right as the ship landed, made worse by the
-        // rotate arrows appearing in that exact same frame (`_randomizing`
-        // flipping false is what unlocks `showRotate`).
-        //
-        // Fixed by not tearing the ghost down the instant the real ship
-        // exists: the real ship is added to `_board.ships` now (so it's
-        // already sitting, motionless, at its correct spot underneath),
-        // but the staging ghost stays mounted a little longer and FADES
-        // OUT on top of it instead of just vanishing — masking any tiny
-        // leftover offset instead of revealing it as a jump. `_randomizing`
-        // (which gates the rotate arrows) doesn't clear until the ghost
-        // has fully faded, so the arrows never pop in in the same frame as
-        // a position change either.
-        setState(() {
-          for (final ship in unplaced) {
-            _board.ships.add(ship);
-          }
-          for (final s in _staging) {
-            s.handoff = true;
-          }
-        });
-        await Future.delayed(_handoffFade);
-        if (!mounted) return;
-        setState(() {
-          _staging.clear();
-        });
-        if (startedEmpty) {
-          if (mounted) setState(() => _randomizing = false);
-          return;
-        }
-      } else {
-        setState(() {
-          for (final ship in unplaced) {
-            _board.ships.add(PlacedShip(
-              spec: ship.spec,
-              row: -3,
-              col: 0,
-              horizontal: true,
-            ));
-          }
-        });
-        await Future.delayed(const Duration(milliseconds: 16));
-        if (!mounted) return;
-      }
+      });
+      // One frame so the off-grid start position actually paints before
+      // the loop below starts tweening away from it — otherwise
+      // `AnimatedPositioned` has no "from" frame to ease from and the
+      // ship would just appear already at its dealt cell instead of
+      // visibly sliding in from above the dock.
+      await Future.delayed(const Duration(milliseconds: 16));
+      if (!mounted) return;
     }
     for (final ship in target.ships) {
       if (!mounted) return;
@@ -1011,8 +948,7 @@ class _PlacementScreenState extends State<PlacementScreen> {
                           spec: spec,
                           skin: skin,
                           cell: cellSize,
-                          placed: _board.shipOfKind(spec.kind) != null ||
-                              _staging.any((s) => s.kind == spec.kind),
+                          placed: _board.shipOfKind(spec.kind) != null,
                           selected: _selected == spec.kind,
                           rotated: widget.isPlayer2,
                           onTap: () {
@@ -1228,85 +1164,6 @@ class _PlacementScreenState extends State<PlacementScreen> {
                               ),
                             ),
                           ),
-                          // Staging ships for RANDOM — visibly pulled
-                          // directly from their dock preview slots. Square
-                          // box avoids morph when rotating to vertical.
-                          for (final s in _staging)
-                            Builder(builder: (context) {
-                              // BUGFIX (ship visibly twitches right as it
-                              // lands on the deck): this box used to be
-                              // rendered 8px bigger than the real on-board
-                              // ship box (`boxSide` in
-                              // `BattleGrid._animatedShipBox`, which is
-                              // exactly `s.boardW` — see how `boardW`/
-                              // `boardH` are derived above). Both boxes
-                              // are centered on the same point, so that
-                              // extra 8px was invisible while this staging
-                              // widget was still sliding in — but the
-                              // instant `_staging` is cleared and the real
-                              // board widget takes over (see
-                              // `_runRandomize`), the ship's square
-                              // suddenly shrank by 8px around its own
-                              // center, reading as a little pop/shift
-                              // right as it "settles". Sizing this to
-                              // exactly match the real box removes that
-                              // seam — the swap is now pixel-identical.
-                              final square =
-                                  s.boardW > s.boardH ? s.boardW : s.boardH;
-                              return AnimatedPositioned(
-                                duration: const Duration(milliseconds: 420),
-                                curve: Curves.easeInOutCubic,
-                                left:
-                                    (s.arrived ? s.end.dx : s.start.dx) -
-                                        square / 2,
-                                top: (s.arrived ? s.end.dy : s.start.dy) -
-                                    square / 2,
-                                width: square,
-                                height: square,
-                                child: IgnorePointer(
-                                  // Fades the ghost out ON TOP of the real
-                                  // ship once `_runRandomize` hands off —
-                                  // see the handoff bugfix note there. The
-                                  // real ship underneath never moves during
-                                  // this fade, so any tiny leftover offset
-                                  // between the two positioning systems is
-                                  // covered by the crossfade instead of
-                                  // reading as a last-second jump.
-                                  child: AnimatedOpacity(
-                                    opacity: s.handoff ? 0.0 : 1.0,
-                                    duration: _handoffFade,
-                                    curve: Curves.easeOut,
-                                    child: AnimatedScale(
-                                      duration:
-                                          const Duration(milliseconds: 420),
-                                      curve: Curves.easeInOutCubic,
-                                      scale: s.arrived ? 1.0 : s.startScale,
-                                      child: AnimatedRotation(
-                                        duration: const Duration(
-                                            milliseconds: 420),
-                                        curve: Curves.easeInOutCubic,
-                                        turns: s.arrived &&
-                                                !s.targetHorizontal
-                                            ? 0.25
-                                            : 0,
-                                        child: Center(
-                                          child: SizedBox(
-                                            width: s.boardW,
-                                            height: s.boardH,
-                                            child: CustomPaint(
-                                              painter: ShipPainter(
-                                                spec: s.spec,
-                                                skin: skin,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            }),
                         ],
                       );
                     },
@@ -1321,33 +1178,6 @@ class _PlacementScreenState extends State<PlacementScreen> {
   }
 
   final GlobalKey _gridKey = GlobalKey();
-}
-
-class _StagingShip {
-  final ShipKind kind;
-  final ShipSpec spec;
-  final Offset start;
-  final Offset end;
-  final double boardW;
-  final double boardH;
-  final double startScale;
-  final bool targetHorizontal;
-  bool arrived = false;
-
-  /// True once the real, cell-positioned ship has been added to the board
-  /// underneath this ghost and it's time to fade the ghost out (see the
-  /// handoff bugfix note in `_runRandomize`).
-  bool handoff = false;
-  _StagingShip({
-    required this.kind,
-    required this.spec,
-    required this.start,
-    required this.end,
-    required this.boardW,
-    required this.boardH,
-    required this.startScale,
-    required this.targetHorizontal,
-  });
 }
 
 /// A dock-tray ship icon; tap to select, drag to drop onto the grid.
