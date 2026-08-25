@@ -38,22 +38,36 @@ jobs:
       # release PR gets created or updated at all.
       #
       # This step is a safety net, not a replacement for typing a prefix
-      # when you want one: it first checks whether anything since the
-      # last tag already IS a Conventional Commit (covers you occasionally
-      # typing "fix: ..."/"feat: ..." yourself, including release-please's
-      # own "chore: release ..." merge commit) and does nothing if so. Only
-      # when NOTHING qualifies does it add one small empty commit that
-      # reuses the latest real commit's own message, just with a "fix: "
+      # when you want one: for every commit since the last release that
+      # ISN'T already a Conventional Commit, it adds one small empty
+      # commit reusing THAT commit's own message, just with a "fix: "
       # prefix added — so the changelog still reads like something a
       # person wrote, and every push keeps producing a normal patch
       # release even when every real commit came out of Copilot's
       # suggestion box with no prefix at all.
+      #
+      # ROOT-CAUSE FIX (a release PR's description used to collapse down
+      # to only the LATEST commit whenever two or more plain-prose
+      # commits landed since the last release): this used to check only
+      # whether ANY Conventional Commit already existed in the range —
+      # if one did (including a synthetic one THIS step had already added
+      # on an earlier push in the same release cycle), it did nothing at
+      # all for every push after that, and when it did run, it looked at
+      # `git log -1` — the single newest commit — for the message to
+      # reuse. Either way, only one commit's description ever became a
+      # Conventional Commit; release-please only reads commits shaped
+      # like `fix: ...`/`feat: ...`, so every OTHER plain commit was
+      # silently invisible to it, and the release PR's body only ever
+      # mentioned the one commit that happened to get a prefix. Looping
+      # over every commit in the range individually, oldest first, and
+      # giving each still-plain one its own synthetic "fix:" commit is
+      # what makes every one of them show up in the changelog.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Ensure a Conventional Commit exists since the last release
+      - name: Ensure every commit since the last release is a Conventional Commit
         run: |
           set -euo pipefail
           latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
@@ -68,21 +82,35 @@ jobs:
           fi
 
           conventional='^(feat|fix|perf|revert|refactor|docs|chore|test|build|ci)(\([^)]*\))?!?:'
-          if git log "$range" --pretty=%s | grep -Eiq "$conventional"; then
-            echo "A Conventional Commit already exists since ${latest_tag:-the start of history} — nothing to do."
-            exit 0
-          fi
-
-          # Reuse the latest real commit's own subject line rather than a
-          # generic placeholder, so the changelog entry release-please
-          # writes still describes what actually changed.
-          subject="$(git log -1 --pretty=%s | sed -E 's/ *\(#[0-9]+\)$//')"
-          echo "No Conventional Commit found since ${latest_tag:-the start of history}."
-          echo "Adding one so release-please can pick this push up: fix: ${subject}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit --allow-empty -m "fix: ${subject}"
+
+          # Oldest first, so the synthetic commits — and so the changelog
+          # release-please writes from them — land in the same order the
+          # real commits happened, rather than newest-first. `--no-merges`
+          # skips GitHub's own "Merge pull request #N from ..." commits:
+          # those aren't something a person wrote describing a change, so
+          # turning one into "fix: Merge pull request #N from ..." would
+          # just add changelog noise, not a missing description.
+          added=0
+          while IFS= read -r sha; do
+            subject="$(git log -1 --pretty=%s "$sha")"
+            if echo "$subject" | grep -Eiq "$conventional"; then
+              continue
+            fi
+            clean="$(echo "$subject" | sed -E 's/ *\(#[0-9]+\)$//')"
+            echo "No Conventional Commit prefix on ${sha:0:7} — adding: fix: ${clean}"
+            git commit --allow-empty -m "fix: ${clean}"
+            added=$((added + 1))
+          done < <(git rev-list --reverse --no-merges "$range")
+
+          if [ "$added" -eq 0 ]; then
+            echo "Every commit since ${latest_tag:-the start of history} is already a Conventional Commit — nothing to do."
+            exit 0
+          fi
+
+          echo "Added ${added} 'fix:' commit(s) so release-please's changelog picks up every plain commit individually, not just the latest."
           git push origin HEAD:${{ github.ref_name }}
 
       - uses: googleapis/release-please-action@v4

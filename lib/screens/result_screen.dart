@@ -238,22 +238,47 @@ class _ResultScreenState extends State<ResultScreen>
                       const SizedBox(height: 20),
 
                       // ---- Battle summary ----
+                      //
+                      // "ENEMY SUNK" / "FLEET LOST" is a single-player
+                      // framing — it only makes sense when the person
+                      // holding the phone is "you" facing an "enemy" (vs
+                      // AI, hotspot, online). In local pass-and-play both
+                      // fleets belong to real people sharing the device,
+                      // so the pips instead report each captain's own
+                      // losses: boards[0] is Player 1's fleet, boards[1]
+                      // is Player 2's, mirroring the PLAYER 1 / PLAYER 2
+                      // labels already used on the placement screen.
                       Container(
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         decoration:
                             cartoonBox(AppColors.coralLight, radius: 16),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            _summaryPip('ENEMY SUNK',
-                                '${controller.mySunk}/5', AppColors.hit),
-                            Container(
-                                width: 2,
-                                height: 34,
-                                color: AppColors.outline),
-                            _summaryPip('FLEET LOST',
-                                '${controller.enemySunk}/5', AppColors.navy),
-                          ],
+                          children: controller.mode == GameMode.local
+                              ? [
+                                  _summaryPip('PLAYER 1',
+                                      '${controller.enemySunk}/5',
+                                      AppColors.shipRed),
+                                  Container(
+                                      width: 2,
+                                      height: 34,
+                                      color: AppColors.outline),
+                                  _summaryPip('PLAYER 2',
+                                      '${controller.mySunk}/5',
+                                      AppColors.shipBlue),
+                                ]
+                              : [
+                                  _summaryPip('ENEMY SUNK',
+                                      '${controller.mySunk}/5',
+                                      AppColors.hit),
+                                  Container(
+                                      width: 2,
+                                      height: 34,
+                                      color: AppColors.outline),
+                                  _summaryPip('FLEET LOST',
+                                      '${controller.enemySunk}/5',
+                                      AppColors.navy),
+                                ],
                         ),
                       ),
                       const SizedBox(height: 26),

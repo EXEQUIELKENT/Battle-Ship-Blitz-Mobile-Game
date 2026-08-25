@@ -50,8 +50,10 @@ Offset dropOrigin({
 }
 
 /// "Deploy your ships" — reference-style placement:
-/// drag ships from the top dock onto the grid (or tap an empty cell),
-/// tap a placed ship to rotate it, RANDOM + green SAVE buttons.
+/// drag ships from the top dock onto the grid (or tap an empty cell with
+/// a dock ship selected), tap a placed ship to rotate it, RANDOM + green
+/// SAVE buttons. Tapping an empty cell with NOTHING selected fires a
+/// cosmetic cannon preview instead (see `_firePreviewShot`).
 class PlacementScreen extends StatefulWidget {
   final bool isPlayer2;
 
@@ -61,7 +63,8 @@ class PlacementScreen extends StatefulWidget {
   State<PlacementScreen> createState() => _PlacementScreenState();
 }
 
-class _PlacementScreenState extends State<PlacementScreen> {
+class _PlacementScreenState extends State<PlacementScreen>
+    with SingleTickerProviderStateMixin {
   /// Which seat this screen belongs to in local pass-and-play — the index
   /// into `GameController.localLoadouts`.
   int get _seat => widget.isPlayer2 ? 1 : 0;
@@ -126,9 +129,57 @@ class _PlacementScreenState extends State<PlacementScreen> {
   PlacedShip? _previewShip;
   bool _previewValid = true;
 
+  // ---------------------------------------------------- CANNON PREVIEW ---
+  // Tapping an EMPTY cell with nothing selected from the dock isn't a
+  // placement action at all (see `_onGridTap`), so rather than doing
+  // nothing it lets the player test-fire their cannon at that cell —
+  // recoil, smoke, sound, a shell in flight and the same targeting
+  // reticle a real battle shot gets — purely as a taste of "what does
+  // firing look like" while the fleet is still being laid out. Nothing
+  // here is tracked or resolved: there's no opponent board to hit yet,
+  // so none of this ever touches `Board` or `GameController`.
+
+  /// Feeds `CannonWidget.fireTrigger` so the deploy cannon plays its
+  /// normal recoil + muzzle-smoke show on a preview shot, same as it
+  /// would for a real one in battle.
+  final StreamController<void> _previewFireCtrl =
+      StreamController<void>.broadcast();
+
+  /// Cell a preview shell is currently arcing toward — drives
+  /// `BattleGrid.aimCell` (and so its built-in targeting reticle) for
+  /// exactly as long as the shell is airborne, then clears.
+  List<int>? _previewAimCell;
+
+  /// The lone preview shell's flight clock. An empty-cell tap is purely
+  /// cosmetic and can't overlap a real placement action, so — unlike
+  /// battle's per-shooter cannonball pair — there is only ever one shot
+  /// in flight here at a time.
+  late final AnimationController _previewShotCtrl;
+  Offset _previewShotFrom = Offset.zero;
+  Offset _previewShotTo = Offset.zero;
+  double _previewShotCell = 32;
+  double _previewShotArc = 64;
+
+  // Grid/cannon geometry, cached each build from the same `LayoutBuilder`
+  // math that positions the real grid and cannon widgets below, so a tap
+  // can be converted straight into this `Stack`'s own local coordinate
+  // space without a second, redundant measurement of a layout that very
+  // builder just computed.
+  double _gridLeftPx = 0;
+  double _gridTopPx = 0;
+  double _gridSidePx = 1; // never 0 — guards the pre-layout divide below
+  double _cannonCenterXPx = 0;
+  double _cannonCenterYPx = 0;
+  double _cannonRenderSizePx = 0;
+  double _cannonMuzzleFrac = CannonWidget.muzzleFraction;
+
   @override
   void initState() {
     super.initState();
+    _previewShotCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 480),
+    );
     SoundService.instance.stopMenuMusic();
     final controller = context.read<GameController>();
     _board = widget.isPlayer2 ? controller.boards[1] : controller.boards[0];
@@ -147,6 +198,13 @@ class _PlacementScreenState extends State<PlacementScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) setState(() {});
     });
+  }
+
+  @override
+  void dispose() {
+    _previewFireCtrl.close();
+    _previewShotCtrl.dispose();
+    super.dispose();
   }
 
   ShipSpec? get _selectedSpec =>
@@ -301,7 +359,16 @@ class _PlacementScreenState extends State<PlacementScreen> {
 
   void _onGridTap(int r, int c) {
     final spec = _selectedSpec;
-    if (spec == null) return;
+    if (spec == null) {
+      // Nothing selected from the dock, so this can't be a placement
+      // tap — and `BattleGrid` only ever forwards a tap through to here
+      // when the cell is genuinely empty; one already holding a ship is
+      // intercepted upstream and rotates it instead (see `onShipTap`).
+      // Give the player something to do with it: test-fire the cannon
+      // and preview the shot they'll be lining up all through battle.
+      _firePreviewShot(r, c);
+      return;
+    }
     // Try horizontal first, then vertical.
     if (_board.canPlace(spec, r, c, true)) {
       _board.place(spec, r, c, true);
@@ -314,6 +381,102 @@ class _PlacementScreenState extends State<PlacementScreen> {
     } else {
       SoundService.instance.denied();
     }
+  }
+
+  /// Cosmetic-only preview shot at an empty deploy-grid cell — see the
+  /// `CANNON PREVIEW` fields above for the full contract. Reads the
+  /// geometry `LayoutBuilder` cached this build (`_gridLeftPx` etc.) to
+  /// place a shell arcing from the cannon's actual muzzle to the tapped
+  /// cell's center, and drives `_previewAimCell` for exactly as long as
+  /// it's in flight.
+  void _firePreviewShot(int r, int c) {
+    final cellSize = _gridSidePx / kBoardSize;
+    final to = Offset(
+      _gridLeftPx + (c + 0.5) * cellSize,
+      _gridTopPx + (r + 0.5) * cellSize,
+    );
+    final muzzle = Offset(
+      _cannonCenterXPx,
+      _cannonCenterYPx - _cannonRenderSizePx * _cannonMuzzleFrac,
+    );
+    SoundService.instance.cannonFire();
+    _previewFireCtrl.add(null);
+    setState(() {
+      _previewAimCell = [r, c];
+      _previewShotFrom = muzzle;
+      _previewShotTo = to;
+      _previewShotCell = cellSize;
+      _previewShotArc = cellSize * 2.4;
+    });
+    _previewShotCtrl.forward(from: 0).whenComplete(() {
+      if (mounted) setState(() => _previewAimCell = null);
+    });
+  }
+
+  /// The preview shell's in-flight layer: a small lobbed ball tracing the
+  /// same up-then-down arc `battle_screen.dart`'s real cannonballs use,
+  /// shrinking down to the cell's own size right as it "lands". Purely
+  /// decorative — nothing here is a hit test, there's no board to hit.
+  Widget _previewShotLayer() {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: _previewShotCtrl,
+          builder: (context, _) {
+            final t = _previewShotCtrl.value;
+            final base = Offset.lerp(_previewShotFrom, _previewShotTo, t)!;
+            final arc = math.sin(t * math.pi) * _previewShotArc;
+            final pos = base - Offset(0, arc);
+            final d = _previewShotCell * (2.2 - 1.2 * t);
+            const fadeStart = 0.9;
+            final fade = t <= fadeStart
+                ? 1.0
+                : (1 - (t - fadeStart) / (1 - fadeStart)).clamp(0.0, 1.0);
+            return Positioned(
+              left: pos.dx - d / 2,
+              top: pos.dy - d / 2,
+              child: Opacity(opacity: fade, child: _previewCannonball(d)),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  /// Plain iron cannonball for the preview shell — same palette as the
+  /// battle screen's own default shot, kept as its own small widget here
+  /// rather than reused across files so this feature stays self-contained
+  /// wherever the equipped cannon's actual shell art doesn't apply (this
+  /// is a taste of firing, not the real shot the battle screen draws).
+  Widget _previewCannonball(double d) {
+    return Container(
+      width: d,
+      height: d,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const RadialGradient(
+          center: Alignment(-0.35, -0.4),
+          radius: 0.95,
+          stops: [0.0, 0.45, 1.0],
+          colors: [
+            Color(0xFFC3CBD3),
+            Color(0xFF6E7883),
+            Color(0xFF1D232A),
+          ],
+        ),
+        border: Border.all(
+          color: const Color(0xFF12161B),
+          width: math.max(1.0, d * 0.05),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.4),
+            blurRadius: d * 0.18,
+            offset: Offset(0, d * 0.1),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Deals out a fresh random layout. Rather than swapping the whole
@@ -1047,6 +1210,18 @@ class _PlacementScreenState extends State<PlacementScreen> {
                           loadout.cannonSkin);
                       final cannonCenterY =
                           gridBottom + renderSize * (muzzleFrac - 0.07);
+                      // Cache this build's geometry for the cannon
+                      // preview (see `_firePreviewShot`) — plain field
+                      // writes, not `setState`: nothing needs to repaint
+                      // over this, it's just bookkeeping for the NEXT
+                      // gesture that reads it.
+                      _gridLeftPx = gridLeft;
+                      _gridTopPx = gridTop;
+                      _gridSidePx = gridSide;
+                      _cannonCenterXPx = w / 2;
+                      _cannonCenterYPx = cannonCenterY;
+                      _cannonRenderSizePx = renderSize;
+                      _cannonMuzzleFrac = muzzleFrac;
                       return Stack(
                         key: _stackKey,
                         clipBehavior: Clip.none,
@@ -1178,6 +1353,8 @@ class _PlacementScreenState extends State<PlacementScreen> {
                                       pullInScales: _pullInScales,
                                       pullInFrom: _pullInFrom,
                                       clip: false,
+                                      aimCell: _previewAimCell,
+                                      cannonSkinId: loadout.cannonSkinId,
                                     ),
                                   ),
                                 );
@@ -1217,10 +1394,16 @@ class _PlacementScreenState extends State<PlacementScreen> {
                                   skin: loadout.cannonSkin,
                                   cooldownFraction: 1,
                                   size: renderSize,
+                                  fireTrigger: _previewFireCtrl.stream,
                                 ),
                               ),
                             ),
                           ),
+                          // The preview shell itself, arcing from the
+                          // cannon above to whichever empty cell was last
+                          // tapped — see `_firePreviewShot`. Only mounted
+                          // while a shot is actually in flight.
+                          if (_previewAimCell != null) _previewShotLayer(),
                         ],
                       );
                     },
