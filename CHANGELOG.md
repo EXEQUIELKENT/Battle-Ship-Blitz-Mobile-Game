@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.7](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.6...battleship_blitz-v1.4.7) (2026-08-25)
+
+
+### Bug Fixes
+
+* Merge branch 'main' of https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game ([7b3ffba](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/7b3ffbaa05cb2cf6fec1453cf5e6710beb8750c3))
+
 ## [1.4.6](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.5...battleship_blitz-v1.4.6) (2026-08-24)
 
 
