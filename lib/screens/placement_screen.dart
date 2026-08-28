@@ -11,6 +11,7 @@ import '../models/game_models.dart';
 import '../services/game_controller.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/app_notification.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/match_chat.dart';
@@ -111,6 +112,20 @@ class _PlacementScreenState extends State<PlacementScreen>
   /// fire off a second shuffle mid-animation.
   bool _randomizing = false;
 
+  /// True while a LAN/online SAVE is blocked on the opponent's fleet —
+  /// see [_waitForPeerBoard]. Drives the "WAITING FOR OPPONENT…" dialog's
+  /// own lifecycle rather than the dialog's mere presence, so system BACK
+  /// (which pops the dialog route without this screen ever finding out)
+  /// can be routed through the same cancel logic as the CANCEL button.
+  bool _waitingForPeer = false;
+
+  /// The subscription `_waitForPeerBoard` is listening on. A LOCAL
+  /// variable here used to leak: never cancelled on `dispose()`, and
+  /// still live if the player backed out of the dialog, so the peer's
+  /// board — arriving after that — popped whatever route happened to be
+  /// on top (see the BUGFIX note in `_waitForPeerBoard`).
+  StreamSubscription? _peerBoardSub;
+
   /// True once the RANDOM button has dealt a first layout onto a board
   /// that started completely empty. That first deal is the one case where
   /// `BattleGrid`'s `AnimatedPositioned` has no previous ship position to
@@ -202,6 +217,7 @@ class _PlacementScreenState extends State<PlacementScreen>
 
   @override
   void dispose() {
+    _peerBoardSub?.cancel();
     _previewFireCtrl.close();
     _previewShotCtrl.dispose();
     super.dispose();
@@ -663,6 +679,18 @@ class _PlacementScreenState extends State<PlacementScreen>
     if (mounted) setState(() => _randomizing = false);
   }
 
+  /// Leaves the placement screen via the back arrow or [_ExitButton].
+  ///
+  /// BUGFIX: both used to be a bare `Navigator.pop(context)`, which left a
+  /// LAN/online socket open and the opponent never told the player backed
+  /// out — so the opponent's own screen (waiting on `_waitForPeerBoard`, or
+  /// already in the lobby) just hung. `network.stop()` closes the
+  /// connection so the peer sees a disconnect immediately.
+  void _exitPlacement(bool isLan, GameController controller) {
+    if (isLan) controller.network.stop();
+    Navigator.pop(context);
+  }
+
   Future<void> _save() async {
     if (!_allPlaced) return;
     final controller = context.read<GameController>();
@@ -683,6 +711,7 @@ class _PlacementScreenState extends State<PlacementScreen>
         break;
       case GameMode.hotspot:
       case GameMode.online:
+      case GameMode.vsAiLan:
         controller.network.sendBoard(_board);
         _waitForPeerBoard(controller);
         break;
@@ -717,35 +746,89 @@ class _PlacementScreenState extends State<PlacementScreen>
       return;
     }
 
-    late StreamSubscription sub;
-    sub = controller.network.messages.listen((msg) {
+    setState(() => _waitingForPeer = true);
+    _peerBoardSub = controller.network.messages.listen((msg) {
       if (msg['type'] == 'board') {
-        sub.cancel();
+        _peerBoardSub?.cancel();
+        _peerBoardSub = null;
         // Consume the retained copy so it can't be picked up again.
         controller.network.takePeerBoard();
-        if (mounted) Navigator.of(context, rootNavigator: true).pop();
+        if (mounted) {
+          setState(() => _waitingForPeer = false);
+          Navigator.of(context, rootNavigator: true).pop();
+        }
         _beginWithPeerBoard(controller, msg);
+      } else if (msg['type'] == 'board_cancel') {
+        _peerBoardSub?.cancel();
+        _peerBoardSub = null;
+        if (!mounted) return;
+        setState(() => _waitingForPeer = false);
+        Navigator.of(context, rootNavigator: true).pop();
+        AppNotification.show(
+          context,
+          'Your opponent went back to editing their fleet.',
+          type: AppNoticeType.info,
+        );
       }
     });
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.navy,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: const BorderSide(color: AppColors.outline, width: 3),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(color: AppColors.cream),
-            const SizedBox(height: 16),
-            Text('WAITING FOR OPPONENT…', style: AppText.label(size: 11)),
-          ],
+      builder: (ctx) => PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) {
+          // Only reached via system BACK — an explicit pop from inside
+          // this method (peer's board/board_cancel arriving, or the
+          // CANCEL button below) already goes through `didPop: true` and
+          // is a no-op here. See the BUGFIX note above `_waitForPeerBoard`
+          // this replaces: BACK used to fall through to the still-live
+          // `sub` and pop the whole PlacementScreen instead.
+          if (didPop) return;
+          _cancelWaitingForPeer(controller, popDialog: true);
+        },
+        child: AlertDialog(
+          backgroundColor: AppColors.navy,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: AppColors.outline, width: 3),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(color: AppColors.cream),
+              const SizedBox(height: 16),
+              Text('WAITING FOR OPPONENT…', style: AppText.label(size: 11)),
+              const SizedBox(height: 18),
+              NeonButton(
+                label: 'CANCEL',
+                icon: Icons.close,
+                color: AppColors.danger,
+                compact: true,
+                onPressed: () =>
+                    _cancelWaitingForPeer(controller, popDialog: true),
+              ),
+            ],
+          ),
         ),
       ),
     );
+  }
+
+  /// Backs out of the "waiting for opponent" dialog — CANCEL button or
+  /// system BACK — so the player can return to editing their fleet. Tells
+  /// the peer via `board_cancel` so THEIR wait (if they saved first) clears
+  /// too; if they already moved on to battle this arrives too late to
+  /// matter and they simply play on, which is the accepted edge case for
+  /// this feature (see the plan's note on `sendBoard` being fire-and-forget).
+  void _cancelWaitingForPeer(GameController controller,
+      {required bool popDialog}) {
+    _peerBoardSub?.cancel();
+    _peerBoardSub = null;
+    controller.network.sendBoardCancel();
+    if (popDialog && mounted) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+    if (mounted) setState(() => _waitingForPeer = false);
   }
 
   void _goBattle() {
@@ -933,8 +1016,13 @@ class _PlacementScreenState extends State<PlacementScreen>
     // repaint underneath the still-open dialog for the change to look
     // live rather than appearing only once the dialog is dismissed.
     final controller = context.watch<GameController>();
-    final isLan = controller.mode == GameMode.hotspot ||
-        controller.mode == GameMode.online;
+    // Everything below keyed on `isLan` — fleet colour by network role,
+    // the GEAR button, exiting via `network.stop()` — applies just the
+    // same whether the opponent is a real device or the hidden AI a
+    // vsAiLan match runs over a `LoopbackLink`; only the MATCH CHAT
+    // button (below) needs an actual human on the other end and checks
+    // `controller.hasRemotePeer` directly instead.
+    final isLan = controller.usesMatchProtocol;
 
     // BUGFIX (both LAN players deployed RED fleets): the fleet colour used
     // to be chosen purely from `isPlayer2`, which only ever means anything
@@ -1059,7 +1147,7 @@ class _PlacementScreenState extends State<PlacementScreen>
                           GestureDetector(
                             onTap: () {
                               SoundService.instance.click();
-                              Navigator.pop(context);
+                              _exitPlacement(isLan, controller);
                             },
                             child: const Icon(
                               Icons.arrow_back,
@@ -1095,11 +1183,12 @@ class _PlacementScreenState extends State<PlacementScreen>
                             ),
                             const SizedBox(width: 8),
                           ],
-                          if (isLan) ...[
+                          if (controller.hasRemotePeer) ...[
                             const MatchChatButton(size: 36),
                             const SizedBox(width: 8),
                           ],
-                          _ExitButton(onTap: () => Navigator.pop(context)),
+                          _ExitButton(
+                              onTap: () => _exitPlacement(isLan, controller)),
                         ],
                       ),
                       const SizedBox(height: 6),
@@ -1131,9 +1220,10 @@ class _PlacementScreenState extends State<PlacementScreen>
                             color: _allPlaced
                                 ? AppColors.seafoam
                                 : AppColors.inkSoft,
-                            onPressed: (_allPlaced && !_randomizing)
-                                ? _save
-                                : null,
+                            onPressed:
+                                (_allPlaced && !_randomizing && !_waitingForPeer)
+                                    ? _save
+                                    : null,
                           ),
                         ],
                       ),

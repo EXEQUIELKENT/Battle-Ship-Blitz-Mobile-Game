@@ -13,7 +13,9 @@ import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'lan_mode_screen.dart';
+import 'local_mode_screen.dart';
 import 'placement_screen.dart';
+import 'vs_ai_mode_screen.dart';
 
 /// Victory / defeat screen — cartoon badge, RP reveal, chunky buttons.
 class ResultScreen extends StatefulWidget {
@@ -104,7 +106,7 @@ class _ResultScreenState extends State<ResultScreen>
       // can read back what was said. Floated rather than placed in the
       // column so it can't push the rematch buttons around, and so the
       // result reveal underneath is untouched.
-      floatingActionButton: controller.isNetworkBattle
+      floatingActionButton: controller.hasRemotePeer
           ? const Padding(
               padding: EdgeInsets.only(bottom: 4),
               child: MatchChatButton(),
@@ -308,7 +310,7 @@ class _ResultScreenState extends State<ResultScreen>
   /// is never coming.
   Widget _actions(GameController controller) {
     final net = context.watch<NetworkService>();
-    final isLan = controller.isNetworkBattle;
+    final isLan = controller.hasRemotePeer;
 
     if (!isLan) {
       return Row(
@@ -443,9 +445,27 @@ class _ResultScreenState extends State<ResultScreen>
       controller.difficulty = diff;
       controller.startPlacement();
     } else if (mode == GameMode.local) {
-      controller.mode = GameMode.local;
-      controller.resetLocalLoadouts();
-      controller.startPlacement();
+      // Same reasoning as vsAiLan below: send the rematch back through
+      // the mode picker (TURN BASED / PHANTOM) rather than straight to
+      // placement, so a rematch isn't silently locked to whatever
+      // `localPhantom` happened to be left set to, and both players get
+      // the chance to pick again — see `LocalModeScreen`.
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LocalModeScreen()),
+        (route) => route.isFirst,
+      );
+      return;
+    } else if (mode == GameMode.vsAiLan) {
+      // A fresh AI opponent has to be set up again from scratch — see
+      // `VsAiSession.start` — and the mode picker is what does that
+      // (including letting the player pick a different mode for the
+      // rematch), so send them back through it rather than straight to
+      // placement with no opponent on the other end.
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => VsAiModeScreen(difficulty: diff)),
+        (route) => route.isFirst,
+      );
+      return;
     } else {
       controller.startPlacement();
     }

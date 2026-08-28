@@ -14,6 +14,23 @@ import '../widgets/match_chat.dart';
 import '../widgets/ocean_background.dart';
 import 'placement_screen.dart';
 
+/// One icon per mode. MANOEUVRE used to share TURN BASED's icon, which
+/// made the two cards read as the same thing at a glance — the very
+/// distinction the card is there to draw. The "move" cross is what the
+/// mode is actually about: a fleet that can still be dragged around.
+///
+/// Top-level (not a method on [LanModeScreen]) so [VsAiModeScreen]'s own
+/// mode cards — same picker, no peer to vote with — can share it too.
+IconData lanModeIcon(LanBattleMode mode) => switch (mode) {
+      LanBattleMode.chaos => Icons.whatshot,
+      LanBattleMode.turns => Icons.swap_vert_circle,
+      LanBattleMode.rearrange => Icons.open_with,
+      LanBattleMode.blitz => Icons.bolt,
+      LanBattleMode.ghost => Icons.blur_on,
+      LanBattleMode.powerPlay => Icons.auto_awesome,
+      LanBattleMode.phantom => Icons.visibility_off,
+    };
+
 /// Sits between "the two devices are connected" and "deploy your fleet":
 /// both captains tap the mode they want to play, the mode with the most
 /// taps wins, and once BOTH have picked, a 5-second countdown runs so
@@ -120,17 +137,6 @@ class _LanModeScreenState extends State<LanModeScreen> {
         equippedShipSkinId: _net.peerShipSkinId,
         chosen: _net.peerShipSkinChosen,
       );
-
-  /// One icon per mode. MANOEUVRE used to share TURN BASED's icon, which
-  /// made the two cards read as the same thing at a glance — the very
-  /// distinction the card is there to draw. The "move" cross is what the
-  /// mode is actually about: a fleet that can still be dragged around.
-  static IconData _modeIcon(LanBattleMode mode) => switch (mode) {
-        LanBattleMode.chaos => Icons.whatshot,
-        LanBattleMode.turns => Icons.swap_vert_circle,
-        LanBattleMode.rearrange => Icons.open_with,
-        LanBattleMode.blitz => Icons.bolt,
-      };
 
   @override
   Widget build(BuildContext context) {
@@ -298,7 +304,7 @@ class _LanModeScreenState extends State<LanModeScreen> {
               Row(
                 children: [
                   Icon(
-                    _modeIcon(mode),
+                    lanModeIcon(mode),
                     // The card body is cream, so a near-white hull colour
                     // would vanish on it — fall back to the outline ink
                     // for very pale identities.

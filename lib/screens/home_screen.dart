@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -6,7 +7,8 @@ import 'package:provider/provider.dart';
 import '../core/route_observer.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
-import '../services/game_controller.dart';
+import '../services/match_store.dart';
+import '../services/network_service.dart';
 import '../services/online_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
@@ -15,8 +17,10 @@ import '../widgets/ocean_background.dart';
 import '../widgets/ship_painter.dart';
 import 'customize_screen.dart';
 import 'friends_screen.dart';
+import 'match_resume.dart';
+import 'local_mode_screen.dart';
 import 'multiplayer_screen.dart';
-import 'placement_screen.dart';
+import 'vs_ai_mode_screen.dart';
 
 /// Cartoon main menu: coral deck, navy panels, chunky outlined buttons.
 class HomeScreen extends StatefulWidget {
@@ -73,31 +77,108 @@ class _HomeScreenState extends State<HomeScreen>
     if (mounted) SoundService.instance.startMenuMusic();
   }
 
+  /// TURN BASED here still runs on the original, lightweight vs-AI engine
+  /// (`GameController._aiThink`/`aiTurnToFire`) unchanged — this only
+  /// adds a mode PICKER in front of it. The other five modes route
+  /// through `VsAiModeScreen` into the loopback AI opponent instead (see
+  /// `VsAiSession`), the only way any of them can be played against the
+  /// AI at all.
   void _startVsAI() {
-    final controller = context.read<GameController>();
-    controller.mode = GameMode.vsAI;
-    controller.difficulty = _difficulty;
-    controller.startPlacement();
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const PlacementScreen()),
+      MaterialPageRoute(
+        builder: (_) => VsAiModeScreen(difficulty: _difficulty),
+      ),
+    );
+  }
+
+  /// A hotspot/online match `MatchStore` remembers as still in progress
+  /// — see that class's own doc for what "in progress" means here: not
+  /// just a dropped connection (that already has its own in-battle
+  /// overlay), but the app having been fully closed and reopened. Null
+  /// when there is nothing to offer, so callers can treat that as "don't
+  /// show a banner" directly.
+  Widget? _resumeBanner(MatchStore matchStore) {
+    final saved = matchStore.saved;
+    if (saved == null) return null;
+    final isOnline = saved['transport'] == NetMode.online.index;
+    final iAmHost = saved['iAmHost'] as bool? ?? false;
+    final peerName = saved['peerName'] as String? ?? 'Opponent';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: cartoonBox(AppColors.ember, radius: 18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '${isOnline ? 'ONLINE' : 'HOTSPOT'} BATTLE IN PROGRESS\n'
+              'vs ${peerName.toUpperCase()}',
+              style: AppText.label(size: 11),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              isOnline
+                  ? 'Your seat is still held on the server.'
+                  : iAmHost
+                      ? 'Reopen your room and wait for them to rejoin.'
+                      : "Rejoin the host's room — they'll need to have "
+                          'reopened it too.',
+              style: AppText.body(size: 11, color: AppColors.cream),
+            ),
+            const SizedBox(height: 12),
+            NeonButton(
+              label: isOnline
+                  ? 'GO TO ONLINE'
+                  : iAmHost
+                      ? 'REOPEN ROOM'
+                      : 'FIND ROOM',
+              icon: Icons.sailing,
+              color: AppColors.seafoam,
+              compact: true,
+              onPressed: () {
+                SoundService.instance.click();
+                if (isOnline) {
+                  // The server — not this stale disk copy — is the real
+                  // authority on whether the match is still there; the
+                  // FRIENDS screen's own rejoin banner is what actually
+                  // acts on it, once it has asked.
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const FriendsScreen()),
+                  );
+                } else if (iAmHost) {
+                  unawaited(resumeHotspotAsHost(context, saved));
+                } else {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => MultiplayerScreen(
+                          initialRoomCode: saved['roomCode'] as String?),
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   void _startLocal() {
-    final controller = context.read<GameController>();
-    controller.mode = GameMode.local;
-    // Both seats start on the device owner's own gear; each player can
-    // then swap to anything the profile owns on their deployment screen.
-    controller.resetLocalLoadouts();
-    controller.startPlacement();
+    // Routes through a mode picker (classic TURN BASED or PHANTOM) rather
+    // than starting a match directly — see `LocalModeScreen`, which does
+    // what this used to do inline once a mode is actually chosen.
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const PlacementScreen()),
+      MaterialPageRoute(builder: (_) => const LocalModeScreen()),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final profile = context.watch<ProfileStore>();
+    final matchStore = context.watch<MatchStore>();
     return Scaffold(
       body: OceanBackground(
         child: SafeArea(
@@ -121,6 +202,9 @@ class _HomeScreenState extends State<HomeScreen>
                           ],
                         ),
                         const SizedBox(height: 22),
+                        // ---- Resume banner (if MatchStore has one) ----
+                        if (_resumeBanner(matchStore) case final banner?)
+                          banner,
                         // ---- Title card ----
                         Container(
                           width: double.infinity,

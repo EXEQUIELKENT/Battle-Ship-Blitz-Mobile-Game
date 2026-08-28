@@ -260,6 +260,22 @@ String rankTitleForRp(int rp) {
 
 /// Persistent profile: RP, streaks, stats and customization.
 class ProfileStore extends ChangeNotifier {
+  /// Testing/build-time override: every hull, cannon and battlefield
+  /// reads as owned everywhere in the app, release APKs included. On by
+  /// default so a debug build or a build shipped for testers never gates
+  /// content behind RP. Flip off for a real release with
+  /// `--dart-define=BBZ_UNLOCK_ALL=false`.
+  static const bool _unlockAllDefault =
+      bool.fromEnvironment('BBZ_UNLOCK_ALL', defaultValue: true);
+
+  /// Lets a test flip the flag without a separate dart-define per run —
+  /// e.g. the shop/purchase-flow tests that specifically exercise real
+  /// ownership rules. `null` defers to [_unlockAllDefault].
+  @visibleForTesting
+  static bool? debugUnlockAllOverride;
+
+  static bool get _unlockAll => debugUnlockAllOverride ?? _unlockAllDefault;
+
   static const _kRp = 'profile.rp';
   static const _kWins = 'profile.wins';
   static const _kLosses = 'profile.losses';
@@ -387,9 +403,12 @@ class ProfileStore extends ChangeNotifier {
   /// see the note there.
   static String _ownKey(String kind, String id) => '$kind:$id';
 
-  bool ownsShip(String id) => owned.contains(_ownKey('ship', id));
-  bool ownsCannon(String id) => owned.contains(_ownKey('cannon', id));
-  bool ownsTheme(String id) => owned.contains(_ownKey('theme', id));
+  bool ownsShip(String id) =>
+      _unlockAll || owned.contains(_ownKey('ship', id));
+  bool ownsCannon(String id) =>
+      _unlockAll || owned.contains(_ownKey('cannon', id));
+  bool ownsTheme(String id) =>
+      _unlockAll || owned.contains(_ownKey('theme', id));
 
   /// Untyped lookup, kept for callers that only have an id. Prefer the
   /// typed variants — this one cannot tell an `arctic` hull from an

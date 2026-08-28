@@ -13,6 +13,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  // This file specifically exercises real ownership rules (locked vs
+  // owned, purchase migrations) — the global "unlock everything for
+  // testing" flag (`ProfileStore._unlockAll`, on by default so a plain
+  // debug/tester build never gates content) would make every `isFalse`
+  // ownership assertion below wrong. Off for the whole file; nothing
+  // here depends on cosmetics actually being locked in the APP sense,
+  // only in the sense these tests are checking.
+  setUpAll(() => ProfileStore.debugUnlockAllOverride = false);
+  tearDownAll(() => ProfileStore.debugUnlockAllOverride = null);
+
   group('SVG path parser', () {
     test('absolute line commands trace the box they describe', () {
       final p = parseSvgPath('M10,10 L90,10 L90,50 L10,50 Z');

@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
@@ -18,7 +21,14 @@ import 'matchmaking_screen.dart';
 
 /// Hotspot (LAN) + Online matchmaking lobby — cartoon style.
 class MultiplayerScreen extends StatefulWidget {
-  const MultiplayerScreen({super.key});
+  /// Pre-fills the ROOM CODE field — used when arriving here to resume a
+  /// hotspot match `MatchStore` remembers this device as the JOINER of
+  /// (see the resume banner on `HomeScreen`). The host has to be
+  /// re-advertising under the same code for JOIN to actually find them;
+  /// this only saves retyping it.
+  final String? initialRoomCode;
+
+  const MultiplayerScreen({super.key, this.initialRoomCode});
 
   @override
   State<MultiplayerScreen> createState() => _MultiplayerScreenState();
@@ -37,6 +47,9 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   void initState() {
     super.initState();
     _tab = TabController(length: 2, vsync: this);
+    if (widget.initialRoomCode != null) {
+      _ipCtrl.text = widget.initialRoomCode!;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       final net = context.read<NetworkService>();
@@ -60,6 +73,11 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
 
   @override
   void dispose() {
+    // BUGFIX: `scanRooms` was never paired with a `stopScan` call anywhere
+    // in the app, so backing out of this screen mid-scan (well within the
+    // 6s window) left the UDP socket bound and listening for however long
+    // was left, for no listener left to see the result.
+    context.read<NetworkService>().stopScan();
     _ipCtrl.dispose();
     _serverCtrl.dispose();
     _tab.dispose();
@@ -120,10 +138,18 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     if (ok && mounted) {
       // Wait for the hello confirmation — or, when rejoining, for the
       // snapshot that puts the match back together.
+      //
+      // BUGFIX: this used to wait with no timeout — if the socket
+      // connected but the host never actually finished the handshake
+      // (accepted, then stalled or crashed before sending a `hello`/
+      // `resume`), `_connecting` stayed true forever and the screen was
+      // left permanently unable to try again without a full app restart.
+      late Timer timeout;
       void listener() {
         if (!mounted) return;
         final snapshot = net.takeResume();
         if (snapshot != null) {
+          timeout.cancel();
           net.removeListener(listener);
           setState(() => _connecting = false);
           _resumeMatch(snapshot);
@@ -132,6 +158,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         // `joiningResumable` keeps us from racing off into the new-match
         // flow while the snapshot is still in flight.
         if (net.connected && !net.joiningResumable) {
+          timeout.cancel();
           net.removeListener(listener);
           setState(() => _connecting = false);
           _enterModeVote(GameMode.hotspot);
@@ -139,12 +166,70 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       }
 
       net.addListener(listener);
+      timeout = Timer(const Duration(seconds: 25), () {
+        net.removeListener(listener);
+        if (!mounted) return;
+        setState(() => _connecting = false);
+        _toast('Connected, but never heard back from the host. Try again.',
+            type: AppNoticeType.error);
+      });
     } else {
       setState(() => _connecting = false);
       if (mounted && net.statusMessage.isNotEmpty) {
         _toast(net.statusMessage, type: AppNoticeType.error);
       }
     }
+  }
+
+  /// A literal dotted-quad still works directly — useful when broadcast is
+  /// blocked and someone reads the IP straight off the host's own screen
+  /// (shown there next to the code, see `net.localIp` below).
+  bool _looksLikeIp(String s) => s.split('.').length == 4;
+
+  /// Resolves the typed ROOM CODE against whatever `scanRooms` has already
+  /// found (`NetworkService.roomByCode`), kicking off a scan and resolving
+  /// the instant a matching beacon lands if it hasn't been seen yet —
+  /// rather than making the player wait out the full 6s scan window every
+  /// time. Everything needed is already on the wire: the beacon carries
+  /// both the code and the host IP (`NetworkService._startBeacon`).
+  Future<void> _joinByCode() async {
+    final typed = _ipCtrl.text.trim();
+    if (typed.isEmpty) {
+      _toast('Enter the room code', type: AppNoticeType.error);
+      return;
+    }
+    if (_looksLikeIp(typed)) {
+      _join(typed);
+      return;
+    }
+    final net = context.read<NetworkService>();
+    final already = net.roomByCode(typed, myIps: net.localIps);
+    if (already != null) {
+      _join(already.host, resuming: already.resumable);
+      return;
+    }
+
+    setState(() => _connecting = true);
+    net.scanRooms();
+    late VoidCallback listener;
+    final timeout = Timer(const Duration(seconds: 7), () {
+      net.removeListener(listener);
+      if (!mounted) return;
+      setState(() => _connecting = false);
+      _toast('No room found with that code — check it and try again.',
+          type: AppNoticeType.error);
+    });
+    listener = () {
+      final room = net.roomByCode(typed, myIps: net.localIps);
+      if (room == null) return;
+      timeout.cancel();
+      net.removeListener(listener);
+      net.stopScan();
+      if (!mounted) return;
+      setState(() => _connecting = false);
+      _join(room.host, resuming: room.resumable);
+    };
+    net.addListener(listener);
   }
 
   /// Rebuilds the interrupted match from the surviving player's snapshot
@@ -457,9 +542,23 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   Expanded(
                     child: TextField(
                       controller: _ipCtrl,
-                      keyboardType: TextInputType.number,
+                      textCapitalization: TextCapitalization.characters,
+                      // Room codes are the `_newCode` alphabet — I/O/0/1
+                      // deliberately excluded so a code can't be misread —
+                      // but a literal dotted-quad IP is still accepted as
+                      // a fallback (see `_looksLikeIp`), hence allowing
+                      // digits and dots too.
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                            RegExp(r'[A-Za-z2-9.]')),
+                        LengthLimitingTextInputFormatter(15),
+                        TextInputFormatter.withFunction(
+                          (oldValue, newValue) => newValue.copyWith(
+                              text: newValue.text.toUpperCase()),
+                        ),
+                      ],
                       style: AppText.body(size: 13, color: AppColors.navy),
-                      decoration: _inputDeco('HOST IP — e.g. 192.168.1.5'),
+                      decoration: _inputDeco('ROOM CODE — e.g. 2XMA'),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -467,17 +566,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     label: _connecting ? '…' : 'JOIN',
                     color: AppColors.green,
                     compact: true,
-                    onPressed: _connecting
-                        ? null
-                        : () {
-                            final ip = _ipCtrl.text.trim();
-                            if (ip.isEmpty) {
-                              _toast('Enter the host IP address',
-                                  type: AppNoticeType.error);
-                              return;
-                            }
-                            _join(ip);
-                          },
+                    onPressed: _connecting ? null : _joinByCode,
                   ),
                 ],
               ),

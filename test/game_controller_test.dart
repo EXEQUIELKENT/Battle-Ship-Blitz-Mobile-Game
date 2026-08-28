@@ -180,4 +180,58 @@ void main() {
       controller.dispose();
     });
   });
+
+  group('fireAt refuses to fire on the peer\'s turn', () {
+    // Belt-and-braces alongside `BattleScreen._shotOutstanding` (see its
+    // doc) — this is the controller-level half of the double-fire fix,
+    // and the only half that's meaningfully testable without a widget: it
+    // survives the UI's `State` being torn down and rebuilt, which the
+    // screen-side latch alone would not.
+    test('refused while peerHasTurn is true in a turn-based mode',
+        () async {
+      final controller = await newController();
+      controller.mode = GameMode.hotspot;
+      controller.lanBattleMode = LanBattleMode.turns;
+      controller.beginBattle(enemyBoard: Board()..place(kFleet.first, 0, 0, true));
+      controller.attachNetwork();
+      controller.peerHasTurn = true; // not my turn
+
+      final before = controller.network.sentForTest.length;
+      final res = controller.fireAt(5, 5);
+
+      expect(res, ShotResult.invalid);
+      expect(controller.network.sentForTest.length, before,
+          reason: 'no fire message should have reached the wire');
+    });
+
+    test('allowed once peerHasTurn flips back to mine', () async {
+      final controller = await newController();
+      controller.mode = GameMode.hotspot;
+      controller.lanBattleMode = LanBattleMode.turns;
+      controller.beginBattle(enemyBoard: Board()..place(kFleet.first, 0, 0, true));
+      controller.attachNetwork();
+      controller.peerHasTurn = false; // my turn
+
+      final res = controller.fireAt(5, 5);
+
+      expect(res, ShotResult.hit); // network branch's placeholder return
+      expect(
+          controller.network.sentForTest
+              .any((m) => m['type'] == 'fire' && m['r'] == 5 && m['c'] == 5),
+          isTrue);
+    });
+
+    test('CHAOS is untouched — peerHasTurn is never meaningfully set '
+        'there, and nothing should gate on it', () async {
+      final controller = await newController();
+      controller.mode = GameMode.hotspot;
+      controller.lanBattleMode = LanBattleMode.chaos;
+      controller.beginBattle(enemyBoard: Board()..place(kFleet.first, 0, 0, true));
+      controller.attachNetwork();
+      controller.peerHasTurn = true; // meaningless in chaos; must not block
+
+      final res = controller.fireAt(5, 5);
+      expect(res, ShotResult.hit);
+    });
+  });
 }

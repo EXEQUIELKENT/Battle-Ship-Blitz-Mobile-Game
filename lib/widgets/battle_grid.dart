@@ -419,35 +419,44 @@ class _BattleGridState extends State<BattleGrid>
               onPanUpdate: _onPanUpdate(cell),
               onPanEnd: _onPanEnd(cell),
               child: Container(
-                // BUGFIX (staged ship snaps a few px right after landing):
-                // `Container` derives its own `padding` from
-                // `decoration.padding` whenever `padding` isn't set
-                // explicitly — and for a `BoxDecoration` with a `border`,
-                // that's the border's own width on every side. So without
-                // this, the `border: Border.all(width: 3.5)` below was
-                // silently insetting the `Stack` (grid paint, every ship,
-                // the drag ghost, the crosshair — everything below) by
-                // 3.5px from this Container's actual edge, even though
-                // every one of those children positions itself using
-                // `cell`/`size` derived from the FULL, un-inset box.
-                // Invisible internally, since the grid paint and the
-                // ships were both shifted by the same amount and so still
-                // lined up with each other — but the placement screen's
-                // RANDOM-button "flight" animation measures THIS
-                // Container from the outside (`_gridKey`) to compute
-                // where a staged ship should land, with no idea about an
-                // inner inset it can't see. The flying ship would arrive
-                // at the outer-box coordinate; the instant it becomes a
-                // real on-grid ship inside the actually-inset `Stack`, it
-                // snapped ~3.5px down-and-right into its true spot. Fixed
-                // at the source: an explicit zero `padding` overrides the
-                // decoration-derived one, so the `Stack` sits flush with
-                // this box and every internal coordinate genuinely is
-                // relative to the same origin the outside world measures.
-                padding: EdgeInsets.zero,
+                // BUGFIX (crosshair/ships/taps all off-centre, worse near
+                // the far edges — up to ~6.65px on a 10-cell board): this
+                // Container used to carry `border: Border.all(width: 3.5)`
+                // in its own `decoration`, alongside an explicit
+                // `padding: EdgeInsets.zero` that a comment here claimed
+                // "overrides the decoration-derived padding, so the Stack
+                // sits flush with this box." That is not how `Container`
+                // works: `_paddingIncludingDecoration` (see the Flutter
+                // SDK's `container.dart`) ADDS an explicit `padding` to
+                // `decoration.padding` rather than replacing it — and for
+                // a `BoxDecoration` with a `border`, `decoration.padding`
+                // IS that border's own width on every side. So the `Stack`
+                // below (grid paint, every ship, the drag ghost, the
+                // crosshair) was genuinely inset 3.5px from this
+                // Container's real edge and was really only `size - 7`
+                // square, while every one of those children computed its
+                // own `cell` from the FULL, un-inset `size` (see the
+                // `LayoutBuilder` above). The two painters
+                // (`_StaticGridPainter`/`_FxGridPainter`, sized to their
+                // OWN inset layout box) and everything else (sized off the
+                // outer `cell`) therefore each used a very slightly
+                // different cell size and disagreed by `(k + 0.5) × 0.7px`
+                // per column/row — invisible at column 0, a real ~6-7px
+                // drift by column 9.
+                //
+                // Fixed at the actual source: the border moves OUT of this
+                // Container's decoration and becomes the LAST child of the
+                // `Stack` below instead (see the `Positioned.fill` there),
+                // where it paints its 3.5px ring flush against the same
+                // outer edge it always occupied — but no longer by
+                // shrinking everything else to make room for it. The
+                // `Stack` is now genuinely `size` square, so `cell = size /
+                // kBoardSize` is correct everywhere that reads it: the
+                // painters, the crosshair, every ship, tap-to-cell math in
+                // `_onTap`/`_onPanUpdate` below, and the cannonball landing
+                // point in `battle_screen.dart`'s `_HalfGeom`.
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.outline, width: 3.5),
                   color: AppColors.waterDark,
                   boxShadow: const [
                     BoxShadow(
@@ -459,6 +468,21 @@ class _BattleGridState extends State<BattleGrid>
                 ),
                 clipBehavior: widget.clip ? Clip.antiAlias : Clip.none,
                 child: Stack(
+                  // BUGFIX (RANDOM deal looked like ships spawning out of
+                  // nowhere): `widget.clip` only ever reached the outer
+                  // `Container` above, via its `clipBehavior`. This `Stack`
+                  // — the thing every ship widget is actually a child of —
+                  // defaults to `Clip.hardEdge` regardless. The deploy
+                  // screen stages an unplaced ship at its dock icon's
+                  // position first, which is a negative row above the
+                  // board (see `_runRandomize`), specifically so the ship
+                  // can be seen sliding out of the tray — but that staged,
+                  // off-board frame was being clipped away by this Stack,
+                  // so the ship only became visible once it crossed the
+                  // top edge, well into its flight. Threading `widget.clip`
+                  // down here too is the actual fix; the outer clip alone
+                  // was never enough.
+                  clipBehavior: widget.clip ? Clip.hardEdge : Clip.none,
                   children: [
                     RepaintBoundary(
                       child: CustomPaint(
@@ -499,7 +523,29 @@ class _BattleGridState extends State<BattleGrid>
                     // behind `aimCell != null`) so it can animate OUT
                     // cleanly too; it's fully invisible/inert whenever
                     // there's nothing to aim at.
-                    _Crosshair(cell: cell, target: widget.aimCell),
+                    _Crosshair(
+                      cell: cell,
+                      target: widget.aimCell,
+                      cannonSkinId: widget.cannonSkinId,
+                    ),
+                    // The board's outer frame — see the BUGFIX comment on
+                    // the Container above for why this now lives here
+                    // instead of in that Container's own `decoration`.
+                    // Painted last (on top of the grid/ships/crosshair)
+                    // so its 3.5px ring still occupies the same outermost
+                    // edge it always has, rather than a gap being left
+                    // for it.
+                    Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: AppColors.outline,
+                            width: 3.5,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -643,6 +689,11 @@ class _BattleGridState extends State<BattleGrid>
     final centerY = ship.row * cell + h / 2;
     final boxSide = long - 2; // same 2px inset the old per-orientation box used
 
+    // Same one-shot-per-kind latch as `playEntrance` below, but for the
+    // dock pull-in scale — see `_shipsPulledOnce`. Computed first because
+    // `playEntrance` needs to know about it.
+    final pullStart = widget.pullInScales?[ship.spec.kind];
+
     // Per-ship-kind latch on top of `widget.animateEntrance` — see
     // `_shipsEnteredOnce` for why the blanket widget flag alone isn't
     // enough to keep a later manual drag from replaying this. Marked the
@@ -650,13 +701,24 @@ class _BattleGridState extends State<BattleGrid>
     // mount under the same build — e.g. immediately re-queried by a
     // hot-reload or a parent rebuild before `initState` below has even
     // run — can't slip through and animate twice either.
-    final playEntrance =
-        widget.animateEntrance && !_shipsEnteredOnce.contains(ship.spec.kind);
+    //
+    // BUGFIX: also suppressed whenever this ship is pulling in from the
+    // dock (`pullStart != null`). Both `animateEntrance` (first RANDOM on
+    // an empty board) and the pull-in are true for exactly the same ships
+    // at exactly the same moment — every unplaced ship, on the very first
+    // frame — so without this they used to run at once: a fade + an
+    // easeOutBack overshoot from `_ShipEntrance`, layered on top of
+    // `_ShipPullIn`'s own scale-from-the-dock-icon. Visually that read as
+    // the ship popping into existence and bouncing right at the dock
+    // before it had even started sliding — a second, smaller "spawn"
+    // sitting on top of the one the pull-in already does properly. The
+    // pull-in is the correct entrance for a dock-sourced ship in every
+    // case, so it simply wins.
+    final playEntrance = widget.animateEntrance &&
+        pullStart == null &&
+        !_shipsEnteredOnce.contains(ship.spec.kind);
     if (playEntrance) _shipsEnteredOnce.add(ship.spec.kind);
 
-    // Same one-shot-per-kind latch as `playEntrance` above, but for the
-    // dock pull-in scale — see `_shipsPulledOnce`.
-    final pullStart = widget.pullInScales?[ship.spec.kind];
     final playPull =
         pullStart != null && !_shipsPulledOnce.contains(ship.spec.kind);
     if (pullStart != null) _shipsPulledOnce.add(ship.spec.kind);

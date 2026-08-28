@@ -86,6 +86,17 @@ class _CannonWidgetState extends State<CannonWidget>
   late final AnimationController _recoil;
   late final AnimationController _pulse;
 
+  // BUGFIX (turn handoff looked like a shot): `readyFlash()` used to
+  // share `_recoil` with `fire()` — but `_recoil` is also what
+  // `CannonPainter` reads to draw the muzzle flash and pull the barrel
+  // back (see `recoil:` below). Sharing it meant every turn handoff
+  // played a full double muzzle-flash, which read as "this gun just
+  // fired" at exactly the moment it hadn't. `_readyKick` drives the same
+  // widget-level squash/nudge feel for the ready cue, but is never
+  // passed to the painter — only `_recoil` (now fire-only) triggers the
+  // flash/smoke/barrel-retract.
+  late final AnimationController _readyKick;
+
   // ----- Muzzle smoke (separate, longer-lived than the recoil kick) -----
   // `_recoil` snaps up and back down in ~260ms either way — plenty for a
   // sharp kick, but too fast to read as actual smoke. `_smoke` runs once,
@@ -116,6 +127,10 @@ class _CannonWidgetState extends State<CannonWidget>
       vsync: this,
       duration: const Duration(milliseconds: 850),
     );
+    _readyKick = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+    );
     // PERF: drive rebuilds from animation ticks directly instead of
     // wrapping everything in an AnimatedBuilder. This lets us STOP the
     // ready-pulse animation entirely while the cannon is reloading (a
@@ -126,6 +141,7 @@ class _CannonWidgetState extends State<CannonWidget>
     _recoil.addListener(_maybeSetState);
     _smoke.addListener(_maybeSetState);
     _pulse.addListener(_maybeSetState);
+    _readyKick.addListener(_maybeSetState);
     final rng = math.Random();
     _puffs = List.generate(5, (i) {
       return _SmokePuff(
@@ -171,20 +187,33 @@ class _CannonWidgetState extends State<CannonWidget>
     _recoil.dispose();
     _pulse.dispose();
     _smoke.dispose();
+    _readyKick.dispose();
     super.dispose();
   }
 
+  /// The whole point of this method is that it's what makes a shot
+  /// actually LOOK like it happened. Previously this was called from
+  /// `BattleScreen._resolveImpact`, at the moment a shot's IMPACT was
+  /// confirmed — up to 750ms (a full ball flight) plus network latency
+  /// after `SoundService.instance.cannonFire()` had already played at
+  /// launch, and only when the shot was a hit (a miss never animated the
+  /// gun at all). It is now called at launch instead, right alongside
+  /// that same sound — see `BattleScreen._launchBall` /
+  /// `_launchOpponentBall` — so the recoil, muzzle flash and smoke all
+  /// start with the boom, on every shot.
   void fire() {
     _recoil.forward(from: 0).then((_) => _recoil.reverse());
     _smoke.forward(from: 0);
   }
 
   /// Pronounced ready-flash: a quick double-pulse to signal "your cannon
-  /// is loaded — fire!" without interrupting the flow with a popup.
+  /// is loaded — fire!" without interrupting the flow with a popup. Uses
+  /// its own controller — see the doc on `_readyKick` for why it must
+  /// not share `_recoil` with an actual shot.
   void readyFlash() {
-    _recoil.forward(from: 0).then((_) => _recoil.reverse()).then((_) {
+    _readyKick.forward(from: 0).then((_) => _readyKick.reverse()).then((_) {
       if (mounted) {
-        _recoil.forward(from: 0).then((_) => _recoil.reverse());
+        _readyKick.forward(from: 0).then((_) => _readyKick.reverse());
       }
     });
   }
@@ -192,13 +221,18 @@ class _CannonWidgetState extends State<CannonWidget>
   @override
   Widget build(BuildContext context) {
     final ready = widget.cooldownFraction >= 1 && widget.enabled;
-    final squash = 1 - _recoil.value * 0.14;
+    // The widget-level squash/nudge reacts to whichever of the two is
+    // actually playing — a real shot (`_recoil`) or the ready-flash
+    // (`_readyKick`) — but only `_recoil` reaches the painter below, so
+    // the muzzle flash/smoke/barrel-retract only ever draw for a real
+    // shot. See the doc on `_readyKick`.
+    final jolt = math.max(_recoil.value, _readyKick.value);
+    final squash = 1 - jolt * 0.14;
     final pulseScale = ready ? 1 + _pulse.value * 0.05 : 1.0;
-    // Small downward kick synced to the same recoil value that drives
-    // the squash and the barrel retraction in the painter, so firing
-    // reads as a real jolt (the whole cannon nudges back) rather than
-    // just a shrink-and-grow pulse.
-    final kick = _recoil.value * widget.size * 0.05;
+    // Small downward kick synced to the same value that drives the
+    // squash, so firing (or the ready cue) reads as a real jolt rather
+    // than just a shrink-and-grow pulse.
+    final kick = jolt * widget.size * 0.05;
     final family = FleetFamilies.byKey(widget.skin.familyKey);
     return GestureDetector(
       onTap: ready ? widget.onFire : null,
@@ -1166,3 +1200,4 @@ class CannonPainter extends CustomPainter {
       oldDelegate.legacyCannonId != legacyCannonId ||
       oldDelegate.smoke != smoke;
 }
+

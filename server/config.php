@@ -63,6 +63,14 @@ $defaults = [
     // one is available, so two players stuck in a small online population
     // still end up back together rather than never matching at all.
     'avoid_rematch_seconds' => 300,
+
+    // How long a finished match's relay history is kept before
+    // `sweep_matchmaking` deletes it. Nothing on either end reads
+    // `match_msgs` once a match is `done` — the client tears its
+    // `RelayLink` down the moment it sees that status — so this only
+    // needs to outlast someone wanting to check server logs shortly
+    // after an odd match, not serve any feature.
+    'match_msgs_retention_seconds' => 3600,
 ];
 
 $local = [];

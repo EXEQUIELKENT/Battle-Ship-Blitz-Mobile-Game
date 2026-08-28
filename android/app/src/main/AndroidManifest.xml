@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <!-- Nearby device discovery for hotspot pairing (Android 13+) -->
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation"/>
+    <!-- Lets the LAN beacon/scan hold a MulticastLock so the Wi-Fi radio
+         doesn't filter out inbound room broadcasts in power-save. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <application
         android:label="Battleship Blitz"
         android:name="${applicationName}"

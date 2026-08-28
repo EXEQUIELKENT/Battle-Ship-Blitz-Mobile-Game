@@ -981,7 +981,6 @@ class _CannonCard extends StatelessWidget {
     );
   }
 }
-
 // ------------------------------------------------------------------ DECK
 
 /// The battlefield boards on their own shelf — no matched-set pitch
@@ -1395,7 +1394,7 @@ class _ThemeCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  _statusPill(
+                    _statusPill(
                     owned: owned,
                     equipped: equipped,
                     affordable: affordable,
@@ -1410,7 +1409,6 @@ class _ThemeCard extends StatelessWidget {
     );
   }
 }
-
 // -------------------------------------------------------------- PAINTERS
 
 /// A battlefield preview.

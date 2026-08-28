@@ -63,7 +63,17 @@ class OnlineApi {
     // an ordinary lobby/matchmaking call and the next one a few seconds
     // later; a live match's own poll-then-immediately-repoll loop never
     // goes idle long enough for this to matter.
-    ..idleTimeout = const Duration(seconds: 30);
+    ..idleTimeout = const Duration(seconds: 30)
+    // A live match holds one connection almost permanently in `relay_poll`
+    // (server-side hold up to 8s, immediately re-issued) while `relay_send`
+    // fires opportunistically on top of it. Left at the default of 1, the
+    // pool has exactly one warm connection and a concurrent send has to
+    // either wait for the held poll to finish or open a fresh one anyway —
+    // so the "reuse a pooled connection" win this client exists for was
+    // only reliable by luck. A small explicit ceiling keeps a send and a
+    // poll each able to hold their own warm connection instead of
+    // contending for the one the pool happened to keep.
+    ..maxConnectionsPerHost = 4;
 
   /// Drops the pooled connection. Call when finished talking to the
   /// server for good (see [OnlineService.dispose]) — never between
@@ -111,7 +121,17 @@ class OnlineApi {
       final request = await client.postUrl(_endpoint).timeout(timeout);
       request.headers.contentType =
           ContentType('application', 'json', charset: 'utf-8');
-      request.write(jsonEncode(payload));
+      // Encoded to bytes and the length set explicitly, rather than
+      // `request.write(jsonEncode(payload))`: without a known
+      // `contentLength`, `dart:io` has no choice but to send the body
+      // chunked — an extra length-prefix frame on every single request,
+      // on the hottest path this client has (every shot fired, every
+      // relay poll). Every payload here is one small JSON object built
+      // and finished before anything is written, so the length is always
+      // known up front; there is nothing chunked encoding buys here.
+      final payload8 = utf8.encode(jsonEncode(payload));
+      request.contentLength = payload8.length;
+      request.add(payload8);
       final response = await request.close().timeout(timeout);
       final text = await utf8.decoder.bind(response).join().timeout(timeout);
 

@@ -181,10 +181,22 @@ class _FriendsScreenState extends State<FriendsScreen> {
     if (rejoin) {
       // Wait for the survivor's snapshot before showing anything: without
       // it there is no match to draw.
+      //
+      // BUGFIX: this used to wait with no timeout at all — if the
+      // survivor never actually answers (they're offline, the match is
+      // genuinely dead, or the relay lost the request), the listener sat
+      // forever and `_launching` stayed true, which hides the rejoin
+      // banner (see its `!_launching` guard) — the screen was left
+      // permanently unable to offer this match again without a full app
+      // restart. 25s comfortably outlasts `RelayLink._peerSilenceLimit`
+      // (22s), so a survivor who is genuinely still there has time to
+      // answer before this gives up.
+      late Timer timeout;
       void listener() {
         if (!mounted) return;
         final snapshot = net.takeResume();
         if (snapshot == null) return;
+        timeout.cancel();
         net.removeListener(listener);
         controller.mode = GameMode.online;
         net.setMatchHost(snapshot['youAreHost'] == true);
@@ -196,6 +208,15 @@ class _FriendsScreenState extends State<FriendsScreen> {
       }
 
       net.addListener(listener);
+      timeout = Timer(const Duration(seconds: 25), () {
+        net.removeListener(listener);
+        if (!mounted) return;
+        setState(() => _launching = false);
+        _toast(
+            "Couldn't reach ${match.peerName} to resume the match. "
+            'Try again from the rejoin banner.',
+            type: AppNoticeType.error);
+      });
       return;
     }
 

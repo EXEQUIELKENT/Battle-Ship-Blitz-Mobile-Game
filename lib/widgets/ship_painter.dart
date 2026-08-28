@@ -59,13 +59,38 @@ class ShipPainter extends CustomPainter {
     // about a ship — its footprint, its damage state, the wreck it turns
     // into — is unchanged, which is why the switch is this narrow.
     final family = FleetFamilies.byKey(skin.familyKey);
-    if (family != null && !sunk) {
-      final bob = (wavePhase - 0.5) * h * 0.06;
+    if (family != null) {
+      final bob = sunk ? 0.0 : (wavePhase - 0.5) * h * 0.06;
+      // Charred wreck palette for family hulls — same 0.72 lerp the
+      // legacy path uses, so a destroyed family ship keeps its own
+      // silhouette instead of collapsing to the generic legacy hull.
+      final ShipPalette palette = sunk
+          ? ShipPalette(
+              hull: Color.lerp(family.ship.hull, const Color(0xFF14181C), 0.72)!,
+              trim: Color.lerp(family.ship.trim, const Color(0xFF14181C), 0.72)!,
+              deck: Color.lerp(family.ship.deck, const Color(0xFF14181C), 0.72)!,
+              sail: Color.lerp(family.ship.sail, const Color(0xFF14181C), 0.72)!,
+              ink: family.ship.ink,
+              glow: family.ship.glow,
+              inkW: family.ship.inkW,
+            )
+          : family.ship;
       canvas.save();
       canvas.translate(0, bob);
-      paintFamilyShip(canvas, size, family, spec.kind);
+      paintFamilyShip(canvas, size, family, spec.kind,
+          paletteOverride: palette);
       canvas.restore();
       if (hitIndices.isNotEmpty) _familyDamage(canvas, w, h);
+      if (sunk) {
+        final smokeRng = math.Random(spec.kind.index * 97 + 11);
+        final smoke = Paint()..color = Colors.white.withValues(alpha: 0.30);
+        for (var i = 0; i < 3; i++) {
+          final sx = w * (0.20 + 0.6 * smokeRng.nextDouble());
+          final sy = h * (0.20 - i * 0.09);
+          final sr = h * (0.13 - i * 0.02);
+          canvas.drawCircle(Offset(sx, sy), sr, smoke);
+        }
+      }
       return;
     }
 

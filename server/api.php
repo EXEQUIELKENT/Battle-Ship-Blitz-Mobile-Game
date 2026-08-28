@@ -30,6 +30,21 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
     exit;
 }
 
+// Every response here is one JSON document, written in a single `echo`
+// inside `respond()` — never streamed — so buffering it through
+// `ob_gzhandler` costs nothing and compresses everything: the friends
+// `poll` payload (a full friends list on every heartbeat) and every relay
+// line benefit most. `ob_gzhandler` already negotiates `Accept-Encoding`
+// itself and passes bytes through untouched for a client that doesn't
+// advertise gzip support, so there is nothing to branch on here. Guarded
+// on the extension existing, since a minimal PHP build without zlib must
+// not fatal on every request.
+if (function_exists('ob_gzhandler')) {
+    @ob_start('ob_gzhandler');
+} else {
+    ob_start();
+}
+
 $config = require __DIR__ . '/config.php';
 
 // ---------------------------------------------------------------- helpers
@@ -137,6 +152,16 @@ function make_tag(PDO $pdo): string
  * player visibly online without a second mechanism, and a player who
  * force-quits simply stops stamping and fades out on their friends'
  * screens once the window lapses.
+ *
+ * The write itself is skipped when the existing stamp is already fresh. A
+ * live match's `relay_poll` calls this on every single iteration of its
+ * long-poll, and the online window this stamp serves
+ * (`online_window_seconds`, 35s) can't tell "just now" apart from "five
+ * seconds ago" anyway — so those writes were pure row-lock/redo-log cost
+ * for no visible effect. Five seconds of slack is comfortably under every
+ * reader of this column: the 22s relay presence window and the 35s
+ * friends-list one both still update every real heartbeat well within
+ * their own tolerance.
  */
 function require_player(PDO $pdo, array $in): array
 {
@@ -151,8 +176,10 @@ function require_player(PDO $pdo, array $in): array
     if (!$player) {
         fail('Not signed in.', 401);
     }
-    $pdo->prepare('UPDATE players SET last_seen = NOW() WHERE id = ?')
-        ->execute([$player['id']]);
+    $pdo->prepare(
+        'UPDATE players SET last_seen = NOW()
+         WHERE id = ? AND last_seen < NOW() - INTERVAL 5 SECOND'
+    )->execute([$player['id']]);
     return $player;
 }
 
@@ -209,8 +236,13 @@ function match_payload(array $m, int $myId): array
  * release pairings neither captain accepted in time so both players
  * return to the lobby instead of staring at a dead prompt forever.
  */
-function sweep_matchmaking(PDO $pdo, int $queueTtl, int $pairTtl, int $avoidTtl): void
-{
+function sweep_matchmaking(
+    PDO $pdo,
+    int $queueTtl,
+    int $pairTtl,
+    int $avoidTtl,
+    int $msgTtl
+): void {
     $pdo->prepare(
         'DELETE q FROM matchmaking q
          JOIN players p ON p.id = q.player_id
@@ -230,6 +262,19 @@ function sweep_matchmaking(PDO $pdo, int $queueTtl, int $pairTtl, int $avoidTtl)
         'DELETE FROM matchmaking_avoid
          WHERE created_at < NOW() - INTERVAL ? SECOND'
     )->execute([$avoidTtl]);
+
+    // `match_msgs` has nothing else that ever deletes from it — every row
+    // `relay_send` has ever inserted sits in the exact index
+    // `relay_poll`'s wait loop scans, forever, unless this runs. A match
+    // this old and marked done has no `RelayLink` left anywhere reading
+    // it (the client tears the connection down the moment it sees
+    // `status: 'done'`), so its history is pure dead weight.
+    $pdo->prepare(
+        "DELETE mm FROM match_msgs mm
+         JOIN matches m ON m.id = mm.match_id
+         WHERE m.status = 'done'
+           AND m.updated_at < NOW() - INTERVAL ? SECOND"
+    )->execute([$msgTtl]);
 }
 
 /**
@@ -665,7 +710,8 @@ switch ($action) {
                 $pdo,
                 $window + 10,
                 (int) $config['pair_hold_seconds'],
-                (int) $config['avoid_rematch_seconds']
+                (int) $config['avoid_rematch_seconds'],
+                (int) $config['match_msgs_retention_seconds']
             );
 
             // The captain who has been searching longest and is still

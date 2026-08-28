@@ -10,10 +10,13 @@ import '../art/legacy_shell_art.dart';
 import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
+import '../models/power_up.dart';
 import '../services/game_controller.dart';
 import '../services/network_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import '../services/vs_ai_session.dart';
+import '../widgets/app_notification.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/cartoon_confirm.dart';
@@ -73,15 +76,71 @@ class _BattleScreenState extends State<BattleScreen>
   /// agreeing without a dedicated turn message.
   bool _p2Active = false;
 
+  // BUGFIX (double-fire during the turn handoff — LAN/local turn-based
+  // modes, including MANOEUVRE/GHOST/POWER PLAY): a MISS's ball finishing
+  // its flight clears both `pendingCell` and `visible` on its projectile
+  // slot (see `_tryResolveImpact`) well before the turn actually passes —
+  // `_maybePassTurn` below deliberately waits another 500ms so the
+  // handoff reads as a deliberate beat rather than an instant snap. In
+  // that 500ms window `gridFirable`'s existing guards were both already
+  // satisfied again, so a second tap got a genuine second `fire` out
+  // before the peer/local opponent had actually been handed the turn.
+  // This latch closes the instant a turn-tracked shot is launched and
+  // only reopens once its turn consequences are fully settled: right
+  // away on a hit/hold (nothing to wait for — see `_maybePassTurn`), or
+  // 500ms later when the pass actually runs, on a miss. Left permanently
+  // false in CHAOS/BLITZ, which have no turn to protect and are already
+  // correctly gated by cooldown alone.
+  bool _shotOutstanding = false;
+
+  /// True for the brief window between calling `GameController.fireAt`/
+  /// `p2FireAt` from [_fireAtCell] and that same call reaching
+  /// [_launchBall] a few lines later.
+  ///
+  /// BUGFIX (local/vs-AI: a HIT permanently wedged the shooter's own
+  /// gun): `fireAt`/`p2FireAt`'s non-network branch (local pass-and-play
+  /// and vs-AI both use it — hotspot/online/vsAiLan take the other one,
+  /// which never hits this) calls `GameController._registerShot`
+  /// SYNCHRONOUSLY, and its `notifyListeners()` runs [_onUpdate] right
+  /// there in the same call stack — before [_fireAtCell] ever reaches
+  /// [_launchBall]. At that moment the just-registered event has no ball
+  /// tracking it yet by ANY measure `_onUpdate` checks: `_tryResolveImpact`
+  /// sees `visible == false` (not yet flying) and `pendingCell == null`
+  /// (not yet reserved), and the POWER-PLAY fallback — built for exactly
+  /// that shape of event, one `GameController.fireAt` sent straight from
+  /// a card's batch with no ball coming at all — reads the same absence
+  /// of a reservation as its cue to resolve on the spot. Both raced to
+  /// treat an ordinary tap as if it would never get a ball, resolving it
+  /// immediately: for a HIT, that clears `_shotOutstanding` right away,
+  /// which the very next line in `_fireAtCell` then set back to `true`
+  /// with nothing left to ever clear it again. A MISS self-healed
+  /// (`_maybePassTurn` clears it from inside a 500ms-delayed callback
+  /// that fires after that line, not before), which is why only hits
+  /// ever wedged.
+  ///
+  /// This flag closes that whole window: both racing checks in
+  /// [_onUpdate] step aside while it's set, deferring to the real
+  /// resolution once [_launchBall] actually gives the shot a ball to
+  /// track — exactly the same ball-landing path any other tap uses.
+  bool _awaitingBallLaunch = false;
+
   bool _navigatedToResult = false;
 
   // ----- Match shape (snapshotted once — none of it changes mid-battle) --
 
-  /// Hotspot/online: exactly ONE human per device, with the opponent on
-  /// the other end of a socket. This is the distinction that drives the
+  /// Hotspot/online/vsAiLan: exactly ONE human per device, whether the
+  /// opponent is on the other end of a socket or is a hidden AI joined
+  /// over a `LoopbackLink`. This is the distinction that drives the
   /// perspective fix below — several behaviors that make sense with two
   /// players sharing one screen are actively wrong with two screens.
   late final bool _lan;
+
+  /// Strictly narrower than [_lan]: true only when the opponent is an
+  /// actual remote device. Gates the few things that mean nothing against
+  /// an AI running in this same process — match chat and the "opponent
+  /// dropped, waiting for them to come back" reconnect overlay, since an
+  /// in-process AI opponent has no connection to lose.
+  late final bool _hasRemotePeer;
 
   /// LAN chaos rules: no turn order at all, both fleets firing at once,
   /// both cannons parked at the back of their own grid all match.
@@ -116,6 +175,24 @@ class _BattleScreenState extends State<BattleScreen>
   PlacedShip? _movePreview;
   bool _movePreviewValid = true;
 
+  // ----- POWER PLAY: picking a target for the held card -----
+  //
+  // Set the instant the card slot is tapped for a card whose
+  // `PowerUpDef.needsTarget` is true; cleared the instant enough cells
+  // have been picked (see `_pickPowerUpTargetCell`) or the player backs
+  // out. While true, `_buildHalf`'s `onTapCellHandler` redirects taps on
+  // whichever grid the card actually targets — see that variable's doc.
+  bool _pickingPowerUpTarget = false;
+  final List<(int, int)> _powerUpPicks = [];
+
+  /// How many lines of `GameController.combatLog` this screen has already
+  /// turned into a banner — see `_maybePowerUpBanner`. Power Play routes
+  /// its draws, opponent card-use announcements, and info-card answers
+  /// through the SAME combat log every other mode already writes to
+  /// (`GameController._log`); this is what turns exactly the NEW lines
+  /// into a toast without replaying old ones on every rebuild.
+  int _powerUpLogSeen = 0;
+
   // ----- Countdown -----
   bool _countingDown = false;
   int _countdownValue = 3;
@@ -140,7 +217,10 @@ class _BattleScreenState extends State<BattleScreen>
   // LISTENER is what actually drives impact resolution/turn-passing, not
   // a magic duration — see the `addStatusListener` below), so it's safe
   // to simply slow it down; the accuracy/targeting math is untouched.
-  static const Duration _projDuration = Duration(milliseconds: 750);
+  // Shared with `GameController`, not a screen-local animation constant:
+  // in the dodge modes this same number is the window a defending hull
+  // has to move out from under an incoming shell. See `kShellFlight`.
+  static const Duration _projDuration = kShellFlight;
   late final _Projectile _projP1; // fired by the bottom half's owner
   late final _Projectile _projP2; // fired by the top half's owner
 
@@ -217,7 +297,7 @@ class _BattleScreenState extends State<BattleScreen>
 
   /// Own-fleet ships as they should be DRAWN, per half — same [PlacedShip]s
   /// as `controller.boards[...].ships` but with `hitIndices` limited to
-  /// cells whose shot has actually landed (`impactAt` set), instead of the
+  /// cells whose shot has actually landed (impactAt set), instead of the
   /// raw model set which flips the instant the shot is REGISTERED (tap
   /// time / AI decision time / network-result time). Without this, a
   /// damage crater (and, once every cell is hit, the sunk graphic) could
@@ -228,6 +308,33 @@ class _BattleScreenState extends State<BattleScreen>
   /// live ship art shown on one's OWN board (vsAI / hotspot / online —
   /// see `showOwnFleet`).
   final Map<bool, List<PlacedShip>> _visibleOwnShipsCache = {};
+
+  /// Which of each half's own ship cells have had their damaging shot
+  /// actually LAND (visually), tracked PER SHIP — `ShipKind -> set of hull
+  /// cell indices` — rather than per grid cell.
+  ///
+  /// The cell-keyed version this replaces had a hole the manoeuvring modes
+  /// drove straight through: a hit is scored against the hull where it sat
+  /// when the shell landed, but the crater was later looked up by CELL. In
+  /// GHOST FLEET a damaged hull can still run (see
+  /// `GameController.damageIgnorableFor`), and the moment it did, its
+  /// craters were left behind on the water it fled — the ship arrived at
+  /// its new spot pristine, and moving it BACK made the damage reappear.
+  /// Recording (kind, hull index) at the instant of impact means the
+  /// damage is a property of the SHIP, so it travels with it (the same
+  /// thing `PlacedShip.hitIndices` already does for the model — this is
+  /// the display-side twin, kept separate only to preserve the
+  /// "logically decided vs visually confirmed" gate: a crater may not
+  /// appear before its cannonball lands).
+  ///
+  /// Populated in `_resolveImpact` (exactly once per event, at the moment
+  /// impactAt is set) and read by `_refreshDerivedCache` when building
+  /// `_visibleOwnShipsCache`. Seeded from the restored board after a
+  /// mid-match resume, where every hit is long since visually settled.
+  final Map<bool, Map<ShipKind, Set<int>>> _landedShipDamage = {
+    true: {},
+    false: {},
+  };
 
   /// Bumped every time a [CombatEvent.impactAt] is actually set (a ball
   /// visually lands) — see `_resolveImpact` and the overlapping-shot
@@ -242,6 +349,11 @@ class _BattleScreenState extends State<BattleScreen>
   // the deliberate firing delay is waiting to expire.
   final Set<CombatEvent> _delayedOpponentEvents = <CombatEvent>{};
 
+  /// Incoming shells already given a cannonball. Pruned against the
+  /// controller's own list every update, so it can never outlive the
+  /// shells themselves — see `GameController.incomingShells`.
+  final Set<IncomingShell> _launchedShells = <IncomingShell>{};
+
   @override
   void initState() {
     super.initState();
@@ -249,8 +361,8 @@ class _BattleScreenState extends State<BattleScreen>
     final controller = context.read<GameController>();
     controller.addListener(_onUpdate);
 
-    _lan = controller.mode == GameMode.hotspot ||
-        controller.mode == GameMode.online;
+    _lan = controller.usesMatchProtocol;
+    _hasRemotePeer = controller.hasRemotePeer;
     // BLITZ is both at once, so these read the two properties rather
     // than naming modes — otherwise every rule below would need a second
     // clause for a mode that behaves exactly like its two parents.
@@ -262,6 +374,22 @@ class _BattleScreenState extends State<BattleScreen>
             _lan);
     _mirrorTopHalf = !_lan;
     _iAmBlue = _lan && !controller.network.isHost;
+
+    // A match rebuilt from a resume snapshot comes back with every past
+    // shot already landed (see `GameController._seedEventsFromShots`), so
+    // this device's own fleet's recorded damage is all "visually
+    // confirmed" from frame one — seed the per-ship crater map straight
+    // from the board rather than waiting for impacts that will never
+    // replay.
+    if (controller.resumedMidMatch) {
+      for (final ship in controller.boards[0].ships) {
+        _landedShipDamage[true]!
+            .putIfAbsent(ship.spec.kind, () => <int>{})
+            .addAll(ship.hitIndices);
+      }
+      // The enemy half draws no live fleet mid-match, so its map stays
+      // empty — the wreck reveal there is driven by `_sunkNamesCache`.
+    }
 
     // Whose turn it is at the moment this screen opens. `peerHasTurn` is
     // set by `beginBattle` (host fires first) and by a resume snapshot
@@ -301,7 +429,25 @@ class _BattleScreenState extends State<BattleScreen>
     if (controller.battling && !controller.resumedMidMatch) {
       _countingDown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) => _runCountdown());
+    } else {
+      // No count to wait out — a resumed match drops straight back in.
+      _releaseAiOpponent();
     }
+  }
+
+  /// Tells a vsAiLan opponent it may start playing. The AI lives in this
+  /// same process and its own controller enters battle the instant the
+  /// player's fleet reaches it — which is BEFORE this screen has even
+  /// been pushed, let alone finished counting down. Left to itself it
+  /// opened fire during the 3-2-1 (most visibly in CHAOS and BLITZ,
+  /// where nothing waits on a turn) while the player's own taps were
+  /// still being refused. A no-op in every other mode: there is no brain
+  /// to release. See `AiBrain.release`.
+  void _releaseAiOpponent() {
+    if (!mounted) return;
+    final controller = context.read<GameController>();
+    if (controller.mode != GameMode.vsAiLan) return;
+    context.read<VsAiSession>().playerReady();
   }
 
   Future<void> _runCountdown() async {
@@ -321,10 +467,25 @@ class _BattleScreenState extends State<BattleScreen>
       _countingDown = false;
       _countdownGo = false;
     });
+    _releaseAiOpponent();
   }
 
   void _onUpdate() {
     final controller = context.read<GameController>();
+    // MANOEUVRE / BLITZ / GHOST FLEET: an enemy shell now announces
+    // itself on the way IN, and is only scored `kShellFlight` later
+    // against whatever the board looks like when it lands — that gap is
+    // the dodge (see `GameController._armIncomingShell`). So the ball
+    // has to be launched from the shell here; by the time the shot's
+    // `CombatEvent` exists the shell has already landed.
+    if (controller.incomingShells.isNotEmpty) {
+      for (final shell in controller.incomingShells) {
+        if (_launchedShells.add(shell)) _launchIncomingShell(shell);
+      }
+    }
+    if (_launchedShells.isNotEmpty) {
+      _launchedShells.retainAll(controller.incomingShells);
+    }
     if (controller.events.isNotEmpty) {
       final e = controller.events.last;
       final age = DateTime.now().difference(e.time).inMilliseconds;
@@ -357,8 +518,54 @@ class _BattleScreenState extends State<BattleScreen>
           controller.mode != GameMode.local) {
         if (!_delayedOpponentEvents.contains(e)) {
           _delayedOpponentEvents.add(e);
-          _launchOpponentBall(e);
+          if (_manoeuvre) {
+            // This shot's ball went up when its SHELL was armed, a full
+            // flight ago — launching another now would fly a second,
+            // phantom cannonball for a shot that has already landed. If
+            // that ball is the one still in the air, let it land and
+            // resolve this event itself; if nothing is tracking the
+            // shot (the halves weren't laid out, or a second shell
+            // overtook it), resolve in place rather than leaving the
+            // event pending forever.
+            final pending = _projP2.pendingCell;
+            if (pending == null || pending[0] != e.row || pending[1] != e.col) {
+              _resolveImpact(e);
+            }
+          } else {
+            _launchOpponentBall(e);
+          }
         }
+      }
+      // POWER PLAY: a multi-shot card (SALVO, DEPTH CHARGE, CROSS FIRE,
+      // SPRAY, BARRAGE) or a CHAIN SHOT / COUNTER BATTERY bonus fires
+      // through `GameController.fireAt` directly — see
+      // `GameController.usePowerUp` — rather than through `_fireAtCell`,
+      // which is the ONLY place that launches a ball for the local
+      // player's own shot (see the comment above). Without this, such a
+      // shot's impactAt would never be set: `_maybePassTurn` and
+      // `resolvePendingFinishFor` both live in `_resolveImpact`, which
+      // only ever runs off a ball landing — so the mark would never
+      // appear AND the turn could get stuck. `_projP1.pendingCell` is
+      // what a genuine tap's ball is tracking; a `byPlayer` event whose
+      // cell doesn't match it never got one, so it's resolved instantly
+      // instead — the batch's OTHER shots already gave the tap its
+      // feedback, so no ball is missed, only skipped on purpose.
+      //
+      // `!_awaitingBallLaunch` is what actually keeps this from also
+      // matching an ORDINARY tap — see that flag's own doc. Without it,
+      // a genuine `_fireAtCell` tap's event reaches here (via the SAME
+      // synchronous `notifyListeners()` that registered it) before
+      // `_launchBall` has set `pendingCell` for it, which looks
+      // identical to a ball-less batch shot and gets resolved on the
+      // spot instead of waiting for the ball it is actually about to get.
+      final pending = _projP1.pendingCell;
+      if (!_awaitingBallLaunch &&
+          e.byPlayer &&
+          e.impactAt == null &&
+          age < 200 &&
+          mounted &&
+          (pending == null || pending[0] != e.row || pending[1] != e.col)) {
+        _resolveImpact(e);
       }
     }
     // BUGFIX (hotspot/online own-shot race): in hotspot/online mode,
@@ -399,17 +606,38 @@ class _BattleScreenState extends State<BattleScreen>
     }
     if (!mounted || controller.phase != BattlePhase.battling) return;
 
+    if (!_flyIncomingBall(e.row, e.col)) {
+      // No flight was possible — either the halves haven't been laid out
+      // yet, or this gun's previous ball is somehow still airborne.
+      // Resolve the shot in place rather than dropping it: this used to
+      // just `return`, which left the event pending FOREVER, since
+      // `_onUpdate` only ever reconsiders events under 200ms old.
+      _resolveImpact(e);
+    }
+  }
+
+  /// Flies an incoming shell that has NOT been scored yet — the dodge
+  /// modes' version of [_launchOpponentBall]. If no flight is possible
+  /// the shot simply arrives without one; its `CombatEvent` is resolved
+  /// in place when it lands (see [_onUpdate]), so nothing is dropped.
+  void _launchIncomingShell(IncomingShell shell) {
+    final controller = context.read<GameController>();
+    if (!mounted || controller.phase != BattlePhase.battling) return;
+    _flyIncomingBall(shell.row, shell.col);
+  }
+
+  /// Starts the enemy shell's arc toward (row, col) on this device's own
+  /// water, returning false if no flight was possible right now.
+  ///
+  /// Split out because in a mode with the dodge rule the flight no longer
+  /// begins at the same moment the shot is SCORED: it begins when the
+  /// shell is armed, and the scoring happens `kShellFlight` later against
+  /// whatever the board looks like by then — see
+  /// `GameController._armIncomingShell` and [_launchIncomingShell].
+  bool _flyIncomingBall(int row, int col) {
     final top = _geom[true];
     final bottom = _geom[false];
-    if (top == null || bottom == null || _projP2.visible) {
-      // No flight is possible right now — either the halves haven't been
-      // laid out yet, or this gun's previous ball is somehow still
-      // airborne. Resolve the shot in place rather than dropping it: this
-      // used to just `return`, which left the event pending FOREVER,
-      // since `_onUpdate` only ever reconsiders events under 200ms old.
-      _resolveImpact(e);
-      return;
-    }
+    if (top == null || bottom == null || _projP2.visible) return false;
     // The opponent's cannon may be slid out to its grid center (during its
     // turn) or parked at the back — fire from wherever it currently sits,
     // which `_slideFor` reports for every mode including chaos (where it
@@ -417,20 +645,21 @@ class _BattleScreenState extends State<BattleScreen>
     final from = _cannonMouth(top, _slideFor(false), false);
     // Lands dead-center on the target cell — see `_launchBall` for why
     // this used to be nudged off-center.
-    final to = bottom.cellCenterScreen(e.row, e.col);
+    final to = bottom.cellCenterScreen(row, col);
     setState(() {
       _projP2
-        ..pendingCell = [e.row, e.col]
+        ..pendingCell = [row, col]
         ..from = from
         ..to = to
         ..cell = bottom.cell
         ..visible = true;
     });
     SoundService.instance.cannonFire();
-    // NOTE: the cannon's recoil/muzzle-flash ("reload") animation no
-    // longer fires here at launch — see `_resolveImpact`, which only
-    // triggers it once the shot is confirmed to have hit a ship.
+    // See the matching note in `_launchBall` — fires at launch now, next
+    // to the sound, instead of (late, and hit-only) at impact.
+    _cannon2Fire.add(null);
     _projP2.ctrl.forward(from: 0);
+    return true;
   }
 
   /// Resolves the currently pending shot (`_pendingImpact`/`_pendingByP1`)
@@ -449,6 +678,12 @@ class _BattleScreenState extends State<BattleScreen>
   /// set and returns — the next call (from `_onUpdate`, the instant the
   /// real result arrives) finishes the job.
   void _tryResolveImpact(_Projectile p) {
+    // See [_awaitingBallLaunch]'s doc: mid-`fireAt`, a fresh tap's event
+    // looks IDENTICAL to a ball-less POWER-PLAY batch shot by every
+    // measure this function checks (`visible` still false, `pendingCell`
+    // still unset) — stepping aside here is what leaves it for
+    // `_fireAtCell` to actually give that shot a ball a few lines later.
+    if (_awaitingBallLaunch) return;
     if (p.visible) return; // ball still visibly traveling
     final cell = p.pendingCell;
     if (cell == null) return;
@@ -470,7 +705,7 @@ class _BattleScreenState extends State<BattleScreen>
   }
 
   /// Everything that happens the instant a shot's impact becomes visible:
-  /// the marker/wreck reveal is unlocked (`impactAt`), the outcome sound
+  /// the marker/wreck reveal is unlocked (impactAt), the outcome sound
   /// and screen shake play, the match is allowed to end if this was the
   /// deciding shot, and the turn passes on a miss.
   ///
@@ -484,10 +719,51 @@ class _BattleScreenState extends State<BattleScreen>
     e.impactAt = DateTime.now();
     _impactResolutions++;
     controller.touch();
-    // Hit/sunk/miss sound, right as the ball actually lands — synced to
-    // the same moment as the shake below and the hit/miss/wreckage reveal
-    // (see `sunkShips` in `_buildHalf`), instead of firing back at tap
-    // time before the ball has visually gone anywhere.
+
+    // Record the crater PER SHIP, resolved against the board AS IT STANDS
+    // at this instant — the moment the shell visually lands, which (in the
+    // manoeuvring modes) is also the moment the model scored it. A hull
+    // that dodged mid-flight isn't under this cell any more, so nothing is
+    // recorded; a hull that took the hit carries the crater index with it
+    // from now on, wherever it later runs to (see `_landedShipDamage`).
+    final hit = e.result == ShotResult.hit || e.result == ShotResult.sunk;
+    if (hit) {
+      final targetBoard = e.byPlayer ? controller.boards[1] : controller.boards[0];
+      final targetHalf = !e.byPlayer;
+      final ship = targetBoard.activeShipAt(e.row, e.col);
+      final idx = ship?.cellIndexAt(e.row, e.col);
+      if (ship != null && idx != null) {
+        final landed = _landedShipDamage[targetHalf]!
+            .putIfAbsent(ship.spec.kind, () => <int>{});
+        // BUGFIX (a re-hit hull showed no new damage to its owner): in the
+        // record-free modes a second shell on the SAME reported cell is a
+        // real, additional hit — `Board.receiveShot` redirects it onto the
+        // nearest cell of that hull not yet holed (see its doc). The
+        // crater shown here was still being looked up by the cell that was
+        // AIMED at, which by definition already carries one, so `Set.add`
+        // did nothing: the model took the damage, its owner watched the
+        // shell land on an unchanged ship, and the hull only visibly
+        // changed at the moment it finally went down. Follow the model
+        // instead — take the aimed cell when it is genuinely new, and
+        // otherwise the nearest of the hull's damaged-but-not-yet-drawn
+        // cells, which is the same tie-break the redirect itself uses and
+        // so lands on exactly the cell the model holed.
+        if (!landed.add(idx)) {
+          final fresh = ship.hitIndices.where((i) => !landed.contains(i)).toList()
+            ..sort((a, b) => (a - idx).abs().compareTo((b - idx).abs()));
+          if (fresh.isNotEmpty) landed.add(fresh.first);
+        }
+      }
+    }
+
+    // Any impact reads the same in every mode — including the record-free
+    // GHOST FLEET and PHANTOM. A real HIT keeps its explosion and screen
+    // shake (the shooter's here, the defender's on the other end), because
+    // what those modes deny is only the RECORD: no persistent marker, no
+    // wreck left on the attacker's board, no cell remembered as fired. The
+    // momentary dramatic beat — the hit flash showing and fading out, the
+    // screen shaking — is exactly what an impact SHOULD do; "hits and
+    // misses hidden" silences the record, not the impact itself.
     _playImpactSound(e.result);
     // Screen shake, right as the ball actually lands — never on a miss
     // (there's nothing to "hit"). Sinking a ship shakes harder than a
@@ -496,14 +772,6 @@ class _BattleScreenState extends State<BattleScreen>
       _shake(_shakeSunkMagnitude);
     } else if (e.result == ShotResult.hit) {
       _shake(_shakeHitMagnitude);
-    }
-    // Cannon recoil/muzzle-flash ("reload") animation — only plays when
-    // the shot actually lands on a ship, right as the impact is
-    // confirmed, rather than at the moment the ball was launched. A
-    // miss leaves the gun visually idle instead of kicking back on
-    // nothing.
-    if (e.result == ShotResult.hit || e.result == ShotResult.sunk) {
-      (e.byPlayer ? _cannon1Fire : _cannon2Fire).add(null);
     }
     // BUGFIX (end-game timing): the match is only actually allowed to end
     // here, now that this shot's impact has been visually applied — see
@@ -527,15 +795,38 @@ class _BattleScreenState extends State<BattleScreen>
   /// theirs — which is exactly the flip the two `_p2Active` flags need.
   void _maybePassTurn(CombatEvent e) {
     if (!_turnTracked) return;
-    if (e.result != ShotResult.miss) return;
+    // POWER PLAY: MINEFIELD / TRAP LINE forces the turn to pass AWAY from
+    // whoever fired regardless of hit or miss; a `hold` shot (a multi-shot
+    // power-up's non-final cell, or a DOUBLE TAP / COUNTER BATTERY bonus)
+    // must never pass the turn even on a miss. See `CombatEvent`'s doc.
+    if (!e.forcePass) {
+      if (e.hold) {
+        // No pass coming — the same shooter's turn continues right away,
+        // so `_shotOutstanding` (see its own doc) has nothing left to
+        // protect against for THIS shot.
+        _shotOutstanding = false;
+        return;
+      }
+      if (e.result != ShotResult.miss) {
+        _shotOutstanding = false;
+        return;
+      }
+    }
     final controller = context.read<GameController>();
-    if (controller.phase != BattlePhase.battling) return;
+    if (controller.phase != BattlePhase.battling) {
+      _shotOutstanding = false;
+      return;
+    }
     // P1 missed → P2's turn; P2/AI/remote missed → P1's.
     final passToP2 = e.byPlayer;
     // The handoff is seamless (no popup): the active flag flips, the
     // cannons slide (outgoing → back, incoming → its grid center) and the
     // newly-active cannon flashes "ready".
     Future.delayed(const Duration(milliseconds: 500), () {
+      // This is the moment the turn actually passes — see the doc on
+      // `_shotOutstanding` for why it stays locked until exactly here
+      // rather than the instant this shot's ball landed.
+      _shotOutstanding = false;
       if (!mounted || controller.phase != BattlePhase.battling) return;
       _passTurn(passToP2);
     });
@@ -552,7 +843,10 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() => _p2Active = toP2);
     // Keep the controller's mirror current: it's what a resume snapshot
     // reads to tell a reconnecting player whose turn they came back to.
-    context.read<GameController>().peerHasTurn = toP2;
+    final controller = context.read<GameController>();
+    controller.peerHasTurn = toP2;
+    // Our turn beginning: POWER PLAY draws its card for the turn.
+    if (!toP2) controller.onMyTurnStart();
     // Animate the slide: value 1 = P1 out (P2 home), 0 = P2 out (P1 home).
     if (toP2) {
       _slideCtrl.reverse();
@@ -601,16 +895,30 @@ class _BattleScreenState extends State<BattleScreen>
     // cleared once `_tryResolveImpact` finds the real result), so checking
     // it too closes that window instead of just narrowing it.
     final proj = byP1 ? _projP1 : _projP2;
-    if (proj.visible || proj.pendingCell != null) return;
+    if (proj.visible || proj.pendingCell != null || _shotOutstanding) return;
+    // GHOST FLEET: nothing is marked, so there is no "already shows its
+    // hit/miss marker" to lean on here — and no way for the player to
+    // even tell this cell was tried before. Refusing the tap anyway
+    // would just look like the control silently stopped responding, so
+    // this device-local guard steps aside and lets `GameController.fireAt`
+    // decide (it has its own matching relaxation — see `isGhostBattle`).
     final tracking = byP1 ? controller.myShots : controller.p2Shots;
-    if (tracking[r][c] != 0) {
+    if (tracking[r][c] != 0 && !controller.isGhostBattle) {
       // No pop-up reminder for this — an already-tried cell simply
       // already shows its hit/miss marker, and the denied-shot sound/
       // haptic below is enough feedback without interrupting the view.
       SoundService.instance.denied();
       return;
     }
-    final res = byP1 ? controller.fireAt(r, c) : controller.p2FireAt(r, c);
+    // See [_awaitingBallLaunch]'s doc for why this window has to be
+    // closed off around the call below.
+    _awaitingBallLaunch = true;
+    final ShotResult res;
+    try {
+      res = byP1 ? controller.fireAt(r, c) : controller.p2FireAt(r, c);
+    } finally {
+      _awaitingBallLaunch = false;
+    }
     if (res == ShotResult.cooldown) {
       // No bottom-of-screen popup for this — the cannon's own cooldown
       // ring already shows reload state, and a denied-shot sound/haptic
@@ -622,6 +930,7 @@ class _BattleScreenState extends State<BattleScreen>
       SoundService.instance.denied();
       return;
     }
+    if (_turnTracked) _shotOutstanding = true;
     _launchBall(controller, byP1: byP1, r: r, c: c);
   }
 
@@ -680,9 +989,13 @@ class _BattleScreenState extends State<BattleScreen>
         ..visible = true;
     });
     SoundService.instance.cannonFire();
-    // NOTE: the cannon's recoil/muzzle-flash ("reload") animation no
-    // longer fires here at launch — see `_resolveImpact`, which only
-    // triggers it once the shot is confirmed to have hit a ship.
+    // BUGFIX (fire animation and smoke landed 750ms+ late, and never at
+    // all on a miss): this used to only fire from `_resolveImpact`, at
+    // IMPACT time, and only on a hit — so the recoil/muzzle-flash/smoke
+    // trailed the boom by a full ball flight (plus network latency) and
+    // simply never played on a miss. Triggered here instead, at launch,
+    // right alongside the sound it was already desynced from.
+    (byP1 ? _cannon1Fire : _cannon2Fire).add(null);
     proj.ctrl.forward(from: 0);
   }
 
@@ -775,8 +1088,14 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() {
       _movePreview =
           PlacedShip(spec: spec, row: r, col: c, horizontal: ship.horizontal);
-      _movePreviewValid =
-          controller.boards[0].canRelocateTo(ship, r, c, ship.horizontal);
+      _movePreviewValid = controller.boards[0].canRelocateTo(
+        ship,
+        r,
+        c,
+        ship.horizontal,
+        ignoreDamage: controller.damageIgnorableFor(ship),
+        ignoreShotHistory: controller.isGhostBattle,
+      );
     });
   }
 
@@ -832,24 +1151,176 @@ class _BattleScreenState extends State<BattleScreen>
     // now uses (see `_rotateShip` in `placement_screen.dart`). Only when
     // NOTHING on the board can legally hold this orientation does the
     // rotation actually fail.
-    if (!board.canRelocateTo(ship, r, c, horizontal)) {
+    // True only when the WHOLE board was searched and nothing could hold
+    // this orientation — as opposed to the direct anchor merely being
+    // blocked, which the search above resolves silently by turning
+    // somewhere else. Tracked separately so the toast below fires for
+    // the genuine rule (nowhere left to turn late in a match, once
+    // enough of the water has been fired at) and not for the ordinary
+    // case of a ship simply pivoting to a different spot.
+    final ghost = controller.isGhostBattle;
+    final escape = controller.damageIgnorableFor(ship);
+    var noRoomToTurn = false;
+    if (!board.canRelocateTo(ship, r, c, horizontal,
+        ignoreDamage: escape, ignoreShotHistory: ghost)) {
       final found = findNearestRotationAnchor(
         size: spec.size,
         horizontal: horizontal,
         anchorRow: ship.row,
         anchorCol: ship.col,
-        canPlaceAt: (rr, cc) => board.canRelocateTo(ship, rr, cc, horizontal),
+        // Matches the direct check above and `relocateOwnShip`'s own
+        // relaxation exactly — otherwise the search would refuse GHOST
+        // FLEET the very cells its own relocate rules allow, and could
+        // report "no room to turn" when there genuinely was some.
+        canPlaceAt: (rr, cc) => board.canRelocateTo(ship, rr, cc, horizontal,
+            ignoreDamage: escape, ignoreShotHistory: ghost),
       );
       if (found != null) {
         r = found.row;
         c = found.col;
+      } else {
+        noRoomToTurn = true;
       }
     }
     if (controller.relocateOwnShip(kind, r, c, horizontal)) {
       SoundService.instance.place();
     } else {
       SoundService.instance.denied();
+      // Without this, "nowhere to turn" and "you mis-tapped" both just
+      // play the same denied blip — reading as an unresponsive control
+      // rather than the actual rule (every legal spot for this
+      // orientation has already been fired at). Only shown for the
+      // genuine case; an ordinary blocked-anchor tap still turns
+      // elsewhere and says nothing.
+      if (noRoomToTurn && mounted) {
+        AppNotification.show(
+          context,
+          'NO ROOM TO TURN — every spot for that orientation has been fired at',
+          type: AppNoticeType.info,
+        );
+      }
     }
+  }
+
+  // ------------------------------------------------------- POWER PLAY ---
+
+  /// The card slot was tapped. A card that needs no target (REPAIR, JAM,
+  /// DOUBLE TAP, …) resolves immediately; one that does (SALVO, SONAR,
+  /// MINEFIELD, …) instead puts the relevant grid into target-picking
+  /// mode — see `onTapCellHandler` in `_buildHalf`.
+  void _onPowerUpCardTap(GameController controller) {
+    if (!controller.battling || controller.peerHasTurn) return;
+    final card = controller.myPowerUp;
+    if (card == null) return;
+    if (!PowerUps.of(card).needsTarget) {
+      final used = controller.usePowerUp();
+      if (used) {
+        SoundService.instance.place();
+      } else {
+        SoundService.instance.denied();
+      }
+      return;
+    }
+    setState(() {
+      _pickingPowerUpTarget = true;
+      _powerUpPicks.clear();
+    });
+  }
+
+  /// One cell picked while `_pickingPowerUpTarget` is armed. Collects
+  /// picks until the held card has as many as it needs (`powerUpTapsNeeded`
+  /// — two for SPRAY, one for everything else targeted), then resolves it.
+  void _pickPowerUpTargetCell(GameController controller, int r, int c) {
+    if (!_pickingPowerUpTarget) return;
+    setState(() => _powerUpPicks.add((r, c)));
+    if (_powerUpPicks.length < controller.powerUpTapsNeeded) return;
+    final picks = List<(int, int)>.of(_powerUpPicks);
+    setState(() {
+      _pickingPowerUpTarget = false;
+      _powerUpPicks.clear();
+    });
+    if (controller.usePowerUp(picks)) {
+      SoundService.instance.place();
+    } else {
+      SoundService.instance.denied();
+    }
+  }
+
+  /// Backs out of target-picking without spending the card — the card
+  /// slot's own "cancel" affordance.
+  void _cancelPowerUpTargeting() {
+    if (!_pickingPowerUpTarget) return;
+    setState(() {
+      _pickingPowerUpTarget = false;
+      _powerUpPicks.clear();
+    });
+  }
+
+  /// Surfaces the newest Power Play combat-log line as a banner — draws,
+  /// JAM/opponent-card announcements, and SONAR/SPOTTER/RECON SWEEP
+  /// answers all funnel through `GameController._log` the same way an
+  /// ordinary hit/miss line does (see `_registerShot`), so this is just
+  /// the delta since the last time this screen looked, filtered to the
+  /// lines that actually carry a Power Play marker — an ordinary shot's
+  /// hit/miss/sink line is left exactly where every other mode's already
+  /// is, in the scrollable log, rather than adding a banner for every tap.
+  void _maybePowerUpBanner(GameController controller) {
+    final log = controller.combatLog;
+    if (log.length < _powerUpLogSeen) _powerUpLogSeen = 0; // a fresh match
+    if (log.length <= _powerUpLogSeen) {
+      _powerUpLogSeen = log.length;
+      return;
+    }
+    final newest = log.last;
+    _powerUpLogSeen = log.length;
+    const markers = ['🃏', '📡', '👁️', '🔍', '⚡', '🎴'];
+    if (!markers.any(newest.contains)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppNotification.show(context, newest, type: AppNoticeType.info);
+    });
+  }
+
+  /// The floating card slot (bottom-right) plus, while a targeted card is
+  /// armed, a strip above it showing how many cells are still needed and
+  /// a way to back out without spending the card.
+  Widget _powerUpOverlay(GameController controller) {
+    final card = controller.myPowerUp;
+    final myTurn = !controller.peerHasTurn;
+    return Positioned(
+      right: 12,
+      bottom: 16,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_pickingPowerUpTarget)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: GestureDetector(
+                onTap: _cancelPowerUpTargeting,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: cartoonBox(AppColors.navyDark, radius: 10),
+                  child: Text(
+                    'PICK ${_powerUpPicks.length + 1} OF '
+                    '${controller.powerUpTapsNeeded}'
+                    '${controller.powerUpTargetsOwnGrid ? ' — YOUR OWN GRID' : ''}'
+                    ' — TAP TO CANCEL',
+                    style: AppText.label(size: 10),
+                  ),
+                ),
+              ),
+            ),
+          if (card != null)
+            _PowerUpCardChip(
+              card: card,
+              usable: myTurn && !_pickingPowerUpTarget,
+              onTap: () => _onPowerUpCardTap(controller),
+            ),
+        ],
+      ),
+    );
   }
 
   /// How far a half's cannon has slid out of its parked position: 0 =
@@ -944,6 +1415,7 @@ class _BattleScreenState extends State<BattleScreen>
     final controller = context.watch<GameController>();
     final profile = context.watch<ProfileStore>();
     _refreshDerivedCache(controller);
+    if (controller.isPowerUpBattle) _maybePowerUpBanner(controller);
     // The halves NEVER swap sides: the bottom one is always "P1" (in a LAN
     // match, always THIS device's own fleet) and the top one always "P2"
     // (the opponent). Only the "whose turn" flag changes. Whether the top
@@ -1065,6 +1537,12 @@ class _BattleScreenState extends State<BattleScreen>
                   // ===== Countdown overlay (mirrored) =====
                   if (_countingDown) _countdownOverlay(bandH),
 
+                  // ===== POWER PLAY: the held card + target-picking =====
+                  if (controller.isPowerUpBattle &&
+                      controller.phase == BattlePhase.battling &&
+                      !_countingDown)
+                    _powerUpOverlay(controller),
+
                   // ===== Game-over bar: both grids reveal every ship the
                   // instant the match ends (see `gameOver` in _buildHalf),
                   // and this bar is what lets players actually take that
@@ -1082,7 +1560,7 @@ class _BattleScreenState extends State<BattleScreen>
 
                   // ===== Opponent dropped: the match is held open for a
                   // minute while they find their way back. =====
-                  if (_lan && controller.phase == BattlePhase.battling)
+                  if (_hasRemotePeer && controller.phase == BattlePhase.battling)
                     _ReconnectOverlay(
                       onAbandon: () => _abandon(controller),
                     ),
@@ -1260,7 +1738,7 @@ class _BattleScreenState extends State<BattleScreen>
   void _refreshDerivedCache(GameController controller) {
     // Everything built below is a pure function of `controller.events`
     // (which only grows via `_registerShot`, bumping `revision`), each
-    // event's `impactAt` (which only ever gets set by `_resolveImpact`,
+    // event's impactAt (which only ever gets set by `_resolveImpact`,
     // bumping `_impactResolutions`), and the two boards' ship lists (set
     // in `beginBattle`, which also bumps `revision`). So those two
     // counters fully cover the inputs. The in-flight ball used to be part
@@ -1273,6 +1751,16 @@ class _BattleScreenState extends State<BattleScreen>
     }
     _cachedRevision = controller.revision;
     _cachedImpactResolutions = _impactResolutions;
+    // GHOST FLEET: the water keeps no record. Nothing here stops
+    // `controller.events`/`hitIndices` from tracking every shot exactly
+    // as normal underneath — the win condition, the resume snapshot and
+    // this player's own reconnect all still need that — this flag only
+    // decides which of it this SCREEN is allowed to keep showing after
+    // the moment it happens. See `LanBattleMode.ghost`'s doc for the full
+    // list of what stays (the splash/explosion FX, the reticle, the
+    // ships-left count) versus what doesn't (the persistent ✕/diamond
+    // marks and the enemy's wreck reveal).
+    final ghost = controller.isGhostBattle;
     for (final halfIsP1 in const [true, false]) {
       // PERF: reuse persistent mutable arrays instead of allocating new
       // 10×10 lists on every cache rebuild (happens on every shot). The
@@ -1295,12 +1783,28 @@ class _BattleScreenState extends State<BattleScreen>
       // both fleet status rows), and that scan grows with every shot
       // fired in the match.
       final sunkNames = <String>{};
+      // GHOST FLEET / PHANTOM: the water keeps no record, but the transient
+      // impact is still shown and felt. A hit on the enemy half (halfIsP1
+      // == false — where this device's own shots land) keeps its real
+      // explosion so the hit moment reads dramatically on the shooter's
+      // screen too, fading out right after — exactly what Ghost Fleet and
+      // Phantom want ("the hit animation will show and fade out", and the
+      // screen shakes for both sides, per `_resolveImpact`). What `ghost`
+      // above strips is only the PERSISTENT marker (`cache`); `sunkNames`
+      // below keeps collecting from the real results so the fleet-status
+      // row's flip remains the steady progress report.
       for (final e in controller.events) {
         if (e.byPlayer == halfIsP1 || e.impactAt == null) continue;
         final hit = e.result == ShotResult.hit || e.result == ShotResult.sunk;
-        cache[e.row][e.col] = hit ? 2 : 1;
-        evCache.add(CombatEventLike(e.row, e.col, e.result,
-            sunkShipName: e.sunkShipName));
+        if (!ghost) cache[e.row][e.col] = hit ? 2 : 1;
+        evCache.add(
+          CombatEventLike(
+            e.row,
+            e.col,
+            e.result,
+            sunkShipName: e.sunkShipName,
+          ),
+        );
         if (e.result == ShotResult.sunk && e.sunkShipName != null) {
           sunkNames.add(e.sunkShipName!);
         }
@@ -1308,13 +1812,16 @@ class _BattleScreenState extends State<BattleScreen>
       _shotsCache[halfIsP1] = List.of(cache);
       _sunkNamesCache[halfIsP1] = sunkNames;
 
-      // Build the landed-only view of this half's own ships from the same
-      // `cache` grid — `cache[r][c] == 2` means a shot on that cell has
-      // both been registered AND had its cannonball land (see the loop
-      // above, which only fills `cache` from events with `impactAt` set).
-      // Reusing it here keeps the ship damage crater and the grid's own
-      // hit marker flipping to "hit" at exactly the same moment.
+      // Build the landed-only view of this half's own ships from the
+      // PER-SHIP crater record (`_landedShipDamage`, filled at the instant
+      // each damaging shell visually lands) — a hit both registered AND
+      // visually landed flips the crater on at exactly the right moment,
+      // and because the record is keyed to the HULL rather than the water,
+      // a ship that later runs (GHOST FLEET's damaged-hull escape) carries
+      // its craters with it instead of leaving them behind on the cells it
+      // fled.
       final boardForVisible = halfIsP1 ? controller.boards[0] : controller.boards[1];
+      final landedByKind = _landedShipDamage[halfIsP1] ?? const {};
       _visibleOwnShipsCache[halfIsP1] = [
         for (final s in boardForVisible.ships)
           PlacedShip(
@@ -1324,7 +1831,7 @@ class _BattleScreenState extends State<BattleScreen>
             horizontal: s.horizontal,
             hitIndices: {
               for (var i = 0; i < s.cells.length; i++)
-                if (cache[s.cells[i][0]][s.cells[i][1]] == 2) i,
+                if ((landedByKind[s.spec.kind] ?? const <int>{}).contains(i)) i,
             },
           ),
       ];
@@ -1341,11 +1848,29 @@ class _BattleScreenState extends State<BattleScreen>
       // runs when the board state genuinely changed — gives it a stable
       // identity between real events, so the static layer now repaints
       // only when the board actually changes.
+      //
+      // Ghost Fleet / Phantom: the wreck plays ONLY on the sinking hull's
+      // OWN half (halfIsP1 — this device's own board, where the owner
+      // watches their hull go down through its reveal animation). The
+      // enemy half — which, on the ATTACKER's device, is this very board —
+      // stays empty: the water keeps no record, and the attacker learns
+      // of the sinking from the fleet-status row (and the coordinate-less
+      // SANK log line) alone. The sinking itself still gets its transient
+      // moment on the defender's own water: the FX in `evCache` above is
+      // untouched there.
       final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
-      _destroyedShipsCache[halfIsP1] = [
+      final sunkWrecks = [
         for (final s in board.ships)
           if (s.isSunk && sunkNames.contains(s.spec.name)) s
       ];
+      // The transient sink reveal is handled in `_buildHalf` (see the
+      // `_GhostSinkingOverlay` — it plays, fades, then calls
+      // `controller.clearSunkShip`), NOT as a persistent wreck here. So in
+      // the record-free modes the persistent-wreck list is always empty:
+      // the destruction itself is seen as a moment, not left on the water.
+      // (Non-ghost modes keep the permanent wreck reveal.)
+      _destroyedShipsCache[halfIsP1] =
+          ghost ? const <PlacedShip>[] : sunkWrecks;
     }
   }
 
@@ -1357,7 +1882,7 @@ class _BattleScreenState extends State<BattleScreen>
   /// so a ship's status-row icon and its on-grid wreck flip to "destroyed"
   /// at exactly the same moment, for both players and in every mode
   /// (vsAI/local/hotspot/online) — all of them funnel through the same
-  /// `GameController.events` + `impactAt` pipeline this reads from.
+  /// `GameController.events` + impactAt pipeline this reads from.
   ///
   /// The model marks a ship sunk (`PlacedShip.isSunk`) the instant the shot
   /// is REGISTERED (tap time / AI decision time / network-result time),
@@ -1429,7 +1954,8 @@ class _BattleScreenState extends State<BattleScreen>
           inBattle &&
           myTurn &&
           !_projP1.visible &&
-          _projP1.pendingCell == null;
+          _projP1.pendingCell == null &&
+          !_shotOutstanding;
     } else {
       // Shared screen: the active player fires at the other half, whether
       // that other player is a human sitting opposite or the AI.
@@ -1437,18 +1963,50 @@ class _BattleScreenState extends State<BattleScreen>
       gridFirable = (halfIsP1 == _p2Active) &&
           inBattle &&
           !_projP1.visible &&
-          !_projP2.visible;
+          !_projP2.visible &&
+          !_shotOutstanding;
     }
 
-    // MANOEUVRE mode: your own fleet can still run between shots. Only
-    // ever on your OWN half, and locked while a shell is actually inbound
-    // at this grid — a ship can't be yanked out from under a shot that is
-    // already in the air.
+    // MANOEUVRE mode: your own fleet can still run between shots — even
+    // while a shell is in the air, incoming or outgoing, so ships can
+    // genuinely dodge. Only ever on your OWN half.
+    //
+    // This deliberately does NOT require `!_projP2.visible`. Movement
+    // used to lock for the ~750ms an enemy shell was inbound at this
+    // grid, "so a ship can't be yanked out from under a shot that is
+    // already in the air" — but yanking it out is the entire point of
+    // these three modes, and it is now real: the defending device holds
+    // an incoming shell for `kShellFlight` and only then scores it,
+    // against the board as it stands at that moment (see
+    // `GameController._armIncomingShell`). Drag or rotate the threatened
+    // hull clear before the shell lands and the shot genuinely misses.
+    //
+    // It was NOT real before, which is what the lock was hiding: the
+    // defender scored an incoming `'fire'` the instant the message
+    // arrived, a whole flight ahead of the shell being drawn landing, so
+    // a mid-flight move changed nothing but where the splash appeared —
+    // the hit registered regardless, on water the hull had already left.
     final manoeuvring = _manoeuvre &&
         halfIsP1 &&
         inBattle &&
-        controller.phase == BattlePhase.battling &&
-        !_projP2.visible;
+        controller.phase == BattlePhase.battling;
+
+    // POWER PLAY target-picking: while a targeted card is armed
+    // (`_pickingPowerUpTarget`), a tap on whichever grid the card actually
+    // targets (own, for MINEFIELD/TRAP LINE; enemy, for everything else)
+    // is a target pick instead of an ordinary shot — and the OTHER grid
+    // accepts no tap at all for the duration, so a stray tap there can't
+    // be misread as either.
+    void Function(int, int)? onTapCellHandler;
+    if (_pickingPowerUpTarget && controller.isPowerUpBattle) {
+      final wantsOwnGrid = controller.powerUpTargetsOwnGrid;
+      onTapCellHandler = (wantsOwnGrid == halfIsP1)
+          ? (r, c) => _pickPowerUpTargetCell(controller, r, c)
+          : null;
+    } else {
+      onTapCellHandler =
+          gridFirable ? (r, c) => _fireAtCell(controller, r: r, c: c) : null;
+    }
 
     // Which half gets the scrim.
     final bool dimThisHalf;
@@ -1467,7 +2025,11 @@ class _BattleScreenState extends State<BattleScreen>
     } else {
       // Spotlight: dim the firing player's own (inert) board so attention
       // stays on the live target grid.
-      dimThisHalf = halfIsP1 != _p2Active;
+      dimThisHalf = onTapCellHandler != null ? false : halfIsP1 != _p2Active;
+      // POWER PLAY: whichever grid a target-pick is actually waiting on
+      // (MINEFIELD/TRAP LINE wait on your OWN grid, which the spotlight
+      // above would otherwise dim on your own turn) stays fully lit —
+      // see `onTapCellHandler`.
     }
 
     final board = halfIsP1 ? controller.boards[0] : controller.boards[1];
@@ -1501,9 +2063,25 @@ class _BattleScreenState extends State<BattleScreen>
     // its cannonball actually reaching the grid. Once the match is over
     // there's no more incoming fire to animate, so the raw board (both
     // fleets, fully revealed) is shown directly.
+    //
+    // GHOST FLEET / PHANTOM: once a hull's sinking shot has landed, it
+    // leaves the live-fleet layer and comes back as a `destroyedShips`
+    // wreck instead — otherwise the always-drawn live ship would sit on
+    // top of the wreck and hide the sink reveal. Outside those modes the
+    // fully-cratered live ship keeps drawing exactly as it always has.
+    final ghostMode = controller.isGhostBattle;
+    final revealedSunk = _revealedSunkNames(halfIsP1);
+    final visibleFleet = _visibleOwnShipsCache[halfIsP1] ?? board.ships;
     final shipsOnGrid = gameOver
         ? board.ships
-        : (showOwnFleet ? (_visibleOwnShipsCache[halfIsP1] ?? board.ships) : null);
+        : (showOwnFleet
+            ? (ghostMode
+                ? [
+                    for (final s in visibleFleet)
+                      if (!(s.isSunk && revealedSunk.contains(s.spec.name))) s
+                  ]
+                : visibleFleet)
+            : null);
 
     // Only show markers whose cannonball has already landed. (PERF: these
     // come from the per-frame cache refreshed once in build() — see
@@ -1648,8 +2226,15 @@ class _BattleScreenState extends State<BattleScreen>
                     // instead of replaying the entrance.
                     animateEntrance: gameOver,
                     destroyedShips:
-                        (gameOver || showOwnFleet) ? const [] : sunkShips,
-                    enabled: gridFirable,
+                        (gameOver || (showOwnFleet && !ghostMode))
+                            ? const []
+                            : sunkShips,
+                    // `enabled` is what actually lets `onTapCell` fire (see
+                    // `_BattleGridState._onTap`) — extended here so a
+                    // MINEFIELD/TRAP LINE pick on your OWN grid, which
+                    // `gridFirable` alone would never allow (that flag only
+                    // ever admits the enemy grid), still gets through.
+                    enabled: gridFirable || onTapCellHandler != null,
                     glowColor: gameplayTheme.accent,
                     cellColor: gameplayTheme.grid,
                     // Each half is painted in ITS OWNER's battlefield, so
@@ -1660,12 +2245,22 @@ class _BattleScreenState extends State<BattleScreen>
                     gridLineColor: gameplayTheme.gridLine,
                     recentEvents: events,
                     aimCell: aimCell,
+                    // BUGFIX: never threaded through before, so every one
+                    // of the 14 skinned crosshair painters
+                    // (`_crosshairPainterFor` in battle_grid.dart) was
+                    // dead code and every match showed the plain default
+                    // reticle regardless of the shooter's equipped
+                    // cannon. `aimCell` on THIS half is always the OTHER
+                    // side's shot inbound at it (see `aimCell`'s own
+                    // definition above), so the reticle shown here should
+                    // reflect the OTHER half's cannon.
+                    cannonSkinId: _cannonSkinFor(!halfIsP1).id,
                     previewShip: manoeuvring ? _movePreview : null,
                     previewValid: _movePreviewValid,
-                    // Tapping the opponent's grid fires at it immediately.
-                    onTapCell: gridFirable
-                        ? (r, c) => _fireAtCell(controller, r: r, c: c)
-                        : null,
+                    // Tapping the opponent's grid fires at it immediately —
+                    // or, mid POWER PLAY target-pick, is a target instead.
+                    // See `onTapCellHandler` above.
+                    onTapCell: onTapCellHandler,
                     // MANOEUVRE mode: your own undamaged ships can be
                     // dragged to new water between shots. Only ever wired
                     // up on your OWN half — see `manoeuvring`.
@@ -1675,16 +2270,41 @@ class _BattleScreenState extends State<BattleScreen>
                         manoeuvring ? (k, r, c) => _commitMove(controller, k, r, c) : null,
                     onShipTap: manoeuvring ? (k) => _rotateOwnShip(controller, k) : null,
                     // Only hulls that are still undamaged may move; one
-                    // hit pins a ship for the rest of the match.
+                    // hit pins a ship for the rest of the match. GHOST
+                    // FLEET is the one exception — see
+                    // `LanBattleMode.movesWhenDamaged` and
+                    // `GameController.damageIgnorableFor` — where a hull
+                    // keeps its freedom to run however badly it is
+                    // burning, right up until it goes down.
                     movableShips: manoeuvring
                         ? {
                             for (final s in board.ships)
-                              if (s.hitIndices.isEmpty) s.spec.kind
+                              if (s.hitIndices.isEmpty ||
+                                  controller.damageIgnorableFor(s))
+                                s.spec.kind
                           }
                         : null,
                   ),
                 ),
               ),
+
+              // GHOST FLEET sinking animation — ships that just got sunk
+              // do not vanish instantly; they sink away over ~900ms before
+              // the water is freed (see GameController.clearSunkShip).
+              // Without this the hull just popped out of existence the
+              // instant its final hit landed — no wreck, no fade, no
+              // splash. revealedSunk is gated on impactAt, so this
+              // only starts after the cannonball has visibly landed.
+              if (ghostMode && showOwnFleet && !gameOver)
+                ..._ghostSinkingOverlays(
+                  controller: controller,
+                  board: board,
+                  revealedSunk: revealedSunk,
+                  cell: cell,
+                  gridLeft: gridLeft,
+                  gridTop: gridTop,
+                  fleetSkin: fleetSkin,
+                ),
 
               // Turn-highlight dim: a soft scrim over the ACTIVE player's
               // OWN grid (this half's owner is the one currently firing).
@@ -1825,6 +2445,47 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
+  List<Widget> _ghostSinkingOverlays({
+    required GameController controller,
+    required Board board,
+    required Set<String> revealedSunk,
+    required double cell,
+    required double gridLeft,
+    required double gridTop,
+    required ShipSkin fleetSkin,
+  }) {
+    final sinking = <Widget>[];
+    for (final ship in board.ships) {
+      if (!ship.isSunk) continue;
+      if (!revealedSunk.contains(ship.spec.name)) continue;
+      if (ship.sunkCleared) continue;
+      final left = gridLeft + ship.col * cell + 1;
+      final top = gridTop + ship.row * cell + 1;
+      final w = ship.horizontal ? ship.spec.size * cell - 2 : cell - 2;
+      final h = ship.horizontal ? cell - 2 : ship.spec.size * cell - 2;
+      sinking.add(
+        Positioned(
+          left: left,
+          top: top,
+          width: w,
+          height: h,
+          child: IgnorePointer(
+            child: _GhostSinkingShip(
+              key: ValueKey('ghost-sink-${ship.spec.kind}-${ship.row}-${ship.col}'),
+              ship: ship,
+              skin: fleetSkin,
+              cell: cell,
+              onCompleted: () {
+                if (controller.battling) controller.clearSunkShip(ship.spec.kind);
+              },
+            ),
+          ),
+        ),
+      );
+    }
+    return sinking;
+  }
+
   // -------------------------------------------------------- MIDDLE BAND
 
   Widget _buildMiddleBand(
@@ -1872,7 +2533,7 @@ class _BattleScreenState extends State<BattleScreen>
     // of a flat guess: local/vs-AI matches have no chat tab, so they only
     // need to clear the dots badge; the right side never needs more than
     // the exit pill's own width on any mode.
-    final leftInset = _lan ? 56.0 : 40.0;
+    final leftInset = _hasRemotePeer ? 56.0 : 40.0;
     const rightInset = 40.0;
 
     Widget row(Board board, bool isP1Fleet, Color deck) => Expanded(
@@ -1923,7 +2584,7 @@ class _BattleScreenState extends State<BattleScreen>
           // strips (it's drawn last, after `row`, in this Stack) rather
           // than pushing their padding out, so the ships underneath never
           // resize when it opens.
-          if (_lan)
+          if (_hasRemotePeer)
             Positioned(
               left: 34,
               top: (bandH - 34) / 2,
@@ -2479,6 +3140,79 @@ class _ExitPill extends StatelessWidget {
   }
 }
 
+/// POWER PLAY's floating card slot. Purely a display + tap target — every
+/// decision about what tapping it DOES lives in
+/// `_BattleScreenState._onPowerUpCardTap`, so this widget only needs to
+/// know what card it's showing and whether it's currently tappable.
+class _PowerUpCardChip extends StatelessWidget {
+  final PowerUpCard card;
+  final bool usable;
+  final VoidCallback onTap;
+
+  const _PowerUpCardChip({
+    required this.card,
+    required this.usable,
+    required this.onTap,
+  });
+
+  /// Rarity reads as colour, the same shorthand the deck's own descriptions
+  /// already use (common/uncommon/rare) — nothing else in the app has
+  /// needed a rarity palette before this card.
+  Color _rarityColor(PowerUpRarity r) => switch (r) {
+        PowerUpRarity.common => AppColors.steel,
+        PowerUpRarity.uncommon => AppColors.blue,
+        PowerUpRarity.rare => AppColors.gold,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final def = PowerUps.of(card);
+    final accent = _rarityColor(def.rarity);
+    return GestureDetector(
+      onTap: usable ? onTap : null,
+      child: Opacity(
+        opacity: usable ? 1 : 0.55,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 170),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: cartoonBox(AppColors.navy, radius: 14, border: accent),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration:
+                        BoxDecoration(color: accent, shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      def.name,
+                      style: AppText.heading(size: 13),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 3),
+              Text(
+                usable
+                    ? (def.needsTarget ? 'TAP TO AIM' : 'TAP TO USE')
+                    : 'WAIT FOR YOUR TURN',
+                style: AppText.label(size: 9, color: AppColors.mist),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Shown over a live battle when the opponent's connection drops.
 ///
 /// The match is NOT over: it is held open for
@@ -2498,6 +3232,13 @@ class _ReconnectOverlay extends StatelessWidget {
     if (!net.peerLost && !net.peerGone) return const SizedBox.shrink();
 
     final expired = net.peerGone;
+    // Three states, not two — see the doc on `NetworkService
+    // ._openGraceWindow`. The visible countdown (`graceSecondsLeft > 0`)
+    // is not the real deadline: once it reaches zero the seat is still
+    // held open SILENTLY for much longer, so this doesn't jump straight
+    // to the alarming "did not return" the instant the number hits 0.
+    final counting = net.peerLost && net.graceSecondsLeft > 0;
+    final holding = net.peerLost && net.graceSecondsLeft <= 0;
     return Positioned.fill(
       child: Container(
         color: Colors.black.withValues(alpha: 0.72),
@@ -2511,7 +3252,11 @@ class _ReconnectOverlay extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  expired ? Icons.person_off : Icons.wifi_tethering_off,
+                  expired
+                      ? Icons.person_off
+                      : holding
+                          ? Icons.hourglass_bottom
+                          : Icons.wifi_tethering_off,
                   color: expired ? AppColors.hit : AppColors.gold,
                   size: 40,
                 ),
@@ -2524,7 +3269,7 @@ class _ReconnectOverlay extends StatelessWidget {
                   style: AppText.heading(size: 15),
                 ),
                 const SizedBox(height: 10),
-                if (!expired) ...[
+                if (counting) ...[
                   Text(
                     '${net.graceSecondsLeft}s',
                     style: AppText.title(size: 42, color: AppColors.gold),
@@ -2533,6 +3278,24 @@ class _ReconnectOverlay extends StatelessWidget {
                   Text(
                     'Holding the battle open. They can rejoin from\n'
                     'MULTIPLAYER → SCAN FOR GAMES.',
+                    textAlign: TextAlign.center,
+                    style: AppText.body(
+                        size: 12,
+                        color: AppColors.cream.withValues(alpha: 0.85)),
+                  ),
+                ] else if (holding) ...[
+                  const SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3,
+                      color: AppColors.gold,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Still holding their seat — no rush.\n'
+                    'They can rejoin whenever they\'re back.',
                     textAlign: TextAlign.center,
                     style: AppText.body(
                         size: 12,
@@ -2599,4 +3362,107 @@ class _LegacyCannonballPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _LegacyCannonballPainter old) =>
       old.cannonId != cannonId;
+}
+
+/// Ghost Fleet sinking — the wreck doesn't stay as a permanent marker.
+/// The hull lingers as a wreck for ~900ms, sinks down into the water
+/// and fades, then the water is freed (see GameController.clearSunkShip
+/// / PlacedShip.sunkCleared). Without this the ship just vanished the
+/// instant its final hit landed — no sinking, no splash, instant
+/// disappearance that also hid the final-hit crater timing.
+class _GhostSinkingShip extends StatefulWidget {
+  final PlacedShip ship;
+  final ShipSkin skin;
+  final double cell;
+  final VoidCallback onCompleted;
+
+  const _GhostSinkingShip({
+    super.key,
+    required this.ship,
+    required this.skin,
+    required this.cell,
+    required this.onCompleted,
+  });
+
+  @override
+  State<_GhostSinkingShip> createState() => _GhostSinkingShipState();
+}
+
+class _GhostSinkingShipState extends State<_GhostSinkingShip>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _fade;
+  late final Animation<double> _sink;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    _fade = CurvedAnimation(
+      parent: _ctrl,
+      curve: const Interval(0.35, 1.0, curve: Curves.easeIn),
+    );
+    _sink = CurvedAnimation(parent: _ctrl, curve: Curves.easeInCubic);
+    _scale = Tween<double>(begin: 1.0, end: 0.92).animate(
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeInCubic),
+    );
+    _ctrl.forward().whenComplete(() {
+      if (mounted) widget.onCompleted();
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ship = widget.ship;
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) {
+        final sinkPx = _sink.value * widget.cell * 0.55;
+        final fade = 1 - _fade.value;
+        return Opacity(
+          opacity: fade.clamp(0.0, 1.0),
+          child: Transform.translate(
+            offset: Offset(0, sinkPx),
+            child: Transform.scale(
+              scale: _scale.value,
+              alignment: Alignment.center,
+              child: child,
+            ),
+          ),
+        );
+      },
+      child: ship.horizontal
+          ? CustomPaint(
+              painter: ShipPainter(
+                spec: ship.spec,
+                skin: widget.skin,
+                sunk: true,
+                hitCount: ship.spec.size,
+                hitIndices: ship.hitIndices,
+              ),
+            )
+          : RotatedBox(
+              quarterTurns: 1,
+              child: CustomPaint(
+                painter: ShipPainter(
+                  spec: ship.spec,
+                  skin: widget.skin,
+                  sunk: true,
+                  hitCount: ship.spec.size,
+                  hitIndices: ship.hitIndices,
+                ),
+              ),
+            ),
+    );
+  }
 }

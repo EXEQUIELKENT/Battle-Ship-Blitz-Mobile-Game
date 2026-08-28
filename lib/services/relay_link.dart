@@ -56,7 +56,16 @@ class RelayLink implements GameLink {
 
   bool _closed = false;
   bool _flushing = false;
-  int _since = 0;
+  int _since;
+
+  /// How far into the match's message history this link has already
+  /// polled. Exposed so `MatchStore` can persist it: without a starting
+  /// point to resume from, a freshly built `RelayLink` after a cold
+  /// restart always begins at 0 and replays the ENTIRE match history —
+  /// up to the 200 rows `relay_poll` returns per call — duplicating every
+  /// chat line and re-delivering a possibly-stale `resume` on top of
+  /// whatever the reconnect flow already sent.
+  int get since => _since;
 
   /// How long the opponent may go without touching the server before we
   /// call it a disconnection. Both ends re-poll the moment a poll returns
@@ -71,7 +80,8 @@ class RelayLink implements GameLink {
     required this.matchId,
     this.onClosed,
     this.onPeerPresence,
-  }) {
+    int since = 0,
+  }) : _since = since {
     unawaited(_pollLoop());
   }
 

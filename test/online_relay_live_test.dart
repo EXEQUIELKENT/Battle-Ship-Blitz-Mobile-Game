@@ -167,6 +167,64 @@ void main() {
       await bLink.close();
     });
 
+    test('measured round-trip latency', () async {
+      if (!up) return;
+      // A number, not a claim — `docs/CHANGES.md` used to carry a "~250ms
+      // on a LAN" line for the relay that had gone stale as soon as the
+      // poll loop's own timing changed underneath it (see the `relay wake`
+      // helpers in `server/api.php`). This measures the SAME thing that
+      // line described — one shot's worth of round trip, alice to bob and
+      // back — against whatever server the rest of this file is already
+      // running against, printed rather than baked into a comment, so it
+      // can't go stale the same way again.
+      //
+      // Sequential, one in flight at a time, because that's what a real
+      // turn-based exchange looks like: alice fires, waits for bob's
+      // reply, THEN fires again — never a burst. Round-tripped through
+      // Alice's own link back to Alice (rather than timed one-way) so the
+      // clock doing the measuring and the clocks doing the sending are
+      // the same clock; comparing a timestamp made on one machine against
+      // one made on another would be measuring clock drift, not latency.
+      final aLink = RelayLink(api: alice, matchId: matchId);
+      final bLink = RelayLink(api: bob, matchId: matchId);
+      // Bob echoes every ping straight back — the thing under test is the
+      // relay's delivery time, not anything about Bob's own logic.
+      bLink.messages.listen((msg) {
+        if (msg['type'] == 'ping') bLink.send({'type': 'pong', 'i': msg['i']});
+      });
+
+      const rounds = 20;
+      final roundTripsMs = <int>[];
+      for (var i = 0; i < rounds; i++) {
+        final pongs = <Map<String, dynamic>>[];
+        final sub = aLink.messages.listen((msg) {
+          if (msg['type'] == 'pong' && msg['i'] == i) pongs.add(msg);
+        });
+        final start = DateTime.now();
+        aLink.send({'type': 'ping', 'i': i});
+        await _until(() => pongs.isNotEmpty, timeout: const Duration(seconds: 15));
+        roundTripsMs.add(DateTime.now().difference(start).inMilliseconds);
+        await sub.cancel();
+      }
+
+      roundTripsMs.sort();
+      final median = roundTripsMs[rounds ~/ 2];
+      final mean = roundTripsMs.reduce((a, b) => a + b) / rounds;
+      // ignore: avoid_print
+      print('relay round-trip over $rounds rounds — '
+          'median ${median}ms, mean ${mean.toStringAsFixed(0)}ms, '
+          'min ${roundTripsMs.first}ms, max ${roundTripsMs.last}ms');
+
+      // A sanity ceiling, not a performance gate: this is meant to catch
+      // the wake mechanism having silently fallen all the way back to a
+      // full poll-hold-timeout cycle (8s) on every round, not to fail a
+      // build over ordinary network jitter on whatever machine runs it.
+      expect(median, lessThan(3000));
+
+      await aLink.close();
+      await bLink.close();
+    });
+
     test('a full resume snapshot survives the round trip', () async {
       if (!up) return;
       // The largest thing the protocol ever sends — a reconnecting player

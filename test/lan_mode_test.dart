@@ -177,6 +177,9 @@ void main() {
       expect(LanBattleMode.turns.index, 1);
       expect(LanBattleMode.rearrange.index, 2);
       expect(LanBattleMode.blitz.index, 3);
+      expect(LanBattleMode.ghost.index, 4);
+      expect(LanBattleMode.powerPlay.index, 5);
+      expect(LanBattleMode.phantom.index, 6);
     });
   });
 
@@ -366,6 +369,38 @@ void _resumeTests() {
       expect(profile.rp, rp);
       controller.reset();
     });
+
+    // BUGFIX regression: `flipSnapshot`/`restoreFromOwnSnapshot` exist so
+    // a device can rehydrate from a snapshot it wrote about ITSELF (see
+    // `MatchStore`'s self-persistence path, used when there is no live
+    // opponent left to ask for a fresh snapshot). `flipSnapshot` has to
+    // be an involution for that to work: flipping the same snapshot
+    // twice must return to exactly where it started.
+    test('flipSnapshot is an involution', () async {
+      final c = await newController(host: true);
+      c.boards[0] = Board()..place(kFleet[4], 0, 0, true);
+      c.beginBattle(enemyBoard: Board()..place(kFleet[2], 5, 5, true));
+      c.myShots[1][1] = 2;
+      c.p2Shots[2][2] = 1;
+      c.peerHasTurn = true;
+
+      final snapshot = c.buildResumeSnapshot();
+      final flippedTwice = c.flipSnapshot(c.flipSnapshot(snapshot));
+
+      for (final key in [
+        'yourBoard',
+        'myBoard',
+        'shotsByYou',
+        'shotsByMe',
+        'yourTurn',
+        'yourFireSeq',
+        'yourLastPeerFireSeq',
+      ]) {
+        expect(flippedTwice[key], snapshot[key],
+            reason: 'flipping twice must restore "$key" exactly');
+      }
+      c.reset();
+    });
   });
 }
 
@@ -406,6 +441,293 @@ void _manoeuvreTests() {
       expect(b.relocate(ShipKind.destroyer, 4, 4, true), isFalse);
       expect(b.relocate(ShipKind.destroyer, 9, 9, true), isFalse,
           reason: 'a 2-cell hull at column 9 runs off the board');
+    });
+  });
+
+  // `findNearestRotationAnchor` is the shared search behind BOTH rotate
+  // paths — deployment's tap-to-rotate (backed by `Board.canPlace`) and
+  // the in-battle version used by MANOEUVRE, BLITZ and (once it exists)
+  // GHOST FLEET (backed by `Board.canRelocateTo`, which additionally
+  // refuses cells the enemy has already fired at). One set of tests
+  // against the pure function, plus the specific `canRelocateTo` shape,
+  // covers every mode a rotate can happen in without needing a separate
+  // suite per mode.
+  group('rotation always finds somewhere to turn', () {
+    test('the nearest legal anchor wins, not the first one scanned', () {
+      // The search scans row-major (top-left to bottom-right), so a
+      // naive "first legal cell" implementation would return (0,0) here
+      // even though (4,5) is far closer to where the turn was actually
+      // attempted. Two clear cells planted on purpose: one that scans
+      // first but is far away, one that scans later but is close.
+      final occupied = <String>{
+        for (var c = 0; c < 10; c++)
+          if (c != 0) '0,$c', // row 0 blocked except the far corner
+        for (var r = 1; r < 10; r++)
+          for (var c = 0; c < 10; c++)
+            if (!(r == 4 && c == 5)) '$r,$c',
+      };
+      final found = findNearestRotationAnchor(
+        size: 1,
+        horizontal: true,
+        anchorRow: 4,
+        anchorCol: 4,
+        canPlaceAt: (r, c) => !occupied.contains('$r,$c'),
+      );
+      expect(found, (row: 4, col: 5));
+    });
+
+    test('an exact match at distance zero short-circuits the search', () {
+      // The attempted anchor itself is legal — the search must return
+      // exactly that spot, not scan past it looking for something
+      // "better" (nothing WOULD be, since distance zero is optimal, but
+      // this pins the early-exit path rather than just the outcome).
+      final found = findNearestRotationAnchor(
+        size: 3,
+        horizontal: true,
+        anchorRow: 2,
+        anchorCol: 2,
+        canPlaceAt: (r, c) => true,
+      );
+      expect(found, (row: 2, col: 2));
+    });
+
+    test('an orientation longer than the board can hold returns null '
+        'immediately', () {
+      // Guards the `maxRow < 0 || maxCol < 0` short-circuit — a search
+      // that didn't have it would scan a negative range and either loop
+      // zero times (harmless here) or, for a hypothetically larger
+      // board size mismatch, behave unpredictably. Never reachable with
+      // this game's own fleet (nothing is longer than the 10-cell
+      // board), but the function is shared and shouldn't assume that.
+      final found = findNearestRotationAnchor(
+        size: 11,
+        horizontal: true,
+        anchorRow: 0,
+        anchorCol: 0,
+        canPlaceAt: (r, c) => true,
+      );
+      expect(found, isNull);
+    });
+
+    test('genuinely nowhere to turn returns null, not a wrong answer', () {
+      // Every cell refused — the case that has to fail closed rather
+      // than silently returning some anchor `canPlaceAt` never actually
+      // approved.
+      final found = findNearestRotationAnchor(
+        size: 2,
+        horizontal: true,
+        anchorRow: 5,
+        anchorCol: 5,
+        canPlaceAt: (r, c) => false,
+      );
+      expect(found, isNull);
+    });
+
+    test('canRelocateTo: a hull rotates around a shot-up late-match board',
+        () {
+      // The realistic MANOEUVRE/BLITZ shape: the direct anchor is
+      // blocked because the enemy has been shooting at that stretch of
+      // water, but the rest of the board still has room.
+      //
+      // The destroyer sits horizontally at (3,3)-(3,4). Turning it
+      // vertical at the same anchor would need (3,3) and (4,3) — (3,3)
+      // is the ship's OWN current cell, so only (4,3) is shot here:
+      // shooting (3,3) instead would hit the ship itself and pin it
+      // outright (the separate, already-covered rule), which is not
+      // the case this test is for.
+      final b = Board()..place(kFleet[4], 3, 3, true); // 2-cell destroyer
+      b.receiveShot(4, 3);
+      final ship = b.shipOfKind(ShipKind.destroyer)!;
+      expect(ship.hitIndices, isEmpty,
+          reason: 'the ship itself must still be undamaged for this test');
+      expect(b.canRelocateTo(ship, 3, 3, false), isFalse,
+          reason: 'the direct vertical anchor needs the shot-up (4,3)');
+
+      final found = findNearestRotationAnchor(
+        size: 2,
+        horizontal: false,
+        anchorRow: 3,
+        anchorCol: 3,
+        canPlaceAt: (r, c) => b.canRelocateTo(ship, r, c, false),
+      );
+      expect(found, isNotNull);
+      expect(b.canRelocateTo(ship, found!.row, found.col, false), isTrue);
+      expect(b.relocate(ShipKind.destroyer, found.row, found.col, false),
+          isTrue);
+    });
+
+    test(
+        'canRelocateTo: null once every legal cell for the orientation '
+        'has been fired at — the exact case the "NO ROOM TO TURN" notice '
+        'exists for', () {
+      // A single undamaged destroyer with the ENTIRE rest of the board
+      // shot up: nowhere legally holds either orientation any more.
+      final b = Board()..place(kFleet[4], 0, 0, true);
+      for (var r = 0; r < 10; r++) {
+        for (var c = 0; c < 10; c++) {
+          if (r == 0 && (c == 0 || c == 1)) continue; // the ship's own cells
+          b.receiveShot(r, c);
+        }
+      }
+      final ship = b.shipOfKind(ShipKind.destroyer)!;
+      final found = findNearestRotationAnchor(
+        size: 2,
+        horizontal: false,
+        anchorRow: 0,
+        anchorCol: 0,
+        canPlaceAt: (r, c) => b.canRelocateTo(ship, r, c, false),
+      );
+      expect(found, isNull);
+      // This is precisely `battle_screen.dart`'s `noRoomToTurn` flag: the
+      // direct anchor already failed (asserted above via the shot board)
+      // AND the search found nothing either.
+      expect(b.canRelocateTo(ship, 0, 0, false), isFalse);
+    });
+  });
+
+  group('joining by room code', () {
+    // Everything `roomByCode` needs is already parsed into `foundRooms` by
+    // `scanRooms` — these tests set that list directly rather than binding
+    // a real UDP socket, exactly the level `NetworkService`'s own vote
+    // tests above operate at.
+    test('resolves a code to the room that advertised it', () {
+      final net = NetworkService();
+      net.foundRooms = const [
+        RoomInfo(code: 'WXYZ', host: '192.168.1.5', playerName: 'Kim'),
+      ];
+      final found = net.roomByCode('wxyz'); // lower-case, as typed
+      expect(found?.host, '192.168.1.5');
+    });
+
+    test('an unknown code resolves to nothing', () {
+      final net = NetworkService();
+      net.foundRooms = const [
+        RoomInfo(code: 'WXYZ', host: '192.168.1.5', playerName: 'Kim'),
+      ];
+      expect(net.roomByCode('AAAA'), isNull);
+      expect(net.roomByCode(''), isNull);
+    });
+
+    test(
+        'a host with two interfaces beacons the same code twice — prefer '
+        'the address on OUR OWN subnet', () {
+      final net = NetworkService();
+      net.foundRooms = const [
+        RoomInfo(code: 'WXYZ', host: '10.0.0.9', playerName: 'Kim'), // mobile data, unreachable
+        RoomInfo(code: 'WXYZ', host: '192.168.43.1', playerName: 'Kim'), // hotspot, reachable
+      ];
+      final found = net.roomByCode('WXYZ', myIps: const ['192.168.43.7']);
+      expect(found?.host, '192.168.43.1');
+    });
+
+    test(
+        'falls back to the first match when no candidate is on a '
+        'reachable subnet', () {
+      final net = NetworkService();
+      net.foundRooms = const [
+        RoomInfo(code: 'WXYZ', host: '10.0.0.9', playerName: 'Kim'),
+        RoomInfo(code: 'WXYZ', host: '10.0.0.9', playerName: 'Kim'),
+      ];
+      final found = net.roomByCode('WXYZ', myIps: const ['192.168.1.2']);
+      expect(found?.host, '10.0.0.9');
+    });
+  });
+
+  group('scanning — folding a beacon into foundRooms', () {
+    // Coverage for `NetworkService._ingestRoom` (exercised via
+    // `ingestRoomForTest`, mirroring `handleIncomingForTest`): the real
+    // beacon parsing lives inside a raw UDP socket listener and isn't
+    // reachable from a plain unit test, but the dedupe DECISION it feeds
+    // is pulled out into its own method precisely so it can be.
+    test('a brand new code is simply added', () {
+      final net = NetworkService();
+      net.ingestRoomForTest(
+          const RoomInfo(code: 'WXYZ', host: '192.168.1.5', playerName: 'Kim'));
+      expect(net.foundRooms, hasLength(1));
+      expect(net.foundRooms.single.host, '192.168.1.5');
+    });
+
+    test('the same host repeating its beacon is not duplicated', () {
+      final net = NetworkService();
+      net.ingestRoomForTest(
+          const RoomInfo(code: 'WXYZ', host: '192.168.1.5', playerName: 'Kim'));
+      net.ingestRoomForTest(
+          const RoomInfo(code: 'WXYZ', host: '192.168.1.5', playerName: 'Kim'));
+      expect(net.foundRooms, hasLength(1));
+    });
+
+    test(
+        'a second interface beaconing the SAME code collapses into ONE '
+        'room, not two', () {
+      final net = NetworkService();
+      net.localIps = const ['192.168.43.7']; // our own hotspot address
+      net.ingestRoomForTest(
+          const RoomInfo(code: 'WXYZ', host: '10.0.0.9', playerName: 'Kim'));
+      net.ingestRoomForTest(const RoomInfo(
+          code: 'WXYZ', host: '192.168.43.1', playerName: 'Kim'));
+      expect(net.foundRooms, hasLength(1),
+          reason: 'one logical room, even though it beaconed from two '
+              'addresses under the same code');
+      expect(net.foundRooms.single.host, '192.168.43.1',
+          reason: 'upgraded to the address actually reachable from us');
+    });
+
+    test('an unreachable second address never displaces a reachable one',
+        () {
+      final net = NetworkService();
+      net.localIps = const ['192.168.43.7'];
+      net.ingestRoomForTest(const RoomInfo(
+          code: 'WXYZ', host: '192.168.43.1', playerName: 'Kim'));
+      net.ingestRoomForTest(
+          const RoomInfo(code: 'WXYZ', host: '10.0.0.9', playerName: 'Kim'));
+      expect(net.foundRooms.single.host, '192.168.43.1');
+    });
+
+    test('a different code from the same host is a distinct room', () {
+      final net = NetworkService();
+      net.ingestRoomForTest(
+          const RoomInfo(code: 'WXYZ', host: '192.168.1.5', playerName: 'Kim'));
+      net.ingestRoomForTest(
+          const RoomInfo(code: 'ABCD', host: '192.168.1.5', playerName: 'Kim'));
+      expect(net.foundRooms, hasLength(2));
+    });
+  });
+
+  group('board_cancel — retracting a saved fleet', () {
+    // Coverage for the CANCEL button on the "WAITING FOR OPPONENT…"
+    // dialog (`placement_screen.dart`'s `_waitForPeerBoard`). The button
+    // sends `board_cancel`; the peer's `NetworkService` must drop whatever
+    // board it was holding so a stale fleet can never be handed to
+    // `beginBattle`, and the message must still reach a listener on the
+    // `messages` stream so the placement screen can pop its own dialog.
+    test('sendBoardCancel puts a board_cancel message on the wire', () {
+      final net = NetworkService();
+      net.sendBoardCancel();
+      expect(net.sentForTest.any((m) => m['type'] == 'board_cancel'), isTrue);
+    });
+
+    test('clears a board already retained via takePeerBoard', () {
+      final net = NetworkService();
+      net.handleIncomingForTest({'type': 'board', 'b': 'placeholder'});
+      expect(net.takePeerBoard(), isNotNull);
+
+      // A second board arrives, then the sender changes their mind.
+      net.handleIncomingForTest({'type': 'board', 'b': 'placeholder2'});
+      net.handleIncomingForTest({'type': 'board_cancel'});
+      expect(net.takePeerBoard(), isNull,
+          reason: 'a cancelled board must not be handed to beginBattle');
+    });
+
+    test('is forwarded on the messages stream for a waiting listener', () async {
+      final net = NetworkService();
+      final received = <Map<String, dynamic>>[];
+      final sub = net.messages.listen(received.add);
+
+      net.handleIncomingForTest({'type': 'board_cancel'});
+      await Future<void>.delayed(Duration.zero);
+
+      expect(received.any((m) => m['type'] == 'board_cancel'), isTrue);
+      await sub.cancel();
     });
   });
 }

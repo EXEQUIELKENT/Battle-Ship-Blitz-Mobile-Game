@@ -11,10 +11,12 @@ import 'core/route_observer.dart';
 import 'core/theme.dart';
 import 'screens/home_screen.dart';
 import 'services/game_controller.dart';
+import 'services/match_store.dart';
 import 'services/network_service.dart';
 import 'services/online_service.dart';
 import 'services/sound_service.dart';
 import 'services/storage_service.dart';
+import 'services/vs_ai_session.dart';
 
 /// TEMPORARY DIAGNOSTIC (profile builds only — compiled out of release).
 ///
@@ -96,6 +98,15 @@ Future<void> main() async {
     network: network,
   );
 
+  // Persists an in-progress hotspot/online match across a full app close
+  // — see the class doc. Attached once, for the app's whole lifetime;
+  // it listens for whichever match `controller`/`network` happen to be
+  // running at any given moment rather than needing to be re-attached
+  // per match.
+  final matchStore = MatchStore();
+  await matchStore.load();
+  matchStore.attach(controller, network);
+
   final online = OnlineService();
   await online.load();
 
@@ -135,6 +146,23 @@ Future<void> main() async {
     }
   });
 
+  // Same guard-flag shape as `wasOnline` above, and for the same reason:
+  // `VsAiSession.start` calls `network.startLoopbackMatch`, which itself
+  // calls `stop()` on its way in — a bare `mode == none` check would tear
+  // the session down at the exact moment it's being built.
+  final vsAiSession = VsAiSession();
+  var wasLoopback = false;
+  network.addListener(() {
+    if (network.mode == NetMode.loopback) {
+      wasLoopback = true;
+      return;
+    }
+    if (wasLoopback && network.mode == NetMode.none) {
+      wasLoopback = false;
+      vsAiSession.end();
+    }
+  });
+
   runApp(
     MultiProvider(
       providers: [
@@ -142,6 +170,8 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: network),
         ChangeNotifierProvider.value(value: online),
         ChangeNotifierProvider.value(value: controller),
+        Provider<VsAiSession>.value(value: vsAiSession),
+        ChangeNotifierProvider.value(value: matchStore),
       ],
       child: const BattleshipBlitzApp(),
     ),
@@ -181,8 +211,17 @@ class _BattleshipBlitzAppState extends State<BattleshipBlitzApp>
       case AppLifecycleState.resumed:
         SoundService.instance.onAppResumed();
         break;
-      case AppLifecycleState.inactive:
       case AppLifecycleState.paused:
+        // The real save point for `MatchStore` — `detached` (Android's
+        // "about to actually be killed") often arrives with no time left
+        // to finish a platform-channel write, so waiting for it is how a
+        // match ends up with nothing saved at all. `paused` fires first
+        // and reliably, whether the app is about to be killed or just
+        // backgrounded.
+        unawaited(context.read<MatchStore>().flushNow());
+        SoundService.instance.onAppPaused();
+        break;
+      case AppLifecycleState.inactive:
       case AppLifecycleState.detached:
       case AppLifecycleState.hidden:
         SoundService.instance.onAppPaused();
