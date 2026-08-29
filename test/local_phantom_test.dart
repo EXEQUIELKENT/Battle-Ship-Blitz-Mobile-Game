@@ -103,24 +103,41 @@ void main() {
           reason: 'the ordinary rule, untouched when phantom is off');
     });
 
-    test('re-fire redirects onto a fresh cell — the hull can still be '
-        'sunk', () async {
-      // The exact bug fixed in `Board.receiveShot`: without the
-      // redirect, a shooter with no marks who keeps guessing the same
-      // reported cell could never finish a kill.
+    test('a repeat on a hole already there scores nothing', () async {
+      // PHANTOM's dead-cell rule reaches the shared screen through the
+      // same `isPhantomBattle` the wire modes use — see
+      // `Board.receiveShot`'s `repeatHitMisses`.
       final c = await _newLocalController(phantom: true);
       c.boards[0] = Board()..place(kFleet.last, 0, 0, true); // destroyer
       c.beginBattle(enemyBoard: _harmlessBoard());
       c.cooldown2 = 0;
 
-      c.p2FireAt(0, 0);
+      expect(c.p2FireAt(0, 0), ShotResult.hit);
       final ship = c.boards[0].shipOfKind(ShipKind.destroyer)!;
-      expect(ship.isSunk, isFalse);
+      expect(ship.hitIndices, {0});
 
       c.cooldown2 = 0;
-      c.p2FireAt(0, 0); // same reported cell again
-      expect(ship.isSunk, isTrue,
-          reason: 'the second hit redirects onto the hull\'s other cell');
+      expect(c.p2FireAt(0, 0), ShotResult.miss,
+          reason: 'same reported cell — the hole was already there');
+      expect(ship.hitIndices, {0}, reason: 'no damage dealt');
+
+      // The hull still goes down, by shelling the cell that is intact.
+      c.cooldown2 = 0;
+      expect(c.p2FireAt(0, 1), ShotResult.sunk);
+    });
+
+    test('classic local still lets a repeat be refused as a duplicate',
+        () async {
+      // The new rule is PHANTOM's alone — turn-based local play never
+      // reaches it, because the duplicate check fires first.
+      final c = await _newLocalController();
+      c.boards[0] = Board()..place(kFleet.last, 0, 0, true);
+      c.beginBattle(enemyBoard: _harmlessBoard());
+      c.cooldown2 = 0;
+
+      expect(c.p2FireAt(0, 0), ShotResult.hit);
+      c.cooldown2 = 0;
+      expect(c.p2FireAt(0, 0), ShotResult.duplicate);
     });
   });
 
@@ -155,7 +172,7 @@ void main() {
       expect(c.combatLog, isEmpty);
 
       c.cooldown2 = 0;
-      c.p2FireAt(0, 0); // redirects onto the last cell — sinks it
+      c.p2FireAt(0, 1); // the hull's other cell — sinks it
       expect(c.combatLog, hasLength(1));
       expect(c.combatLog.single, contains('SANK'));
       expect(c.combatLog.single, isNot(contains('A2')),

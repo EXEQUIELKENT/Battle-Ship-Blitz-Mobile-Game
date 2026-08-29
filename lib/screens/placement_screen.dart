@@ -4,8 +4,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../art/family_shell_art.dart';
 import '../art/fleet_family.dart';
-import '../core/fleet_identity.dart';
+import '../art/legacy_shell_art.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
@@ -64,8 +65,12 @@ class PlacementScreen extends StatefulWidget {
   State<PlacementScreen> createState() => _PlacementScreenState();
 }
 
+// `TickerProviderStateMixin`, not the Single- variant: the cannon preview
+// runs the shell's flight clock and the gun's reload clock at once (see
+// `_previewShotCtrl` / `_previewReloadCtrl`), and the Single- mixin
+// asserts on the second ticker.
 class _PlacementScreenState extends State<PlacementScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   /// Which seat this screen belongs to in local pass-and-play — the index
   /// into `GameController.localLoadouts`.
   int get _seat => widget.isPlayer2 ? 1 : 0;
@@ -160,10 +165,34 @@ class _PlacementScreenState extends State<PlacementScreen>
   final StreamController<void> _previewFireCtrl =
       StreamController<void>.broadcast();
 
+  /// Feeds `CannonWidget.readyTrigger` so the deploy cannon gives its
+  /// "loaded — fire!" flash the moment a preview reload finishes, exactly
+  /// as it does when a battle turn comes around.
+  final StreamController<void> _previewReadyCtrl =
+      StreamController<void>.broadcast();
+
+  /// The deploy cannon's reload clock: 0 the instant a preview shot goes
+  /// off, running back up to 1 (ready) over the same
+  /// `kCooldownSeconds * cannonSkin.cooldownFactor` a real shot costs in
+  /// battle. Feeds `CannonWidget.cooldownFraction` — so the gun draws its
+  /// actual reload ring here rather than sitting permanently ready — and
+  /// gates [_firePreviewShot].
+  ///
+  /// BUGFIX (the deploy cannon was a machine gun): the preview used to
+  /// pass a hardcoded `cooldownFraction: 1` and gate nothing at all, so
+  /// every tap restarted the shell mid-flight. Firing as fast as you
+  /// could tap is not what the cannon you are previewing actually does,
+  /// and each new shot cut the last one's recoil and smoke short — which
+  /// is why the gun looked like it never animated at all.
+  late final AnimationController _previewReloadCtrl;
+
   /// Cell a preview shell is currently arcing toward — drives
   /// `BattleGrid.aimCell` (and so its built-in targeting reticle) for
   /// exactly as long as the shell is airborne, then clears.
   List<int>? _previewAimCell;
+
+  /// Recent preview combat events (e.g. miss water splashes when test firing).
+  final List<CombatEventLike> _previewEvents = [];
 
   /// The lone preview shell's flight clock. An empty-cell tap is purely
   /// cosmetic and can't overlap a real placement action, so — unlike
@@ -188,12 +217,24 @@ class _PlacementScreenState extends State<PlacementScreen>
   double _cannonRenderSizePx = 0;
   double _cannonMuzzleFrac = CannonWidget.muzzleFraction;
 
+  /// This loadout's reload time, cached from the same build that reads the
+  /// geometry above — the equipped cannon can be swapped from the GEAR
+  /// dialog without leaving this screen, and two of the skins reload
+  /// noticeably faster (see `CannonSkin.cooldownFactor`).
+  Duration _cannonReload = const Duration(seconds: kCooldownSeconds);
+
   @override
   void initState() {
     super.initState();
     _previewShotCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 480),
+    );
+    // Starts at 1 — the gun is loaded and ready the moment you arrive.
+    _previewReloadCtrl = AnimationController(
+      vsync: this,
+      duration: _cannonReload,
+      value: 1,
     );
     SoundService.instance.stopMenuMusic();
     final controller = context.read<GameController>();
@@ -219,7 +260,9 @@ class _PlacementScreenState extends State<PlacementScreen>
   void dispose() {
     _peerBoardSub?.cancel();
     _previewFireCtrl.close();
+    _previewReadyCtrl.close();
     _previewShotCtrl.dispose();
+    _previewReloadCtrl.dispose();
     super.dispose();
   }
 
@@ -406,6 +449,13 @@ class _PlacementScreenState extends State<PlacementScreen>
   /// cell's center, and drives `_previewAimCell` for exactly as long as
   /// it's in flight.
   void _firePreviewShot(int r, int c) {
+    // One shot per reload, same as battle — see `_previewReloadCtrl`. A
+    // tap on a still-reloading gun gets the same refusal blip the battle
+    // grid gives, rather than silently restarting the shell in mid-air.
+    if (_previewReloadCtrl.value < 1) {
+      SoundService.instance.denied();
+      return;
+    }
     final cellSize = _gridSidePx / kBoardSize;
     final to = Offset(
       _gridLeftPx + (c + 0.5) * cellSize,
@@ -415,7 +465,12 @@ class _PlacementScreenState extends State<PlacementScreen>
       _cannonCenterXPx,
       _cannonCenterYPx - _cannonRenderSizePx * _cannonMuzzleFrac,
     );
-    SoundService.instance.cannonFire();
+    final controller = context.read<GameController>();
+    final isLocal = controller.mode == GameMode.local;
+    final profile = context.read<ProfileStore>();
+    final loadout = isLocal ? controller.localLoadouts[_seat] : Loadout.of(profile);
+
+    SoundService.instance.cannonFire(cannonSkinId: loadout.cannonSkinId);
     _previewFireCtrl.add(null);
     setState(() {
       _previewAimCell = [r, c];
@@ -425,33 +480,126 @@ class _PlacementScreenState extends State<PlacementScreen>
       _previewShotArc = cellSize * 2.4;
     });
     _previewShotCtrl.forward(from: 0).whenComplete(() {
-      if (mounted) setState(() => _previewAimCell = null);
+      if (mounted) {
+        SoundService.instance.miss(
+          themeId: loadout.themeId,
+          cannonSkinId: loadout.cannonSkinId,
+        );
+        setState(() {
+          _previewAimCell = null;
+          _previewEvents.add(CombatEventLike(r, c, ShotResult.miss));
+        });
+      }
+    });
+    // The gun is empty from the muzzle flash onward and reloads on its
+    // own clock, which outlasts the shell's flight — so the reload ring
+    // keeps running after the shell has landed, exactly as in battle.
+    _previewReloadCtrl.duration = _cannonReload;
+    _previewReloadCtrl.forward(from: 0).whenComplete(() {
+      if (mounted && !_previewReadyCtrl.isClosed) {
+        SoundService.instance.cannonReady(cannonSkinId: loadout.cannonSkinId);
+        _previewReadyCtrl.add(null);
+      }
     });
   }
 
-  /// The preview shell's in-flight layer: a small lobbed ball tracing the
-  /// same up-then-down arc `battle_screen.dart`'s real cannonballs use,
-  /// shrinking down to the cell's own size right as it "lands". Purely
-  /// decorative — nothing here is a hit test, there's no board to hit.
-  Widget _previewShotLayer() {
+  /// The preview shell's in-flight layer: arcing from the cannon's muzzle to
+  /// the tapped cell's center, matching the equipped cannon's bespoke shell
+  /// artwork and directional trajectory.
+  Widget _previewShotLayer(CannonSkin cannonSkin) {
+    final shellFamily = FleetFamilies.byKey(cannonSkin.familyKey);
+    final legacyShellId = shellFamily == null ? cannonSkin.id : null;
+    final isDirectional = shellFamily != null
+        ? familyShellIsDirectional(shellFamily.id)
+        : legacyShellIsDirectional(legacyShellId!);
+
     return Positioned.fill(
       child: IgnorePointer(
         child: AnimatedBuilder(
           animation: _previewShotCtrl,
           builder: (context, _) {
             final t = _previewShotCtrl.value;
-            final base = Offset.lerp(_previewShotFrom, _previewShotTo, t)!;
-            final arc = math.sin(t * math.pi) * _previewShotArc;
-            final pos = base - Offset(0, arc);
-            final d = _previewShotCell * (2.2 - 1.2 * t);
-            const fadeStart = 0.9;
-            final fade = t <= fadeStart
-                ? 1.0
-                : (1 - (t - fadeStart) / (1 - fadeStart)).clamp(0.0, 1.0);
-            return Positioned(
-              left: pos.dx - d / 2,
-              top: pos.dy - d / 2,
-              child: Opacity(opacity: fade, child: _previewCannonball(d)),
+
+            Offset posAt(double tt) {
+              final cl = tt.clamp(0.0, 1.0);
+              final base = Offset.lerp(_previewShotFrom, _previewShotTo, cl)!;
+              final arc = math.sin(cl * math.pi) * _previewShotArc;
+              return base - Offset(0, arc);
+            }
+
+            double angleAt(double tt) {
+              final cl = tt.clamp(0.0, 1.0);
+              final vx = _previewShotTo.dx - _previewShotFrom.dx;
+              final arcRate = math.pi * _previewShotArc * math.cos(cl * math.pi);
+              final vy = (_previewShotTo.dy - _previewShotFrom.dy) - arcRate;
+              if (vx == 0 && vy == 0) return 0;
+              return math.atan2(vx, -vy);
+            }
+
+            double diamAt(double tt) =>
+                _previewShotCell * (2.6 - 1.6 * tt.clamp(0.0, 1.0));
+
+            double impactFadeAt(double tt) {
+              const fadeStart = 0.92;
+              if (tt <= fadeStart) return 1.0;
+              return (1 - (tt - fadeStart) / (1 - fadeStart)).clamp(0.0, 1.0);
+            }
+
+            final pos = posAt(t);
+            final d = diamAt(t);
+            final fade = impactFadeAt(t);
+            final angle = isDirectional ? angleAt(t) : t * math.pi * 6;
+
+            Widget ghost(double dt, double opacity, double scale) {
+              final tt = t - dt;
+              if (tt <= 0) return const SizedBox.shrink();
+              final gp = posAt(tt);
+              final gd = diamAt(tt) * scale;
+              return Positioned(
+                left: gp.dx - gd / 2,
+                top: gp.dy - gd / 2,
+                child: Opacity(
+                  opacity: opacity * impactFadeAt(tt),
+                  child: Transform.rotate(
+                    angle: isDirectional ? angleAt(tt) : 0.0,
+                    child: _previewCannonball(
+                      gd,
+                      family: shellFamily,
+                      legacyId: legacyShellId,
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // Faint motion-trail ghosts behind the projectile.
+                ghost(0.11, 0.14, 0.72),
+                ghost(0.055, 0.26, 0.84),
+                Positioned(
+                  left: pos.dx - d / 2,
+                  top: pos.dy - d / 2,
+                  child: Opacity(
+                    // KEY (test hook): the one in-flight shell — every
+                    // branch of `_previewCannonball` lays out to exactly
+                    // this box, whatever art it draws inside it, so the
+                    // widget test can measure the ball's on-screen size
+                    // without reaching into the painter classes.
+                    key: const ValueKey('previewShell'),
+                    opacity: fade,
+                    child: Transform.rotate(
+                      angle: angle,
+                      child: _previewCannonball(
+                        d,
+                        family: shellFamily,
+                        legacyId: legacyShellId,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             );
           },
         ),
@@ -459,12 +607,43 @@ class _PlacementScreenState extends State<PlacementScreen>
     );
   }
 
-  /// Plain iron cannonball for the preview shell — same palette as the
-  /// battle screen's own default shot, kept as its own small widget here
-  /// rather than reused across files so this feature stays self-contained
-  /// wherever the equipped cannon's actual shell art doesn't apply (this
-  /// is a taste of firing, not the real shot the battle screen draws).
-  Widget _previewCannonball(double d) {
+  /// The projectile in flight — draws family artwork, legacy shell artwork,
+  /// or fallback styled iron ball.
+  Widget _previewCannonball(
+    double d, {
+    FleetFamily? family,
+    String? legacyId,
+  }) {
+    if (family != null) {
+      final h = d / kShellBoxAspect;
+      return SizedBox(
+        width: d,
+        height: d,
+        child: OverflowBox(
+          maxWidth: d,
+          maxHeight: h,
+          child: CustomPaint(
+            size: Size(d, h),
+            painter: _FamilyShellPainter(family),
+          ),
+        ),
+      );
+    }
+    if (legacyId != null) {
+      final h = d / kShellBoxAspect;
+      return SizedBox(
+        width: d,
+        height: d,
+        child: OverflowBox(
+          maxWidth: d,
+          maxHeight: h,
+          child: CustomPaint(
+            size: Size(d, h),
+            painter: _LegacyCannonballPainter(legacyId),
+          ),
+        ),
+      );
+    }
     return Container(
       width: d,
       height: d,
@@ -931,8 +1110,7 @@ class _PlacementScreenState extends State<PlacementScreen>
   /// panel reads correctly either way up while a sheet would slide in from
   /// what is, from Player 2's seat, the top of the screen.
   Future<void> _openGear(
-    GameController controller,
-    FleetLook look, {
+    GameController controller, {
     required bool isLocal,
     required bool announceToOpponent,
   }) async {
@@ -948,7 +1126,6 @@ class _PlacementScreenState extends State<PlacementScreen>
           seatLabel: isLocal
               ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
               : 'YOUR',
-          isRedSide: look.isRedSide,
           current: isLocal
               ? controller.localLoadouts[_seat]
               : Loadout.of(profile),
@@ -981,22 +1158,7 @@ class _PlacementScreenState extends State<PlacementScreen>
     required bool announceToOpponent,
   }) {
     final profile = context.read<ProfileStore>();
-    // The dialog only ever offers gear this player already owns, so
-    // these can't spend RP — but they're still the equip path rather
-    // than a direct field write, so ownership stays enforced in one
-    // place.
-    //
-    // BUGFIX (picking the side colour kept "reverting" to Steel): the
-    // RED/BLUE FLEET chip opts OUT of hulls (shipChosen false), but this
-    // used to ignore that flag and equip lo.shipSkinId anyway — forcing
-    // shipSkinChosen back to true with whatever hull id was still in the
-    // loadout. Honoured now: opting out un-chooses, picking a hull
-    // equips it.
-    if (lo.shipChosen) {
-      profile.equipShipSkin(Catalog.shipById(lo.shipSkinId));
-    } else {
-      profile.clearShipSkinChoice();
-    }
+    profile.equipShipSkin(Catalog.shipById(lo.shipSkinId));
     profile.equipCannonSkin(Catalog.cannonById(lo.cannonSkinId));
     profile.equipGameplayTheme(Catalog.gameplayThemeById(lo.themeId));
     if (announceToOpponent) {
@@ -1004,7 +1166,7 @@ class _PlacementScreenState extends State<PlacementScreen>
         shipSkinId: lo.shipSkinId,
         cannonSkinId: lo.cannonSkinId,
         themeId: lo.themeId,
-        shipChosen: lo.shipChosen,
+        shipChosen: true,
       );
     }
   }
@@ -1023,17 +1185,6 @@ class _PlacementScreenState extends State<PlacementScreen>
     // button (below) needs an actual human on the other end and checks
     // `controller.hasRemotePeer` directly instead.
     final isLan = controller.usesMatchProtocol;
-
-    // BUGFIX (both LAN players deployed RED fleets): the fleet colour used
-    // to be chosen purely from `isPlayer2`, which only ever means anything
-    // in local pass-and-play — so in a hotspot/online match BOTH devices
-    // fell through to the Player-1 skin and each captain saw a red fleet,
-    // on both this screen and (via the matching skin pick in
-    // battle_screen.dart) the battle grids. The two sides are told apart
-    // by their NETWORK ROLE instead: the host commands red, whoever joined
-    // commands blue. Non-network modes keep their existing P1/P2 meaning.
-    final isBlueFleet =
-        isLan ? !controller.network.isHost : widget.isPlayer2;
     final isLocal = controller.mode == GameMode.local;
     final isVsAI = controller.mode == GameMode.vsAI;
 
@@ -1045,34 +1196,13 @@ class _PlacementScreenState extends State<PlacementScreen>
     final loadout =
         isLocal ? controller.localLoadouts[_seat] : Loadout.of(profile);
 
-    // Side colour by default; a captain who has actually equipped a hull
-    // deploys in that instead, so the fleet they lay out here is the
-    // fleet they'll see on the battle grid. One shared rule, in
-    // `fleet_identity.dart`, so this screen can't drift out of step with
-    // the mode vote or the battle grid.
-    // This screen only ever shows the fleet of whoever is sitting in
-    // front of it, so their own choice always applies — including against
-    // the AI, where they should get to see what they bought.
-    final look = fleetLook(
-      isRedSide: !isBlueFleet,
-      equippedShipSkinId: loadout.shipSkinId,
-      chosen: loadout.shipChosen,
-    );
-    final skin = look.skin;
-    // The battlefield this captain is deploying onto. It used to be the
-    // hardcoded steel-blue grid in every mode, so a player who had bought
-    // Cinder Straits laid their fleet out on default water and only saw
-    // what they had equipped once the shooting started — the one screen
-    // where you are looking at your own board for a full minute was also
-    // the one that ignored your choice of board.
+    final skin = loadout.shipSkin;
+    // The battlefield this captain is deploying onto.
     final theme = loadout.theme;
     final boardFamily = FleetFamilies.byKey(theme.familyKey);
-    final fleetLabel = look.label;
     final playerLabel = isLocal
-        ? '${widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1'} — $fleetLabel'
-        : isLan
-            ? '${profile.playerName.toUpperCase()} — $fleetLabel'
-            : profile.playerName.toUpperCase();
+        ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
+        : profile.playerName.toUpperCase();
     final cellSize = _cellSize(context);
 
     if (_showHandoff) {
@@ -1173,10 +1303,9 @@ class _PlacementScreenState extends State<PlacementScreen>
                           // to tell (see `_equipFromGearDialog`).
                           if (isLocal || isVsAI || isLan) ...[
                             _GearButton(
-                              color: look.color,
+                              color: loadout.shipSkin.hull,
                               onTap: () => _openGear(
                                 controller,
-                                look,
                                 isLocal: isLocal,
                                 announceToOpponent: isLan,
                               ),
@@ -1312,6 +1441,12 @@ class _PlacementScreenState extends State<PlacementScreen>
                       _cannonCenterYPx = cannonCenterY;
                       _cannonRenderSizePx = renderSize;
                       _cannonMuzzleFrac = muzzleFrac;
+                      _cannonReload = Duration(
+                        milliseconds: (kCooldownSeconds *
+                                1000 *
+                                loadout.cannonSkin.cooldownFactor)
+                            .round(),
+                      );
                       return Stack(
                         key: _stackKey,
                         clipBehavior: Clip.none,
@@ -1419,7 +1554,7 @@ class _PlacementScreenState extends State<PlacementScreen>
                                   child: AnimatedSwitcher(
                                     duration: const Duration(milliseconds: 320),
                                     child: BattleGrid(
-                                      key: ValueKey('${theme.id}::${skin?.id}'),
+                                      key: ValueKey('${theme.id}::${skin.id}'),
                                       shots: List.generate(
                                         kBoardSize,
                                         (_) => List.filled(kBoardSize, 0),
@@ -1445,6 +1580,7 @@ class _PlacementScreenState extends State<PlacementScreen>
                                       clip: false,
                                       aimCell: _previewAimCell,
                                       cannonSkinId: loadout.cannonSkinId,
+                                      recentEvents: _previewEvents,
                                     ),
                                   ),
                                 );
@@ -1479,12 +1615,22 @@ class _PlacementScreenState extends State<PlacementScreen>
                                     child: child,
                                   ),
                                 ),
-                                child: CannonWidget(
+                                // The reload ring has to redraw as the
+                                // clock runs, and nothing else on this
+                                // screen ticks — so the cannon listens to
+                                // it directly rather than the whole
+                                // deploy screen rebuilding 60 times a
+                                // second behind it.
+                                child: AnimatedBuilder(
                                   key: ValueKey(loadout.cannonSkinId),
-                                  skin: loadout.cannonSkin,
-                                  cooldownFraction: 1,
-                                  size: renderSize,
-                                  fireTrigger: _previewFireCtrl.stream,
+                                  animation: _previewReloadCtrl,
+                                  builder: (context, _) => CannonWidget(
+                                    skin: loadout.cannonSkin,
+                                    cooldownFraction: _previewReloadCtrl.value,
+                                    size: renderSize,
+                                    fireTrigger: _previewFireCtrl.stream,
+                                    readyTrigger: _previewReadyCtrl.stream,
+                                  ),
                                 ),
                               ),
                             ),
@@ -1493,7 +1639,8 @@ class _PlacementScreenState extends State<PlacementScreen>
                           // cannon above to whichever empty cell was last
                           // tapped — see `_firePreviewShot`. Only mounted
                           // while a shot is actually in flight.
-                          if (_previewAimCell != null) _previewShotLayer(),
+                          if (_previewAimCell != null)
+                            _previewShotLayer(loadout.cannonSkin),
                         ],
                       );
                     },
@@ -1781,14 +1928,12 @@ class _GearButton extends StatelessWidget {
 class _GearDialog extends StatefulWidget {
   final ProfileStore profile;
   final String seatLabel;
-  final bool isRedSide;
   final Loadout current;
   final ValueChanged<Loadout> onChanged;
 
   const _GearDialog({
     required this.profile,
     required this.seatLabel,
-    required this.isRedSide,
     required this.current,
     required this.onChanged,
   });
@@ -1816,7 +1961,6 @@ class _GearDialogState extends State<_GearDialog> {
         Catalog.gameplayThemes.where((t) => widget.profile.ownsTheme(t.id)).toList();
     final sets =
         FleetFamilies.all.where((f) => widget.profile.ownsFamilySet(f)).toList();
-    final sideSkin = widget.isRedSide ? kRedFleetSkin : kBlueFleetSkin;
 
     return Dialog(
       backgroundColor: Colors.transparent,
@@ -1856,20 +2000,11 @@ class _GearDialogState extends State<_GearDialog> {
                   _ArrowScroller(
                     height: 76,
                     children: [
-                      // Opting back out of skins entirely: the plain
-                      // side colour is a legitimate choice, not merely
-                      // the absence of one.
-                      _hullChip(
-                        skin: sideSkin,
-                        label: widget.isRedSide ? 'RED FLEET' : 'BLUE FLEET',
-                        selected: !_lo.shipChosen,
-                        onTap: () => _set(_lo.copyWith(shipChosen: false)),
-                      ),
                       for (final s in ships)
                         _hullChip(
                           skin: s,
                           label: s.name.toUpperCase(),
-                          selected: _lo.shipChosen && _lo.shipSkinId == s.id,
+                          selected: _lo.shipSkinId == s.id,
                           onTap: () => _set(
                               _lo.copyWith(shipSkinId: s.id, shipChosen: true)),
                         ),
@@ -2265,4 +2400,34 @@ class _ArrowScrollerState extends State<_ArrowScroller> {
       ),
     );
   }
+}
+
+/// Custom painter for family shell artwork in the placement preview.
+class _FamilyShellPainter extends CustomPainter {
+  final FleetFamily family;
+
+  const _FamilyShellPainter(this.family);
+
+  @override
+  void paint(Canvas canvas, Size size) =>
+      paintFamilyShell(canvas, size, family);
+
+  @override
+  bool shouldRepaint(covariant _FamilyShellPainter old) =>
+      old.family.id != family.id;
+}
+
+/// Custom painter for legacy cannon shell artwork in the placement preview.
+class _LegacyCannonballPainter extends CustomPainter {
+  final String cannonId;
+
+  const _LegacyCannonballPainter(this.cannonId);
+
+  @override
+  void paint(Canvas canvas, Size size) =>
+      paintLegacyShell(canvas, size, cannonId);
+
+  @override
+  bool shouldRepaint(covariant _LegacyCannonballPainter old) =>
+      old.cannonId != cannonId;
 }

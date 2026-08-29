@@ -397,6 +397,61 @@ void main() {
           reason: 'a hull is only ever sunk once');
     });
   });
+
+  group('PHANTOM vs the AI: a repeat on a hole already there is wasted', () {
+    // PHANTOM's dead-cell rule, driven through a real vsAiLan match — two
+    // `GameController`s talking over a loopback `NetworkService`, which is
+    // the same wire path a hotspot/online match takes. Worth pinning here
+    // as well as at the model, because this is the opponent most players
+    // spend their time against and the rule is the one thing that makes
+    // PHANTOM play differently from GHOST FLEET.
+    test('the second shell deals no damage and scores a miss', () async {
+      final rig = await newRig(LanBattleMode.phantom, seed: 83);
+      rig.session.playerReady();
+
+      // A hull with more than one cell, so the shot that lands has
+      // somewhere it COULD have been redirected to — the thing PHANTOM
+      // deliberately does not do.
+      final ship = rig.ai.boards[0].ships
+          .reduce((a, b) => a.spec.size >= b.spec.size ? a : b);
+      final cell = ship.cells.first;
+
+      await rig.playerFiresAt(cell[0], cell[1]);
+      expect(ship.hitIndices, hasLength(1));
+      expect(rig.player.events.last.result, ShotResult.hit);
+
+      await rig.playerFiresAt(cell[0], cell[1]); // the same spot again
+      expect(ship.hitIndices, hasLength(1),
+          reason: 'no damage — and no redirect onto fresh plating either');
+      expect(rig.player.events.last.result, ShotResult.miss);
+
+      // And it stays dead however often it is tried.
+      await rig.playerFiresAt(cell[0], cell[1]);
+      expect(rig.player.events.last.result, ShotResult.miss);
+      expect(ship.hitIndices, hasLength(1));
+
+      // The hull is still perfectly sinkable — by shelling the rest of it.
+      for (final other in ship.cells.skip(1)) {
+        await rig.playerFiresAt(other[0], other[1]);
+      }
+      expect(ship.isSunk, isTrue);
+    });
+
+    test('GHOST FLEET still redirects — the rule is PHANTOM\'s alone',
+        () async {
+      final rig = await newRig(LanBattleMode.ghost, seed: 83);
+      rig.session.playerReady();
+
+      final ship = rig.ai.boards[0].ships
+          .reduce((a, b) => a.spec.size >= b.spec.size ? a : b);
+      final cell = ship.cells.first;
+
+      await rig.playerFiresAt(cell[0], cell[1]);
+      await rig.playerFiresAt(cell[0], cell[1]);
+      expect(ship.hitIndices, hasLength(2),
+          reason: 'ghost hulls run, so a blind repeat still finds plating');
+    });
+  });
 }
 
 class _TestClock {

@@ -113,49 +113,151 @@ class SoundService {
     'cannon_ready': 'sfx/cannon_ready.wav',
     'count_beep': 'sfx/count_beep.wav',
     'count_go': 'sfx/count_go.wav',
+    // Cannon Fire variants:
+    'cannon_fire_mk1': 'sfx/cannon_fire_mk1.wav',
+    'cannon_fire_inferno': 'sfx/cannon_fire_inferno.wav',
+    'cannon_fire_tesla': 'sfx/cannon_fire_tesla.wav',
+    'cannon_fire_venom': 'sfx/cannon_fire_venom.wav',
+    'cannon_fire_royal': 'sfx/cannon_fire_royal.wav',
+    'cannon_fire_phantom': 'sfx/cannon_fire_phantom.wav',
+    'cannon_fire_kraken': 'sfx/cannon_fire_kraken.wav',
+    'cannon_fire_sunfire': 'sfx/cannon_fire_sunfire.wav',
+    'cannon_fire_void': 'sfx/cannon_fire_void.wav',
+    'cannon_fire_pirate': 'sfx/cannon_fire_pirate.wav',
+    'cannon_fire_f_pirate': 'sfx/cannon_fire_f_pirate.wav',
+    'cannon_fire_naval': 'sfx/cannon_fire_naval.wav',
+    'cannon_fire_f_naval': 'sfx/cannon_fire_f_naval.wav',
+    'cannon_fire_steam': 'sfx/cannon_fire_steam.wav',
+    'cannon_fire_f_steam': 'sfx/cannon_fire_f_steam.wav',
+    'cannon_fire_arctic': 'sfx/cannon_fire_arctic.wav',
+    'cannon_fire_f_arctic': 'sfx/cannon_fire_f_arctic.wav',
+    'cannon_fire_volcanic': 'sfx/cannon_fire_volcanic.wav',
+    'cannon_fire_f_volcanic': 'sfx/cannon_fire_f_volcanic.wav',
+    'cannon_fire_scifi': 'sfx/cannon_fire_scifi.wav',
+    'cannon_fire_f_scifi': 'sfx/cannon_fire_f_scifi.wav',
+    // Cannon Ready variants:
+    'cannon_ready_mk1': 'sfx/cannon_ready_mk1.wav',
+    'cannon_ready_inferno': 'sfx/cannon_ready_inferno.wav',
+    'cannon_ready_tesla': 'sfx/cannon_ready_tesla.wav',
+    'cannon_ready_venom': 'sfx/cannon_ready_venom.wav',
+    'cannon_ready_royal': 'sfx/cannon_ready_royal.wav',
+    'cannon_ready_phantom': 'sfx/cannon_ready_phantom.wav',
+    'cannon_ready_kraken': 'sfx/cannon_ready_kraken.wav',
+    'cannon_ready_sunfire': 'sfx/cannon_ready_sunfire.wav',
+    'cannon_ready_void': 'sfx/cannon_ready_void.wav',
+    'cannon_ready_pirate': 'sfx/cannon_ready_pirate.wav',
+    'cannon_ready_f_pirate': 'sfx/cannon_ready_f_pirate.wav',
+    'cannon_ready_naval': 'sfx/cannon_ready_naval.wav',
+    'cannon_ready_f_naval': 'sfx/cannon_ready_f_naval.wav',
+    'cannon_ready_steam': 'sfx/cannon_ready_steam.wav',
+    'cannon_ready_f_steam': 'sfx/cannon_ready_f_steam.wav',
+    'cannon_ready_arctic': 'sfx/cannon_ready_arctic.wav',
+    'cannon_ready_f_arctic': 'sfx/cannon_ready_f_arctic.wav',
+    'cannon_ready_volcanic': 'sfx/cannon_ready_volcanic.wav',
+    'cannon_ready_f_volcanic': 'sfx/cannon_ready_f_volcanic.wav',
+    'cannon_ready_scifi': 'sfx/cannon_ready_scifi.wav',
+    'cannon_ready_f_scifi': 'sfx/cannon_ready_f_scifi.wav',
+    // Hit variants:
+    'hit_mk1': 'sfx/hit_mk1.wav',
+    'hit_inferno': 'sfx/hit_inferno.wav',
+    'hit_tesla': 'sfx/hit_tesla.wav',
+    'hit_venom': 'sfx/hit_venom.wav',
+    'hit_royal': 'sfx/hit_royal.wav',
+    'hit_phantom': 'sfx/hit_phantom.wav',
+    'hit_kraken': 'sfx/hit_kraken.wav',
+    'hit_sunfire': 'sfx/hit_sunfire.wav',
+    'hit_void': 'sfx/hit_void.wav',
+    'hit_pirate': 'sfx/hit_pirate.wav',
+    'hit_f_pirate': 'sfx/hit_f_pirate.wav',
+    'hit_naval': 'sfx/hit_naval.wav',
+    'hit_f_naval': 'sfx/hit_f_naval.wav',
+    'hit_steam': 'sfx/hit_steam.wav',
+    'hit_f_steam': 'sfx/hit_f_steam.wav',
+    'hit_arctic': 'sfx/hit_arctic.wav',
+    'hit_f_arctic': 'sfx/hit_f_arctic.wav',
+    'hit_volcanic': 'sfx/hit_volcanic.wav',
+    'hit_f_volcanic': 'sfx/hit_f_volcanic.wav',
+    'hit_scifi': 'sfx/hit_scifi.wav',
+    'hit_f_scifi': 'sfx/hit_f_scifi.wav',
+    // Miss variants:
+    'miss_classic': 'sfx/miss_classic.wav',
+    'miss_arctic': 'sfx/miss_arctic.wav',
+    'miss_f_arctic': 'sfx/miss_f_arctic.wav',
+    'miss_deep': 'sfx/miss_deep.wav',
+    'miss_kraken': 'sfx/miss_kraken.wav',
+    'miss_sunset': 'sfx/miss_sunset.wav',
+    'miss_pirate': 'sfx/miss_pirate.wav',
+    'miss_f_pirate': 'sfx/miss_f_pirate.wav',
+    'miss_naval': 'sfx/miss_naval.wav',
+    'miss_f_naval': 'sfx/miss_f_naval.wav',
+    'miss_steam': 'sfx/miss_steam.wav',
+    'miss_f_steam': 'sfx/miss_f_steam.wav',
+    'miss_volcanic': 'sfx/miss_volcanic.wav',
+    'miss_f_volcanic': 'sfx/miss_f_volcanic.wav',
+    'miss_scifi': 'sfx/miss_scifi.wav',
+    'miss_f_scifi': 'sfx/miss_f_scifi.wav',
+    'miss_inferno': 'sfx/miss_inferno.wav',
+    'miss_tesla': 'sfx/miss_tesla.wav',
+    'miss_venom': 'sfx/miss_venom.wav',
+    'miss_phantom': 'sfx/miss_phantom.wav',
+    'miss_sunfire': 'sfx/miss_sunfire.wav',
+    'miss_void': 'sfx/miss_void.wav',
+    // Turn Pass variants:
+    'turn_pass_classic': 'sfx/turn_pass_classic.wav',
+    'turn_pass_arctic': 'sfx/turn_pass_arctic.wav',
+    'turn_pass_f_arctic': 'sfx/turn_pass_f_arctic.wav',
+    'turn_pass_deep': 'sfx/turn_pass_deep.wav',
+    'turn_pass_sunset': 'sfx/turn_pass_sunset.wav',
+    'turn_pass_pirate': 'sfx/turn_pass_pirate.wav',
+    'turn_pass_f_pirate': 'sfx/turn_pass_f_pirate.wav',
+    'turn_pass_naval': 'sfx/turn_pass_naval.wav',
+    'turn_pass_f_naval': 'sfx/turn_pass_f_naval.wav',
+    'turn_pass_steam': 'sfx/turn_pass_steam.wav',
+    'turn_pass_f_steam': 'sfx/turn_pass_f_steam.wav',
+    'turn_pass_volcanic': 'sfx/turn_pass_volcanic.wav',
+    'turn_pass_f_volcanic': 'sfx/turn_pass_f_volcanic.wav',
+    'turn_pass_scifi': 'sfx/turn_pass_scifi.wav',
+    'turn_pass_f_scifi': 'sfx/turn_pass_f_scifi.wav',
   };
 
-  /// FIXED player count per effect — see the REGRESSION FIX note on
-  /// [_ManagedPool] for why this is a single fixed size rather than a
-  /// min/max range that grows on demand: growth-on-demand is exactly what
-  /// caused a real-device-only regression (lag + audio glitches after a
-  /// handful of shots) when a previous pass raised the max end of that
-  /// range trying to fix a DIFFERENT bug (cut-off audio). Sized to how
-  /// many times an effect can realistically overlap itself in this game —
-  /// `cannon_fire`/`hit`/`miss` are the ones fired on every single shot,
-  /// and a HIT grants an immediate extra shot, so a hit streak can chain
-  /// several of each back-to-back — while one-off cues like `victory`
-  /// only ever need one or two. Every player counted here is created ONCE
-  /// up front (see [_ManagedPool.warmUp]) — nothing is ever created during
-  /// actual gameplay.
-  static const Map<String, int> _poolSizes = {
-    'cannon_fire': 5,
-    'hit': 5,
-    'miss': 5,
-    'sunk': 2,
-    'victory': 1,
-    'defeat': 1,
-    'place': 2,
-    'click': 2,
-    'denied': 1,
-    'whir': 1,
-    'turn_pass': 1,
-    'cannon_ready': 1,
-    'count_beep': 1,
-    'count_go': 1,
-  };
+  /// Core effects warmed up immediately at start.
+  static const _corePoolKeys = [
+    'cannon_fire',
+    'hit',
+    'miss',
+    'sunk',
+    'victory',
+    'defeat',
+    'place',
+    'click',
+    'denied',
+    'whir',
+    'turn_pass',
+    'cannon_ready',
+    'count_beep',
+    'count_go',
+  ];
+
+  static int _poolSizeFor(String key) {
+    if (key.startsWith('cannon_fire') || key.startsWith('hit') || key.startsWith('miss')) {
+      return 3;
+    }
+    if (key == 'sunk' || key == 'place' || key == 'click') {
+      return 2;
+    }
+    return 1;
+  }
 
   /// Effects that get a tiny random pitch/rate wobble each play so rapid
   /// repeats (several misses in a row, etc.) don't sound like a stuck
   /// robot repeating the exact same clip.
-  static const _variedPitch = {'cannon_fire', 'hit', 'miss', 'click'};
+  static bool _hasVariedPitch(String key) =>
+      key.startsWith('cannon_fire') ||
+      key.startsWith('hit') ||
+      key.startsWith('miss') ||
+      key == 'click';
 
-  /// Measured length, in milliseconds, of each effect's `.wav` asset (see
-  /// `assets/sfx/`, produced by `tool/gen_sounds.dart`) — used to size that
-  /// effect's [_ManagedPool.safetyTimeout] (see there for why one flat
-  /// value shared by every effect was itself a bug). If
-  /// `tool/gen_sounds.dart` ever changes to produce a meaningfully longer
-  /// clip for one of these, bump the matching entry here too.
+  /// Measured length, in milliseconds, of each effect's `.wav` asset.
   static const Map<String, int> _clipMs = {
     'cannon_fire': 720,
     'hit': 420,
@@ -173,18 +275,9 @@ class SoundService {
     'count_go': 300,
   };
 
-  /// Padding added on top of a clip's measured length so its pool's safety
-  /// timeout comfortably outlasts normal platform-channel jitter instead
-  /// of racing the clip's own natural end.
+  /// Padding added on top of a clip's measured length.
   static const _safetyMarginMs = 350;
-
-  /// Floor so a very short clip (e.g. `click` at 60ms) still gets a
-  /// reasonable window rather than an unrealistically tight one.
   static const _minSafetyMs = 500;
-
-  /// Conservative fallback for any effect key missing from [_clipMs] (e.g.
-  /// a new SFX added later without updating that table) — matches the
-  /// flat value every effect used to share.
   static const _fallbackSafetyMs = 2200;
 
   static Duration _safetyTimeoutFor(String key) {
@@ -193,13 +286,6 @@ class SoundService {
     return Duration(milliseconds: math.max(_minSafetyMs, clip + _safetyMarginMs));
   }
 
-  /// Non-exclusive audio context shared by every player this service
-  /// creates (pooled effects AND menu music). `AndroidAudioFocus.none`
-  /// means we never ask Android's `AudioManager` for focus at all — so our
-  /// own overlapping sounds can never steal focus from (and silently
-  /// native-pause) each other. `mixWithOthers` on iOS is the equivalent:
-  /// this app's audio plays alongside whatever else is already playing
-  /// instead of trying to take over the session. See the class doc above.
   static final AudioContext _sfxAudioContext = AudioContext(
     android: const AudioContextAndroid(
       contentType: AndroidContentType.sonification,
@@ -216,37 +302,47 @@ class SoundService {
 
   static const _menuMusicAsset = 'sfx/menu_music.wav';
   AudioPlayer? _menuMusicPlayer;
-
-  /// Whether menu music is *supposed* to be playing right now (set by
-  /// [startMenuMusic], cleared by [stopMenuMusic]) — independent of
-  /// whether the play attempt actually succeeded. Used by
-  /// [notifyUserGesture] to know whether it should retry.
   bool _menuMusicWanted = false;
 
-  /// Pre-create every effect's warm player pool. Safe to call
-  /// fire-and-forget from main().
+  /// Pre-create core warm player pools. Safe to call fire-and-forget from main().
   Future<void> init() async {
     try {
       await AudioPlayer.global.setAudioContext(_sfxAudioContext);
-    } catch (_) {/* best effort — per-player context below still applies */}
-    await _buildPools();
+    } catch (_) {/* best effort */}
+    await _buildCorePools();
   }
 
-  Future<void> _buildPools() async {
-    for (final entry in _files.entries) {
-      final size = _poolSizes[entry.key];
-      if (size == null) continue; // shouldn't happen — every key is sized
+  Future<void> _buildCorePools() async {
+    for (final key in _corePoolKeys) {
+      final file = _files[key];
+      if (file == null) continue;
       final pool = _pools.putIfAbsent(
-        entry.key,
+        key,
         () => _ManagedPool(
-          asset: entry.value,
-          size: size,
+          asset: file,
+          size: _poolSizeFor(key),
           audioContext: _sfxAudioContext,
-          safetyTimeout: _safetyTimeoutFor(entry.key),
+          safetyTimeout: _safetyTimeoutFor(key),
         ),
       );
       await pool.warmUp();
     }
+  }
+
+  _ManagedPool? _getPool(String key) {
+    var pool = _pools[key];
+    if (pool != null) return pool;
+    final file = _files[key];
+    if (file == null) return null;
+    pool = _ManagedPool(
+      asset: file,
+      size: _poolSizeFor(key),
+      audioContext: _sfxAudioContext,
+      safetyTimeout: _safetyTimeoutFor(key),
+    );
+    _pools[key] = pool;
+    unawaited(pool.warmUp());
+    return pool;
   }
 
   /// BUGFIX (all sound effects going silent mid-game on phones): nothing
@@ -375,9 +471,9 @@ class SoundService {
 
   Future<void> _play(String key, {double volume = 1.0}) async {
     if (!enabled) return;
-    final pool = _pools[key];
+    final pool = _getPool(key);
     if (pool == null) return;
-    final rate = _variedPitch.contains(key)
+    final rate = _hasVariedPitch(key)
         ? 0.94 + _rng.nextDouble() * 0.12 // ~±6% pitch/speed wobble
         : 1.0;
     await pool.play(volume: volume, rate: rate);
@@ -509,18 +605,85 @@ class SoundService {
     }
   }
 
-  void cannonFire() {
+  bool _hasSound(String key) => _files.containsKey(key);
+
+  void cannonFire({String? cannonSkinId}) {
     HapticFeedback.mediumImpact();
+    if (cannonSkinId != null) {
+      final k1 = 'cannon_fire_$cannonSkinId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = cannonSkinId.replaceFirst('f_', '');
+      final k2 = 'cannon_fire_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
     _play('cannon_fire');
   }
 
-  void hit() {
+  void hit({String? cannonSkinId, String? shipSkinId}) {
     HapticFeedback.heavyImpact();
+    if (cannonSkinId != null) {
+      final k1 = 'hit_$cannonSkinId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = cannonSkinId.replaceFirst('f_', '');
+      final k2 = 'hit_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
+    if (shipSkinId != null) {
+      final k1 = 'hit_$shipSkinId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = shipSkinId.replaceFirst('f_', '');
+      final k2 = 'hit_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
     _play('hit');
   }
 
-  void miss() {
+  void miss({String? themeId, String? cannonSkinId}) {
     HapticFeedback.lightImpact();
+    if (themeId != null) {
+      final k1 = 'miss_$themeId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = themeId.replaceFirst('f_', '');
+      final k2 = 'miss_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
+    if (cannonSkinId != null) {
+      final k1 = 'miss_$cannonSkinId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = cannonSkinId.replaceFirst('f_', '');
+      final k2 = 'miss_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
     _play('miss');
   }
 
@@ -568,11 +731,41 @@ class SoundService {
   /// Distinct "turn passed to the other player" cue — plays alongside
   /// [whir] at handoff so a turn change is unmistakable even with sound
   /// as the only cue (e.g. eyes on the board, not the turn badge).
-  void turnPass() => _play('turn_pass');
+  void turnPass({String? themeId}) {
+    if (themeId != null) {
+      final k1 = 'turn_pass_$themeId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = themeId.replaceFirst('f_', '');
+      final k2 = 'turn_pass_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
+    _play('turn_pass');
+  }
 
   /// Mechanical "locked in" clunk — synced to the cannon's ready-flash,
   /// right as it settles into the middle of its grid.
-  void cannonReady() => _play('cannon_ready');
+  void cannonReady({String? cannonSkinId}) {
+    if (cannonSkinId != null) {
+      final k1 = 'cannon_ready_$cannonSkinId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = cannonSkinId.replaceFirst('f_', '');
+      final k2 = 'cannon_ready_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
+    _play('cannon_ready');
+  }
 
   /// Countdown warning beep (plays each tick: 3..2..1).
   void countBeep() => _play('count_beep');

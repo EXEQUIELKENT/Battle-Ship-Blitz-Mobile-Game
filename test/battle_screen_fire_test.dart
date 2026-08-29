@@ -249,16 +249,50 @@ void main() {
 
       await incoming(0, 2, 1); // the same reported cell again
       final model = controller.boards[0].shipOfKind(kind)!.hitIndices;
-      expect(model, hasLength(2),
-          reason: 'the repeat shell did real, additional damage');
-      expect(_drawnOwnShip(tester, kind).hitIndices, model,
-          reason: 'and the owner has to be able to SEE it — the drawn hull '
-              'must track the cell the model actually holed');
+
+      if (mode == LanBattleMode.ghost) {
+        // GHOST FLEET redirects the repeat onto fresh plating, so there
+        // is genuinely new damage — and the owner must be able to see it.
+        expect(model, hasLength(2),
+            reason: 'the repeat shell did real, additional damage');
+        expect(_drawnOwnShip(tester, kind).hitIndices, model,
+            reason: 'the drawn hull must track the cell the model holed');
+      } else {
+        // PHANTOM instead lets the shell fall into the hole already there:
+        // nothing is dealt, so nothing new may appear on the hull either.
+        expect(model, {2}, reason: 'the repeat dealt no damage');
+        expect(_drawnOwnShip(tester, kind).hitIndices, {2},
+            reason: 'and so the hull must look exactly as it did');
+        // The captain being shot at still SEES the strike, though — that
+        // asymmetry is the mode. See `phantomImpactVisual`.
+        expect(
+          phantomImpactVisual(
+            event: controller.events.last,
+            viewerIsDefender: true,
+            phantom: controller.isPhantomBattle,
+            defenderBoard: controller.boards[0],
+          ),
+          ShotResult.hit,
+          reason: 'scored a miss, but it really did strike their hull',
+        );
+        expect(controller.events.last.result, ShotResult.miss,
+            reason: 'while the scoreboard — and the shooter — say miss');
+        // Scoring a miss means the shooter's streak ends: let the 500ms
+        // turn-pass beat `_maybePassTurn` schedules actually run, both
+        // because it is the rule under test and because the widget test
+        // framework refuses to leave a timer pending.
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.pump();
+        expect(controller.peerHasTurn, isFalse,
+            reason: 'the wasted shell handed the turn back to us');
+      }
 
       controller.dispose();
     }
 
-    testWidgets('GHOST FLEET', (tester) => run(tester, LanBattleMode.ghost));
-    testWidgets('PHANTOM', (tester) => run(tester, LanBattleMode.phantom));
+    testWidgets('GHOST FLEET redirects onto fresh plating',
+        (tester) => run(tester, LanBattleMode.ghost));
+    testWidgets('PHANTOM deals nothing, but the defender still feels it',
+        (tester) => run(tester, LanBattleMode.phantom));
   });
 }

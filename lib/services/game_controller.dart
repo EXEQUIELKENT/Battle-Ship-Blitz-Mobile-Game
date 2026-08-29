@@ -158,12 +158,21 @@ class GameController extends ChangeNotifier {
       (usesMatchProtocol && !lanBattleMode.recordsShots) ||
       (mode == GameMode.local && localPhantom);
 
-  /// True only for PHANTOM: on top of keeping no record (so it is also
-  /// covered by [isGhostBattle]), the fleet is FIXED — it never rearranges
-  /// and there is no dodge window. See [isGhostFleetMode] for the
-  /// non-manoeuvring record-free mode.
+  /// True only for PHANTOM — over the wire (hotspot/online/vsAiLan) or on
+  /// one shared screen ([localPhantom]), since the mode's rules are the
+  /// same either way and every read below is about the RULES.
+  ///
+  /// On top of keeping no record (so it is also covered by
+  /// [isGhostBattle]), the fleet is FIXED — it never rearranges and there
+  /// is no dodge window — and a shell that lands on a hull cell already
+  /// holed scores nothing at all, leaving that cell a miss for the rest
+  /// of the match (`Board.receiveShot`'s `repeatHitMisses`). That last
+  /// rule is the one thing PHANTOM does differently from GHOST FLEET,
+  /// which instead redirects such a shell onto fresh plating. See
+  /// [isGhostFleetBattle] for the non-manoeuvring record-free mode.
   bool get isPhantomBattle =>
-      usesMatchProtocol && lanBattleMode == LanBattleMode.phantom;
+      (usesMatchProtocol && lanBattleMode == LanBattleMode.phantom) ||
+      (mode == GameMode.local && localPhantom);
 
   /// True only for GHOST FLEET proper (not PHANTOM): the record-free mode
   /// whose fleet may still run, and whose sunk hulls are freed and fades
@@ -970,7 +979,8 @@ class GameController extends ChangeNotifier {
     // wire — see [isGhostBattle] and `Board.receiveShot`'s doc on
     // [allowRefire].
     final (result, sunk) =
-        boards[1].receiveShot(r, c, allowRefire: isGhostBattle);
+        boards[1].receiveShot(r, c,
+            allowRefire: isGhostBattle, repeatHitMisses: isPhantomBattle);
     // Only a hit/sunk puts the gun into reload; a miss leaves it
     // instantly ready so the circle timer never appears for a miss.
     if (result == ShotResult.hit || result == ShotResult.sunk) {
@@ -1011,7 +1021,8 @@ class GameController extends ChangeNotifier {
     }
 
     final (result, sunk) =
-        boards[0].receiveShot(r, c, allowRefire: isGhostBattle);
+        boards[0].receiveShot(r, c,
+            allowRefire: isGhostBattle, repeatHitMisses: isPhantomBattle);
     if (result == ShotResult.hit || result == ShotResult.sunk) {
       cooldown2 = cooldownMax2;
     } else {
@@ -1599,6 +1610,24 @@ class GameController extends ChangeNotifier {
       cooldown2 = max(0, cooldown2 - 0.1);
     }
 
+    // RELOAD COMPLETE — the moment a gun finishes its cooldown, play that
+    // seat's equipped cannon's own reload sound. This is the reload cue
+    // for actual gameplay: a hit grants an immediate extra shot and BLITZ /
+    // chaos guns reload on their own clock with no turn handoff, so until
+    // this existed the only "reload" sound ever heard was the one
+    // `_passTurn` plays at a turn change — the reload itself finished
+    // silently. Fires on the same `beforeReady` edge the structural
+    // rebuild below already uses, so it happens exactly once per reload
+    // and always on the tick the ring visibly completes (the sound matches
+    // what the player is watching, including a LAN peer's gun, whose ring
+    // is drawn from this device's own mirrored `cooldown2`).
+    if (!beforeReady1 && cooldown1 <= 0) {
+      SoundService.instance.cannonReady(cannonSkinId: _cannonSkinIdFor(true));
+    }
+    if (!beforeReady2 && cooldown2 <= 0) {
+      SoundService.instance.cannonReady(cannonSkinId: _cannonSkinIdFor(false));
+    }
+
     if (mode == GameMode.vsAI && aiTurnToFire) {
       _aiThink();
     }
@@ -1616,6 +1645,27 @@ class GameController extends ChangeNotifier {
         (cooldown2 <= 0) != beforeReady2) {
       notifyListeners();
     }
+  }
+
+  /// Which cannon skin a seat has equipped — the same gear rule
+  /// `_loadoutFor` applies on the battle screen, kept in step with it so a
+  /// reload sound and the gun it belongs to can never disagree:
+  ///
+  ///  * Match-protocol modes (LAN, and the loopback-linked VS AI) — this
+  ///    device's captain on seat 1, the handshake's peer gear on seat 2.
+  ///    The AI never sends gear, so its peer id stays the default 'mk1',
+  ///    exactly like the plain gun its half is drawn with.
+  ///  * Local pass-and-play — one equipped cannon per seat.
+  ///  * Anything else — the profile's own gun; seat 2 has no gear of its
+  ///    own and sails the standard cannon.
+  String _cannonSkinIdFor(bool p1) {
+    if (usesMatchProtocol) {
+      return p1 ? profile.cannonSkinId : network.peerCannonSkinId;
+    }
+    if (mode == GameMode.local) {
+      return localLoadouts[p1 ? 0 : 1].cannonSkinId;
+    }
+    return p1 ? profile.cannonSkinId : 'mk1';
   }
 
   double _aiThinkAccumulator = 0;
@@ -1895,7 +1945,8 @@ class GameController extends ChangeNotifier {
         _decoyArmed = false; // fizzled against the finishing blow
       }
       (result, sunk) =
-          boards[0].receiveShot(r, c, allowRefire: isGhostBattle);
+          boards[0].receiveShot(r, c,
+            allowRefire: isGhostBattle, repeatHitMisses: isPhantomBattle);
     }
 
     // BUGFIX (duplicate-fire turn corruption): a stray repeat of a

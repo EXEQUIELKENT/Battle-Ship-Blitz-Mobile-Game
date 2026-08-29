@@ -8,6 +8,7 @@
 // not kept. The only steady progress report either captain gets is the
 // fleet-status row (and a sinking's coordinate-less log line).
 import 'package:battleship_blitz/models/game_models.dart';
+import 'package:battleship_blitz/screens/battle_screen.dart';
 import 'package:battleship_blitz/services/game_controller.dart';
 import 'package:battleship_blitz/services/network_service.dart';
 import 'package:battleship_blitz/services/storage_service.dart';
@@ -103,11 +104,12 @@ void main() {
               'is nothing the dodge window would protect');
       expect(c.incomingShells, isEmpty);
 
-      // A fresh fire at the same cell evaluates whatever is there now
-      // (nothing was recorded) — the record-free rule, not a replay.
+      // A fresh fire at the same cell is evaluated rather than bounced as
+      // a duplicate (nothing was recorded) — but PHANTOM's dead-cell rule
+      // means that plating is already holed, so the shell scores nothing.
       await _incomingFire(c, 2, 2, 1);
-      expect(c.p2Shots[2][2], 2,
-          reason: 'still a hit — the destroyer is still there');
+      expect(c.p2Shots[2][2], 1,
+          reason: 'a miss now — the hole it struck was already there');
     });
 
     test('a redelivered fire (same seq) is answered but not re-applied',
@@ -126,13 +128,14 @@ void main() {
               'this mode gave up');
     });
 
-    test('repeated fire on the same cell can still sink the hull', () async {
-      // BUGFIX (permanently unsinkable hull): with no marks kept, a
-      // shooter re-targeting the exact cell they already hit is expected
-      // here, not a mistake — but a naive re-hit that just re-confirms
-      // the same internal cell index would leave a hull stuck at partial
-      // damage forever, no matter how many shots landed on it. See
-      // `Board.receiveShot`'s redirect-to-the-nearest-open-cell fix.
+    test('a repeat on a hole already there scores nothing, for good',
+        () async {
+      // PHANTOM's own rule, and the one thing separating it from GHOST
+      // FLEET (which instead redirects such a shell onto fresh plating so
+      // the hull can still be finished off). Here the shot is simply
+      // wasted: no damage, and — since a PHANTOM fleet never moves — that
+      // cell goes on reading as a miss for the rest of the match. Every
+      // hull still sinks, but only by shelling all of it.
       final c = await _newPhantomController(host: true);
       c.boards[0] = Board()..place(kFleet.last, 2, 2, true); // destroyer
       c.beginBattle(enemyBoard: _harmlessEnemyBoard());
@@ -140,11 +143,20 @@ void main() {
 
       await _incomingFire(c, 2, 2, 0);
       final ship = c.boards[0].shipOfKind(ShipKind.destroyer)!;
-      expect(ship.isSunk, isFalse);
+      expect(ship.hitIndices, {0});
 
       await _incomingFire(c, 2, 2, 1); // same reported cell, distinct seq
-      expect(ship.isSunk, isTrue,
-          reason: 'the second hit redirects onto the hull\'s other cell');
+      expect(ship.isSunk, isFalse, reason: 'the repeat did nothing at all');
+      expect(ship.hitIndices, {0}, reason: 'and dealt no damage');
+      expect(c.p2Shots[2][2], 1, reason: 'scored as a miss');
+
+      // Still a miss however many times it is tried.
+      await _incomingFire(c, 2, 2, 2);
+      expect(ship.hitIndices, {0});
+
+      // The hull goes down when its OTHER cell is actually shelled.
+      await _incomingFire(c, 2, 3, 3);
+      expect(ship.isSunk, isTrue);
     });
   });
 
@@ -169,6 +181,111 @@ void main() {
       expect(c.combatLog.single, isNot(contains('B1')),
           reason: 'the sinking is narrated, never placed — (0,1) would '
               'print as B1');
+    });
+  });
+
+  group('what each side is SHOWN when a repeat lands', () {
+    // The asymmetry the rule is built around: the shooter is told nothing
+    // (a miss, no shake), while the captain being shot at sees the shell
+    // really strike their hull. See `phantomImpactVisual`.
+    Board defenderBoard() => Board()..place(kFleet.last, 2, 2, true);
+
+    CombatEvent shotAt(int r, int c, ShotResult result, {bool byPlayer = false}) =>
+        CombatEvent(byPlayer: byPlayer, row: r, col: c, result: result);
+
+    test('the DEFENDER sees a hit where the shell actually struck', () {
+      final board = defenderBoard()..receiveShot(2, 2);
+      expect(
+        phantomImpactVisual(
+          event: shotAt(2, 2, ShotResult.miss),
+          viewerIsDefender: true,
+          phantom: true,
+          defenderBoard: board,
+        ),
+        ShotResult.hit,
+        reason: 'it landed on their hull — they feel it, it just did not '
+            'count',
+      );
+    });
+
+    test('the SHOOTER is told nothing — a plain miss', () {
+      final board = defenderBoard()..receiveShot(2, 2);
+      expect(
+        phantomImpactVisual(
+          event: shotAt(2, 2, ShotResult.miss, byPlayer: true),
+          viewerIsDefender: false,
+          phantom: true,
+          defenderBoard: board,
+        ),
+        ShotResult.miss,
+      );
+    });
+
+    test('a shared screen shows the miss to everyone', () {
+      // Local pass-and-play has no defender-only view to put a private hit
+      // on: dressing it up would leak to the shooter, sitting right there,
+      // exactly what the rule hides.
+      final board = defenderBoard()..receiveShot(2, 2);
+      expect(
+        phantomImpactVisual(
+          event: shotAt(2, 2, ShotResult.miss),
+          viewerIsDefender: false, // never set off the wire modes
+          phantom: true,
+          defenderBoard: board,
+        ),
+        ShotResult.miss,
+      );
+    });
+
+    test('an ordinary miss on open water stays a miss', () {
+      expect(
+        phantomImpactVisual(
+          event: shotAt(9, 9, ShotResult.miss),
+          viewerIsDefender: true,
+          phantom: true,
+          defenderBoard: defenderBoard(),
+        ),
+        ShotResult.miss,
+      );
+    });
+
+    test('shells falling on a wreck stay misses too', () {
+      final board = defenderBoard()
+        ..receiveShot(2, 2)
+        ..receiveShot(2, 3); // sunk
+      expect(
+        phantomImpactVisual(
+          event: shotAt(2, 2, ShotResult.miss),
+          viewerIsDefender: true,
+          phantom: true,
+          defenderBoard: board,
+        ),
+        ShotResult.miss,
+        reason: 'a wreck is not a near-thing',
+      );
+    });
+
+    test('every other mode passes straight through', () {
+      final board = defenderBoard()..receiveShot(2, 2);
+      expect(
+        phantomImpactVisual(
+          event: shotAt(2, 2, ShotResult.miss),
+          viewerIsDefender: true,
+          phantom: false,
+          defenderBoard: board,
+        ),
+        ShotResult.miss,
+      );
+      expect(
+        phantomImpactVisual(
+          event: shotAt(2, 2, ShotResult.hit),
+          viewerIsDefender: true,
+          phantom: true,
+          defenderBoard: board,
+        ),
+        ShotResult.hit,
+        reason: 'a real hit is untouched',
+      );
     });
   });
 }

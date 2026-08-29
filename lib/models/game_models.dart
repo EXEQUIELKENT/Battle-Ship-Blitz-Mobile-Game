@@ -342,7 +342,20 @@ class Board {
   /// applied twice (see `GameController._lastPeerFireSeq` for how these
   /// two modes replace that protection, since they are the one place it
   /// is deliberately given up).
-  (ShotResult, PlacedShip?) receiveShot(int r, int c, {bool allowRefire = false}) {
+  /// [repeatHitMisses] is PHANTOM's own rule on top of [allowRefire], and
+  /// the one thing that makes it play differently from GHOST FLEET: a
+  /// shell landing on a hull cell that is ALREADY holed scores nothing at
+  /// all. The shot is a clean miss — no damage, no redirect, and (since a
+  /// PHANTOM fleet never moves) that cell reads as a miss for the rest of
+  /// the match. GHOST FLEET leaves this false and keeps the redirect
+  /// below, which is what lets a hull there still be finished off by a
+  /// shooter who keeps guessing the same spot.
+  (ShotResult, PlacedShip?) receiveShot(
+    int r,
+    int c, {
+    bool allowRefire = false,
+    bool repeatHitMisses = false,
+  }) {
     if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) {
       return (ShotResult.invalid, null);
     }
@@ -375,6 +388,11 @@ class Board {
       // `!ship.isSunk` is guaranteed by the wreck check above, which is
       // also what guarantees `open` below is never empty.
       if (allowRefire && ship.hitIndices.contains(idx)) {
+        // PHANTOM: the shell struck a hole that is already there, so it
+        // does nothing — see [repeatHitMisses]. Deliberately BEFORE the
+        // redirect below rather than a variation on it: the whole point
+        // is that no second point of damage is dealt.
+        if (repeatHitMisses) return (ShotResult.miss, null);
         // BUGFIX (permanently unsinkable AND, in GHOST FLEET, permanently
         // un-movable hull): [allowRefire] means the shooter has no marks
         // to tell them this cell already carries a hit, so landing on it

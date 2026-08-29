@@ -84,7 +84,13 @@ class _LanModeScreenState extends State<LanModeScreen> {
   void _onNet() {
     if (!mounted) return;
     if (_net.lockedMode != null && _lockHold == null && !_navigated) {
-      SoundService.instance.cannonReady();
+      // The "match locked" clunk plays the device owner's own equipped
+      // cannon's reload sound — the gun they're about to sail into the
+      // match with (see `_firePreviewShot` on the deploy screen for the
+      // same rule).
+      SoundService.instance.cannonReady(
+        cannonSkinId: Loadout.of(context.read<ProfileStore>()).cannonSkinId,
+      );
       _lockHold = Timer(_lockHoldDuration, _startMatch);
     }
   }

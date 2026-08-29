@@ -46,6 +46,40 @@ import 'result_screen.dart';
 ///    When the turn passes, the outgoing cannon slides back home near the
 ///    middle band and the newly-active cannon slides out while flashing
 ///    "ready".
+/// PHANTOM's dead-cell rule seen from the receiving end: the result this
+/// shot should be DRAWN as on this device, which is not always the result
+/// it scored.
+///
+/// A shell landing on plating the defending fleet has already had holed
+/// scores nothing at all (`Board.receiveShot`'s `repeatHitMisses`), and
+/// the SHOOTER is shown exactly that — a miss, no shake, no information,
+/// which is the whole point in a mode that tells them nothing. The captain
+/// being shot at is shown the truth instead: the shell really did strike
+/// their hull, so on their own device it lands as a hit, with the crack
+/// and the shake, and only the scoreboard knows it counted for nothing.
+/// That asymmetry is the mode — the defender feels every near-thing while
+/// the attacker learns none of it.
+///
+/// Derived from the board rather than flagged on the event, because in
+/// PHANTOM there is exactly one way a miss can land on an afloat hull's
+/// cell: this rule. Every other mode and every other result passes
+/// straight through untouched.
+@visibleForTesting
+ShotResult phantomImpactVisual({
+  required CombatEvent event,
+  required bool viewerIsDefender,
+  required bool phantom,
+  required Board defenderBoard,
+}) {
+  if (!phantom || !viewerIsDefender || event.result != ShotResult.miss) {
+    return event.result;
+  }
+  final ship = defenderBoard.activeShipAt(event.row, event.col);
+  // A wreck is not a near-thing — shells falling on an already-sunk hull
+  // read as the misses they are (see `Board.receiveShot`).
+  return (ship != null && !ship.isSunk) ? ShotResult.hit : event.result;
+}
+
 class BattleScreen extends StatefulWidget {
   const BattleScreen({super.key});
 
@@ -267,16 +301,27 @@ class _BattleScreenState extends State<BattleScreen>
   /// shared helper so every "impact just happened" call site (including
   /// the couple of edge cases with no travel animation to wait for) picks
   /// the sound the exact same way.
-  void _playImpactSound(ShotResult result) {
+  void _playImpactSound(
+    ShotResult result, {
+    CannonSkin? shooterSkin,
+    ShipSkin? targetSkin,
+    GameplayTheme? targetTheme,
+  }) {
     switch (result) {
       case ShotResult.sunk:
         SoundService.instance.sunk();
         break;
       case ShotResult.hit:
-        SoundService.instance.hit();
+        SoundService.instance.hit(
+          cannonSkinId: shooterSkin?.id,
+          shipSkinId: targetSkin?.id,
+        );
         break;
       case ShotResult.miss:
-        SoundService.instance.miss();
+        SoundService.instance.miss(
+          themeId: targetTheme?.id,
+          cannonSkinId: shooterSkin?.id,
+        );
         break;
       default:
         break;
@@ -654,7 +699,7 @@ class _BattleScreenState extends State<BattleScreen>
         ..cell = bottom.cell
         ..visible = true;
     });
-    SoundService.instance.cannonFire();
+    SoundService.instance.cannonFire(cannonSkinId: _cannonSkinFor(false).id);
     // See the matching note in `_launchBall` — fires at launch now, next
     // to the sound, instead of (late, and hit-only) at impact.
     _cannon2Fire.add(null);
@@ -764,13 +809,37 @@ class _BattleScreenState extends State<BattleScreen>
     // momentary dramatic beat — the hit flash showing and fading out, the
     // screen shaking — is exactly what an impact SHOULD do; "hits and
     // misses hidden" silences the record, not the impact itself.
-    _playImpactSound(e.result);
+    // THE MOMENT A SHOT LANDS. Which themed variant plays is read off the
+    // shot itself, exactly like the art is: the EXPLOSION belongs to the
+    // shooter's cannon (f_pirate's bell-mouth booms differently from an
+    // Ion Lance), the SHIPWOOD CRUNCH belongs to the hull that took it,
+    // and the SPLASH on a miss belongs to the DECK the shell landed on.
+    // `byPlayer == true` is the local player (bottom half — see
+    // `_loadoutFor`), so the shooter's cannon is `e.byPlayer`'s and the
+    // struck board — both its fleet and its deck — is the other half's.
+    // What this shot should LOOK like here, which in PHANTOM is not always
+    // what it scored — see [phantomImpactVisual]. `_lan` is what makes
+    // "the defender's own device" mean anything: in local pass-and-play
+    // both captains share one screen, so there is no defender-only view to
+    // put a private hit on.
+    final visualResult = phantomImpactVisual(
+      event: e,
+      viewerIsDefender: _lan && !e.byPlayer,
+      phantom: controller.isPhantomBattle,
+      defenderBoard: controller.boards[0],
+    );
+    _playImpactSound(
+      visualResult,
+      shooterSkin: _cannonSkinFor(e.byPlayer),
+      targetSkin: _shipSkinFor(!e.byPlayer),
+      targetTheme: _themeFor(!e.byPlayer),
+    );
     // Screen shake, right as the ball actually lands — never on a miss
     // (there's nothing to "hit"). Sinking a ship shakes harder than a
     // plain hit so a killing blow reads as more impactful.
-    if (e.result == ShotResult.sunk) {
+    if (visualResult == ShotResult.sunk) {
       _shake(_shakeSunkMagnitude);
-    } else if (e.result == ShotResult.hit) {
+    } else if (visualResult == ShotResult.hit) {
       _shake(_shakeHitMagnitude);
     }
     // BUGFIX (end-game timing): the match is only actually allowed to end
@@ -839,7 +908,10 @@ class _BattleScreenState extends State<BattleScreen>
   /// NEVER swap sides (P1 stays bottom, P2 stays top).
   void _passTurn(bool toP2) {
     SoundService.instance.whir();
-    SoundService.instance.turnPass();
+    // The "your turn" cue wears the DECK of the player whose turn is
+    // beginning — P2 is the top half (`halfIsP1 == false`, see
+    // `_loadoutFor`) — so each captain's board announces its own handoff.
+    SoundService.instance.turnPass(themeId: _themeFor(!toP2).id);
     setState(() => _p2Active = toP2);
     // Keep the controller's mirror current: it's what a resume snapshot
     // reads to tell a reconnecting player whose turn they came back to.
@@ -857,7 +929,10 @@ class _BattleScreenState extends State<BattleScreen>
     // mechanical "locked in" clunk synced to the same moment.
     Future.delayed(const Duration(milliseconds: 120), () {
       if (!mounted) return;
-      SoundService.instance.cannonReady();
+      // The reload "locked in" clunk is the INCOMING player's gun — the
+      // same cannon whose ready-flash animation fires right here (P2 is
+      // the top half, `halfIsP1 == false`, see `_loadoutFor`).
+      SoundService.instance.cannonReady(cannonSkinId: _cannonSkinFor(!_p2Active).id);
       (_p2Active ? _cannon2Ready : _cannon1Ready).add(null);
     });
   }
@@ -988,7 +1063,7 @@ class _BattleScreenState extends State<BattleScreen>
         ..arcHeight = arcH
         ..visible = true;
     });
-    SoundService.instance.cannonFire();
+    SoundService.instance.cannonFire(cannonSkinId: _cannonSkinFor(byP1).id);
     // BUGFIX (fire animation and smoke landed 750ms+ late, and never at
     // all on a miss): this used to only fire from `_resolveImpact`, at
     // IMPACT time, and only on a hit — so the recoil/muzzle-flash/smoke

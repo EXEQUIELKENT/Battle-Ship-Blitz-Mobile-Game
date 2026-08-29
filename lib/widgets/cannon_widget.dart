@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -83,6 +84,9 @@ class CannonWidget extends StatefulWidget {
 
 class _CannonWidgetState extends State<CannonWidget>
     with TickerProviderStateMixin {
+  StreamSubscription<void>? _fireSub;
+  StreamSubscription<void>? _readySub;
+
   late final AnimationController _recoil;
   late final AnimationController _pulse;
 
@@ -151,8 +155,16 @@ class _CannonWidgetState extends State<CannonWidget>
         rise: 0.55 + rng.nextDouble() * 0.4,
       );
     });
-    widget.fireTrigger?.listen((_) => fire());
-    widget.readyTrigger?.listen((_) => readyFlash());
+    // BUGFIX (a swapped-out cannon kept listening): these subscriptions
+    // used to be started and then dropped on the floor. Every screen that
+    // lets the equipped cannon change without leaving it — the deploy
+    // screen's GEAR dialog is the live one — swaps this widget behind an
+    // `AnimatedSwitcher`, so the OLD state stayed subscribed to the same
+    // broadcast trigger after being disposed. The next shot then reached
+    // a dead state and called `forward()` on its disposed controllers,
+    // and every swap since the screen opened added one more.
+    _fireSub = widget.fireTrigger?.listen((_) => fire());
+    _readySub = widget.readyTrigger?.listen((_) => readyFlash());
   }
 
   void _maybeSetState() {
@@ -184,6 +196,8 @@ class _CannonWidgetState extends State<CannonWidget>
 
   @override
   void dispose() {
+    _fireSub?.cancel();
+    _readySub?.cancel();
     _recoil.dispose();
     _pulse.dispose();
     _smoke.dispose();

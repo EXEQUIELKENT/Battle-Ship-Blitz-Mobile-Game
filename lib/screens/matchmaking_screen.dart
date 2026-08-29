@@ -157,7 +157,13 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
         !_launching) {
       _launching = true;
       _rejoinTimer?.cancel();
-      SoundService.instance.cannonReady();
+      // The "match found" clunk plays the device owner's own equipped
+      // cannon's reload sound — the gun they're about to sail into the
+      // match with (see `_firePreviewShot` on the deploy screen for the
+      // same rule).
+      SoundService.instance.cannonReady(
+        cannonSkinId: Loadout.of(context.read<ProfileStore>()).cannonSkinId,
+      );
       unawaited(_enterMatch(match));
       return;
     }
