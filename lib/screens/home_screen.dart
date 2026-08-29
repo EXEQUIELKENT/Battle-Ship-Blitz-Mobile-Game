@@ -12,9 +12,9 @@ import '../services/network_service.dart';
 import '../services/online_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/hero_ship_dock.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
-import '../widgets/ship_painter.dart';
 import 'customize_screen.dart';
 import 'friends_screen.dart';
 import 'match_resume.dart';
@@ -255,17 +255,12 @@ class _HomeScreenState extends State<HomeScreen>
                           ),
                         ),
                         const SizedBox(height: 16),
-                        // ---- Hero ship on a water plate ----
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          decoration: cartoonBox(AppColors.water, radius: 20),
-                          child: AnimatedShip(
-                            spec: kFleet.first,
-                            skin: profile.shipSkin,
-                            size: 200,
-                          ),
-                        ),
+                        // ---- Hero ship on an interactive water dock ----
+                        // Bobs on its own, can be dragged around inside
+                        // the plate, and cycles through the shipyard's
+                        // hull classes (always in the equipped skin) on
+                        // tap — see HeroShipDock for the choreography.
+                        HeroShipDock(equippedSkin: profile.shipSkin),
                         const SizedBox(height: 18),
                         // ---- Difficulty selector ----
                         _difficultySelector(),
