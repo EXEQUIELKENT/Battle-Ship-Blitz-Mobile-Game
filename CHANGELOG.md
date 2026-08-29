@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.12](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.11...battleship_blitz-v1.4.12) (2026-08-29)
+
+
+### Bug Fixes
+
+* Add interactive HeroShipDock to home screen ([c9d93b8](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/c9d93b8f62f2da713a6eb31a90d9ca95c17bca7e))
+* Tolerate corrupt SharedPreferences on startup ([0241739](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/0241739889e3bbae1fe29b36fd8beeec7bb987ca))
+
 ## [1.4.11](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.10...battleship_blitz-v1.4.11) (2026-08-29)
 
 
