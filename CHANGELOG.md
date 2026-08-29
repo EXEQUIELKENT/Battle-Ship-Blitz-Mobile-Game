@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.8](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.7...battleship_blitz-v1.4.8) (2026-08-29)
+
+
+### Bug Fixes
+
+* Add Phantom rules and themed SFX ([d9b91fb](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/d9b91fbd555b5ce7a75f0f84d943d770b367da71))
+* Add placement cannon preview and local labels ([fea571d](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/fea571d3a47502c16dbc5b3c8ce8272757487ab8))
+* Add placement cannon preview and local labels ([7f6a9a1](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/7f6a9a1f74df32d8f8c53eb5fd89b57a31e3da59))
+* Add placement cannon preview and local labels ([637c324](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/637c324b07728f6db0769e4e1d9250b3e0695ce9))
+* New Features ([38148b0](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/38148b0fd90cc1e602dc2ca2039534966814b126))
+* New Features ([16d2295](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/16d2295715622ada91ecee0a88340610d0fb9f46))
+
 ## [1.4.7](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.6...battleship_blitz-v1.4.7) (2026-08-25)
 
 
