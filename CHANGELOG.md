@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.11](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.10...battleship_blitz-v1.4.11) (2026-08-29)
+
+
+### Bug Fixes
+
+* Add interactive HeroShipDock to home screen ([cf99a57](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/cf99a57743ee2953814f776703c3c05120aff539))
+* Add pre-match reconnect and sound prewarm ([cd49cc1](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/cd49cc129338bb6089c1fef1627a749f86b24985))
+* Tolerate corrupt SharedPreferences on startup ([8696448](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/8696448a666536539dcd4a71c36a507b7c7603bb))
+* Tolerate corrupt SharedPreferences on startup ([a3585f1](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/a3585f1d477cce7c5e0a612513acfe1ebf04ebf6))
+
 ## [1.4.10](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.9...battleship_blitz-v1.4.10) (2026-08-29)
 
 
