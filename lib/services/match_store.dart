@@ -49,7 +49,15 @@ class MatchStore extends ChangeNotifier {
   SharedPreferences? _prefs;
 
   Future<void> load() async {
-    _prefs = await SharedPreferences.getInstance();
+    try {
+      _prefs = await SharedPreferences.getInstance();
+    } catch (_) {
+      // Same reasoning as `_readRaw` below: a corrupt on-disk
+      // preferences file must not stop the app from opening. `_prefs`
+      // stays null; every read/write above already tolerates that (see
+      // `_readRaw`'s `_prefs?.getString` and `_flush`'s own null check).
+      _prefs = null;
+    }
     notifyListeners();
   }
 

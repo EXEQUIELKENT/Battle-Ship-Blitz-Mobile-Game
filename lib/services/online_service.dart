@@ -246,8 +246,20 @@ class OnlineService extends ChangeNotifier {
   String get baseUrl => api.baseUrl;
 
   Future<void> load() async {
-    _prefs = await SharedPreferences.getInstance();
-    final p = _prefs!;
+    try {
+      _prefs = await SharedPreferences.getInstance();
+    } catch (_) {
+      // Same reasoning as `_loadHistory`/`ProfileStore.load` below and
+      // above it in the stack: a corrupt on-disk preferences file must
+      // not stop the app from opening. `_prefs` stays null; `_persist`
+      // already no-ops without one.
+      _prefs = null;
+    }
+    final p = _prefs;
+    if (p == null) {
+      notifyListeners();
+      return;
+    }
     api.baseUrl = p.getString(_kBaseUrl) ?? '';
     api.token = p.getString(_kToken);
     myTag = p.getString(_kTag) ?? '';

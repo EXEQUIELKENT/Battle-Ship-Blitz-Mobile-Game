@@ -323,8 +323,22 @@ class ProfileStore extends ChangeNotifier {
   int get streakBonus => min(streak, 5) * 5;
 
   Future<void> load() async {
-    _prefs = await SharedPreferences.getInstance();
-    final p = _prefs!;
+    try {
+      _prefs = await SharedPreferences.getInstance();
+    } catch (_) {
+      // The platform's local preferences store failed to load — most
+      // likely a previous run's write was interrupted (crash, forced
+      // kill, disk hiccup) and left the on-disk file truncated or
+      // malformed. `_prefs` stays null; `_save` already no-ops without
+      // one, so this device just plays a session that can't persist
+      // instead of refusing to start at all.
+      _prefs = null;
+    }
+    final p = _prefs;
+    if (p == null) {
+      notifyListeners();
+      return;
+    }
     rp = p.getInt(_kRp) ?? 1000;
     wins = p.getInt(_kWins) ?? 0;
     losses = p.getInt(_kLosses) ?? 0;
