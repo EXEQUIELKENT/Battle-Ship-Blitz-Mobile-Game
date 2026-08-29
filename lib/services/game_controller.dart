@@ -1618,14 +1618,31 @@ class GameController extends ChangeNotifier {
     // `_passTurn` plays at a turn change — the reload itself finished
     // silently. Fires on the same `beforeReady` edge the structural
     // rebuild below already uses, so it happens exactly once per reload
-    // and always on the tick the ring visibly completes (the sound matches
-    // what the player is watching, including a LAN peer's gun, whose ring
-    // is drawn from this device's own mirrored `cooldown2`).
-    if (!beforeReady1 && cooldown1 <= 0) {
-      SoundService.instance.cannonReady(cannonSkinId: _cannonSkinIdFor(true));
-    }
-    if (!beforeReady2 && cooldown2 <= 0) {
-      SoundService.instance.cannonReady(cannonSkinId: _cannonSkinIdFor(false));
+    // and always on the tick the ring visibly completes.
+    //
+    // BUGFIX (the reload sound playing TWICE on every shot — hit or miss —
+    // in BLITZ/CHAOS over AI and LAN/online play): two compounding echoes.
+    //
+    // 1. The hidden vsAiLan opponent is its own GameController in THIS
+    //    process (`headless = true`), running its own ticker — so its
+    //    `_onTick` played the same reload completions the player's
+    //    controller was already playing, doubling every one of them.
+    //    `headless` exists precisely to keep that controller silent (see
+    //    `_finish`'s victory/defeat gating), so the cue is gated on it.
+    // 2. Over the match protocol, `cooldown2` is only a MIRROR of the
+    //    peer's gun — the peer's own device plays that reload. Playing it
+    //    here too put every reload on both devices, heard back-to-back
+    //    the moment both guns reloaded (constant in BLITZ/CHAOS, where a
+    //    miss now reloads exactly like a hit). Seat 2 therefore only
+    //    sounds when it is a REAL local gun — pass-and-play's second
+    //    seat, or the classic on-device AI — never a protocol mirror.
+    if (!headless) {
+      if (!beforeReady1 && cooldown1 <= 0) {
+        SoundService.instance.cannonReady(cannonSkinId: _cannonSkinIdFor(true));
+      }
+      if (!usesMatchProtocol && !beforeReady2 && cooldown2 <= 0) {
+        SoundService.instance.cannonReady(cannonSkinId: _cannonSkinIdFor(false));
+      }
     }
 
     if (mode == GameMode.vsAI && aiTurnToFire) {
@@ -2034,7 +2051,16 @@ class GameController extends ChangeNotifier {
     // Mirror the peer's reload on their on-screen cannon only for
     // hits — misses leave the gun instantly ready so the circle timer
     // never spins for a miss (matches the removed recoil animation).
+    //
+    // CHAOS and BLITZ are the exception: with no turns, the cooldown is
+    // the ONLY thing pacing the peer's fire, so a miss reloads their gun
+    // exactly like a hit does — the reload ring (and its reload-complete
+    // sound, see `_onTick`) has to run on a miss too. Turn-based modes
+    // keep the instantly-ready miss: the turn passes anyway, and a ring
+    // would just spin for nothing while the opponent aims.
     if (result == ShotResult.hit || result == ShotResult.sunk) {
+      cooldown2 = cooldownMax2;
+    } else if (isChaosBattle) {
       cooldown2 = cooldownMax2;
     } else {
       cooldown2 = 0;
@@ -2151,6 +2177,11 @@ class GameController extends ChangeNotifier {
         // RAPID FIRE spends down its three boosted shots here, in the
         // order results actually land — safe because POWER PLAY only
         // ever has one shot outstanding at a time.
+        //
+        // CHAOS/BLITZ: a miss reloads too — with no turns the cooldown
+        // is the only fire-rate limiter, and the gun's reload ring (and
+        // its reload-complete sound) must run after every shot. See the
+        // matching rule in `_resolveIncomingFire`.
         if (result == ShotResult.hit || result == ShotResult.sunk) {
           if (isPowerUpBattle && _rapidFireShotsLeft > 0) {
             cooldown1 = cooldownMax1 / 2;
@@ -2158,6 +2189,8 @@ class GameController extends ChangeNotifier {
           } else {
             cooldown1 = cooldownMax1;
           }
+        } else if (isChaosBattle) {
+          cooldown1 = cooldownMax1;
         } else {
           cooldown1 = 0;
         }

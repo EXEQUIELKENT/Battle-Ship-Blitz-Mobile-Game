@@ -10,6 +10,7 @@ import '../art/legacy_shell_art.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
+import '../services/network_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/app_notification.dart';
@@ -17,6 +18,7 @@ import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
+import '../widgets/reconnect_overlay.dart';
 import '../widgets/ship_painter.dart';
 import 'battle_screen.dart';
 
@@ -131,6 +133,26 @@ class _PlacementScreenState extends State<PlacementScreen>
   /// on top (see the BUGFIX note in `_waitForPeerBoard`).
   StreamSubscription? _peerBoardSub;
 
+  /// Listens to `NetworkService` for the OPPONENT's pre-battle drop and
+  /// return — see [_onNetForPeer]. Separate from [_peerBoardSub] (which
+  /// is the per-wait `board`/`board_cancel` message feed); this one lives
+  /// for the whole screen so a drop is noticed whether or not we happen
+  /// to be mid-`_waitForPeerBoard`. `ChangeNotifier.addListener` returns
+  /// void, so the pair is kept for `removeListener` in [dispose].
+  NetworkService? _netPeer;
+  VoidCallback? _netPeerCb;
+
+  /// True once this device's fleet has been sent to the opponent (see
+  /// `_save`). The peer's rejoin needs us to send it again — their socket
+  /// was gone the first time — so the drop handler below can know whether
+  /// a re-send is owed. Cleared when the player manually cancels the
+  /// wait (their board is no longer on the wire).
+  bool _sentBoard = false;
+
+  /// The previous value of `NetworkService.peerLost`, so [_onNetForPeer]
+  /// can tell a drop START from a RETURN (edge, not level).
+  bool _lastPeerLost = false;
+
   /// True once the RANDOM button has dealt a first layout onto a board
   /// that started completely empty. That first deal is the one case where
   /// `BattleGrid`'s `AnimatedPositioned` has no previous ship position to
@@ -239,6 +261,41 @@ class _PlacementScreenState extends State<PlacementScreen>
     SoundService.instance.stopMenuMusic();
     final controller = context.read<GameController>();
     _board = widget.isPlayer2 ? controller.boards[1] : controller.boards[0];
+    // This screen IS the pre-battle match for REMOTE-PEER modes — a
+    // dropped opponent here opens the reconnect window (see
+    // `NetworkService.beginPreMatch`). Crucially this also runs when a
+    // REJOINING player is routed straight here (deploy-stage rejoin), so
+    // the flag is set on both sides of the drop. Gated on `hasRemotePeer`
+    // rather than `usesMatchProtocol` on purpose: a vsAiLan loopback
+    // opponent lives in this process and can never "reconnect", so it
+    // must not open a reconnect window either.
+    if (controller.hasRemotePeer) {
+      // BUGFIX: `beginPreMatch()` calls `notifyListeners()`, which cannot
+      // run synchronously from inside `initState()` — see the identical
+      // fix and its full explanation on `LanModeScreen.initState`, the
+      // other call site. The listener registration and `peerLost` read
+      // right below stay synchronous; only the notifying call itself
+      // needs the one-frame delay.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) controller.network.beginPreMatch();
+      });
+      _netPeer = controller.network;
+      _netPeerCb = _onNetForPeer;
+      _netPeer!.addListener(_netPeerCb!);
+      _lastPeerLost = controller.network.peerLost;
+    }
+    // Warm this seat's themed sound pools before the first tap can ask
+    // for one — the cannon-preview fire/miss/reload and every place/move
+    // sound below are all themed variants (see
+    // `SoundService.warmLoadout` for why the pre-warm exists).
+    final seatLoadout = widget.isPlayer2
+        ? controller.localLoadouts[1]
+        : Loadout.of(context.read<ProfileStore>());
+    SoundService.instance.warmLoadout(
+      cannonSkinId: seatLoadout.cannonSkinId,
+      shipSkinId: seatLoadout.shipSkinId,
+      themeId: seatLoadout.themeId,
+    );
     // `_cellSize()` below falls back to a rough MediaQuery-based estimate
     // until the grid has actually been laid out at least once (its
     // RenderBox isn't available on the very first build). That first,
@@ -259,11 +316,46 @@ class _PlacementScreenState extends State<PlacementScreen>
   @override
   void dispose() {
     _peerBoardSub?.cancel();
+    if (_netPeerCb != null) _netPeer?.removeListener(_netPeerCb!);
+    _netPeer = null;
+    _netPeerCb = null;
     _previewFireCtrl.close();
     _previewReadyCtrl.close();
     _previewShotCtrl.dispose();
     _previewReloadCtrl.dispose();
     super.dispose();
+  }
+
+  /// The opponent dropped / returned while we're deploying. On a drop:
+  /// tear down any "waiting for their fleet" dialog so the reconnect
+  /// overlay can be seen, and remember our board is still owed. On their
+  /// return: re-send our fleet (the one we sent before the drop is gone
+  /// — their socket was down) and resume the wait for theirs.
+  void _onNetForPeer() {
+    if (!mounted) return;
+    final controller = context.read<GameController>();
+    if (!controller.hasRemotePeer) return;
+    final net = controller.network;
+    final lost = net.peerLost;
+    if (lost && !_lastPeerLost) {
+      // Started a drop.
+      _lastPeerLost = true;
+      // The fleet they sent before dying is from a placement that no
+      // longer exists — see `NetworkService.clearPeerBoard`.
+      net.clearPeerBoard();
+      if (_waitingForPeer) {
+        _cancelWaitingForPeer(controller, popDialog: true, keepBoard: true);
+      }
+    } else if (!lost && _lastPeerLost) {
+      // They're back.
+      _lastPeerLost = false;
+      if (_sentBoard) {
+        controller.network.sendBoard(_board);
+        _waitForPeerBoard(controller);
+      }
+    } else {
+      _lastPeerLost = lost;
+    }
   }
 
   ShipSpec? get _selectedSpec =>
@@ -325,7 +417,7 @@ class _PlacementScreenState extends State<PlacementScreen>
     }
     if (_canPlaceIgnoring(kind, spec, r, c, newHorizontal)) {
       _board.reposition(kind, r, c, newHorizontal);
-      SoundService.instance.place();
+      SoundService.instance.place(shipSkinId: _shipSkinId);
     } else {
       // Truly nowhere on the board can hold this orientation — nothing
       // was ever removed this time, so there's nothing to put back;
@@ -358,7 +450,7 @@ class _PlacementScreenState extends State<PlacementScreen>
     // either.
     if (_canPlaceIgnoring(kind, ship.spec, r, c, ship.horizontal)) {
       _board.reposition(kind, r, c, ship.horizontal);
-      SoundService.instance.place();
+      SoundService.instance.place(shipSkinId: _shipSkinId);
     } else {
       SoundService.instance.denied();
     }
@@ -431,15 +523,28 @@ class _PlacementScreenState extends State<PlacementScreen>
     // Try horizontal first, then vertical.
     if (_board.canPlace(spec, r, c, true)) {
       _board.place(spec, r, c, true);
-      SoundService.instance.place();
+      SoundService.instance.place(shipSkinId: _shipSkinId);
       setState(() => _selected = null);
     } else if (_board.canPlace(spec, r, c, false)) {
       _board.place(spec, r, c, false);
-      SoundService.instance.place();
+      SoundService.instance.place(shipSkinId: _shipSkinId);
       setState(() => _selected = null);
     } else {
       SoundService.instance.denied();
     }
+  }
+
+  /// The ship skin this seat is deploying with — the same gear rule
+  /// `_firePreviewShot` applies. Every place/move sound below is keyed by
+  /// it so each fleet slides and settles to its own audio (see
+  /// `SoundService.place` / `SoundService.shipMove`).
+  String get _shipSkinId {
+    final controller = context.read<GameController>();
+    final isLocal = controller.mode == GameMode.local;
+    final profile = context.read<ProfileStore>();
+    return isLocal
+        ? controller.localLoadouts[_seat].shipSkinId
+        : profile.shipSkinId;
   }
 
   /// Cosmetic-only preview shot at an empty deploy-grid cell — see the
@@ -468,7 +573,9 @@ class _PlacementScreenState extends State<PlacementScreen>
     final controller = context.read<GameController>();
     final isLocal = controller.mode == GameMode.local;
     final profile = context.read<ProfileStore>();
-    final loadout = isLocal ? controller.localLoadouts[_seat] : Loadout.of(profile);
+    final loadout = isLocal
+        ? controller.localLoadouts[_seat]
+        : Loadout.of(profile);
 
     SoundService.instance.cannonFire(cannonSkinId: loadout.cannonSkinId);
     _previewFireCtrl.add(null);
@@ -530,7 +637,8 @@ class _PlacementScreenState extends State<PlacementScreen>
             double angleAt(double tt) {
               final cl = tt.clamp(0.0, 1.0);
               final vx = _previewShotTo.dx - _previewShotFrom.dx;
-              final arcRate = math.pi * _previewShotArc * math.cos(cl * math.pi);
+              final arcRate =
+                  math.pi * _previewShotArc * math.cos(cl * math.pi);
               final vy = (_previewShotTo.dy - _previewShotFrom.dy) - arcRate;
               if (vx == 0 && vy == 0) return 0;
               return math.atan2(vx, -vy);
@@ -609,11 +717,7 @@ class _PlacementScreenState extends State<PlacementScreen>
 
   /// The projectile in flight — draws family artwork, legacy shell artwork,
   /// or fallback styled iron ball.
-  Widget _previewCannonball(
-    double d, {
-    FleetFamily? family,
-    String? legacyId,
-  }) {
+  Widget _previewCannonball(double d, {FleetFamily? family, String? legacyId}) {
     if (family != null) {
       final h = d / kShellBoxAspect;
       return SizedBox(
@@ -653,11 +757,7 @@ class _PlacementScreenState extends State<PlacementScreen>
           center: Alignment(-0.35, -0.4),
           radius: 0.95,
           stops: [0.0, 0.45, 1.0],
-          colors: [
-            Color(0xFFC3CBD3),
-            Color(0xFF6E7883),
-            Color(0xFF1D232A),
-          ],
+          colors: [Color(0xFFC3CBD3), Color(0xFF6E7883), Color(0xFF1D232A)],
         ),
         border: Border.all(
           color: const Color(0xFF12161B),
@@ -760,17 +860,17 @@ class _PlacementScreenState extends State<PlacementScreen>
           int startCol = 0;
           final span = kBoardSize - ship.spec.size;
           if (gridBox != null && cell != null) {
-            final dockBox = _dockKeys[ship.spec.kind]
-                ?.currentContext
-                ?.findRenderObject() as RenderBox?;
+            final dockBox =
+                _dockKeys[ship.spec.kind]?.currentContext?.findRenderObject()
+                    as RenderBox?;
             if (dockBox != null) {
-              final dockCenterGlobal =
-                  dockBox.localToGlobal(dockBox.size.center(Offset.zero));
+              final dockCenterGlobal = dockBox.localToGlobal(
+                dockBox.size.center(Offset.zero),
+              );
               final localCenter = gridBox.globalToLocal(dockCenterGlobal);
               startRow = ((localCenter.dy - cell / 2) / cell).round();
-              startCol =
-                  ((localCenter.dx - (ship.spec.size * cell) / 2) / cell)
-                      .round();
+              startCol = ((localCenter.dx - (ship.spec.size * cell) / 2) / cell)
+                  .round();
               // The TRUE dock icon center, kept at full pixel precision
               // (unlike `startRow`/`startCol` above, which round it off to
               // the nearest whole cell purely so the board model has
@@ -786,8 +886,9 @@ class _PlacementScreenState extends State<PlacementScreen>
               const dockUnit = 11.0;
               final dockW = dockUnit * ship.spec.size + 14;
               final boardW = ship.spec.size * cell - 2;
-              _pullInScales[ship.spec.kind] =
-                  boardW > 0 ? (dockW / boardW).clamp(0.35, 0.75) : 1.0;
+              _pullInScales[ship.spec.kind] = boardW > 0
+                  ? (dockW / boardW).clamp(0.35, 0.75)
+                  : 1.0;
             } else {
               // Dock icon not laid out yet (shouldn't normally happen) —
               // fall back to a rough spread by dock order so ships still
@@ -795,19 +896,21 @@ class _PlacementScreenState extends State<PlacementScreen>
               final slot = kFleet.indexWhere((s) => s.kind == ship.spec.kind);
               startCol = kFleet.length > 1
                   ? ((slot.clamp(0, kFleet.length - 1) * span) /
-                          (kFleet.length - 1))
-                      .round()
+                            (kFleet.length - 1))
+                        .round()
                   : 0;
             }
           }
           if (startCol < 0) startCol = 0;
           if (startCol > span) startCol = span;
-          _board.ships.add(PlacedShip(
-            spec: ship.spec,
-            row: startRow,
-            col: startCol,
-            horizontal: true,
-          ));
+          _board.ships.add(
+            PlacedShip(
+              spec: ship.spec,
+              row: startRow,
+              col: startCol,
+              horizontal: true,
+            ),
+          );
         }
       });
       // One frame so the off-grid start position actually paints before
@@ -844,15 +947,16 @@ class _PlacementScreenState extends State<PlacementScreen>
         // is the only other way in) keeps every ship's paint order
         // stable through the whole reshuffle, so only its position
         // actually animates.
-        final idx =
-            _board.ships.indexWhere((s) => s.spec.kind == ship.spec.kind);
+        final idx = _board.ships.indexWhere(
+          (s) => s.spec.kind == ship.spec.kind,
+        );
         if (idx == -1) {
           _board.ships.add(ship);
         } else {
           _board.ships[idx] = ship;
         }
       });
-      SoundService.instance.place();
+      SoundService.instance.place(shipSkinId: _shipSkinId);
       await Future.delayed(const Duration(milliseconds: 90));
     }
     if (mounted) setState(() => _randomizing = false);
@@ -891,6 +995,10 @@ class _PlacementScreenState extends State<PlacementScreen>
       case GameMode.hotspot:
       case GameMode.online:
       case GameMode.vsAiLan:
+        // Remember our fleet is owed to the opponent before sending it —
+        // if they drop between now and battle, a rejoin needs us to send
+        // it again (see `_onNetForPeer`).
+        _sentBoard = true;
         controller.network.sendBoard(_board);
         _waitForPeerBoard(controller);
         break;
@@ -901,7 +1009,9 @@ class _PlacementScreenState extends State<PlacementScreen>
   /// "their board was already here" and "their board arrived while we
   /// waited" behave identically.
   void _beginWithPeerBoard(
-      GameController controller, Map<String, dynamic> msg) {
+    GameController controller,
+    Map<String, dynamic> msg,
+  ) {
     final enemyBoard = Board.fromJson(
       Map<String, dynamic>.from(msg['b'] as Map),
     );
@@ -999,11 +1109,23 @@ class _PlacementScreenState extends State<PlacementScreen>
   /// too; if they already moved on to battle this arrives too late to
   /// matter and they simply play on, which is the accepted edge case for
   /// this feature (see the plan's note on `sendBoard` being fire-and-forget).
-  void _cancelWaitingForPeer(GameController controller,
-      {required bool popDialog}) {
+  ///
+  /// [keepBoard] is set when the wait is being torn down because the PEER
+  /// DROPPED rather than because the player chose to: our board is still
+  /// owed to them (it will be re-sent when they return, see
+  /// `_onNetForPeer`), so [_sentBoard] must survive, and `board_cancel` is
+  /// a no-op on a dead socket.
+  void _cancelWaitingForPeer(
+    GameController controller, {
+    required bool popDialog,
+    bool keepBoard = false,
+  }) {
     _peerBoardSub?.cancel();
     _peerBoardSub = null;
-    controller.network.sendBoardCancel();
+    if (!keepBoard) {
+      controller.network.sendBoardCancel();
+      _sentBoard = false;
+    }
     if (popDialog && mounted) {
       Navigator.of(context, rootNavigator: true).pop();
     }
@@ -1084,14 +1206,13 @@ class _PlacementScreenState extends State<PlacementScreen>
     ShipSpec spec,
     bool horizontal,
     double cell,
-  ) =>
-      dropOrigin(
-        pointerLocal: gridBox.globalToLocal(pointerGlobal),
-        flipped: widget.isPlayer2,
-        shipCells: spec.size,
-        horizontal: horizontal,
-        cell: cell,
-      );
+  ) => dropOrigin(
+    pointerLocal: gridBox.globalToLocal(pointerGlobal),
+    flipped: widget.isPlayer2,
+    shipCells: spec.size,
+    horizontal: horizontal,
+    cell: cell,
+  );
 
   double _cellSize(BuildContext context) {
     final gridBox = _gridKey.currentContext?.findRenderObject() as RenderBox?;
@@ -1131,8 +1252,11 @@ class _PlacementScreenState extends State<PlacementScreen>
               : Loadout.of(profile),
           onChanged: (lo) => isLocal
               ? controller.setLocalLoadout(_seat, lo)
-              : _equipFromGearDialog(controller, lo,
-                  announceToOpponent: announceToOpponent),
+              : _equipFromGearDialog(
+                  controller,
+                  lo,
+                  announceToOpponent: announceToOpponent,
+                ),
         ),
       ),
     );
@@ -1193,8 +1317,9 @@ class _PlacementScreenState extends State<PlacementScreen>
     // that each player sets from the GEAR button below; everywhere else
     // it's simply the device owner's own.
     final profile = context.watch<ProfileStore>();
-    final loadout =
-        isLocal ? controller.localLoadouts[_seat] : Loadout.of(profile);
+    final loadout = isLocal
+        ? controller.localLoadouts[_seat]
+        : Loadout.of(profile);
 
     final skin = loadout.shipSkin;
     // The battlefield this captain is deploying onto.
@@ -1242,416 +1367,471 @@ class _PlacementScreenState extends State<PlacementScreen>
       // hard cut behind a modal reads as a glitch. 320ms matches the
       // grid's own cross-fade below so the deck and the water land
       // together.
-      body: AnimatedContainer(
-        duration: const Duration(milliseconds: 320),
-        curve: Curves.easeOut,
-        color: theme.deck,
-        child: SafeArea(
-          // REDESIGN (Player 2 rotated perspective): rather than rotating
-          // individual pieces, the ENTIRE placement interface — header,
-          // dock tray, grid, hint — is wrapped in one RotatedBox for
-          // Player 2, exactly the same technique battle_screen.dart
-          // already uses to flip P2's half of the battle screen 180° so
-          // the players can sit across from each other. `RotatedBox` (not
-          // a cosmetic `Transform`) is what makes this safe: it applies a
-          // REAL layout+paint+hit-test transform, so every existing tap/
-          // drag coordinate calculation in this screen and in BattleGrid
-          // (which all read raw local/global offsets via
-          // `RenderBox.globalToLocal`) keeps working completely unchanged
-          // — the rotation is transparently accounted for by the render
-          // tree, not something the interaction code needs to know about.
-          // `quarterTurns: 0` for Player 1 is a no-op passthrough.
-          child: RotatedBox(
-            quarterTurns: widget.isPlayer2 ? 2 : 0,
-            child: Column(
-              children: [
-                // ---------- Navy header ----------
-                Container(
-                  width: double.infinity,
-                  color: AppColors.navy,
-                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 22),
-                  child: Column(
-                    children: [
-                      Row(
+      body: Stack(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeOut,
+            color: theme.deck,
+            child: SafeArea(
+              // REDESIGN (Player 2 rotated perspective): rather than rotating
+              // individual pieces, the ENTIRE placement interface — header,
+              // dock tray, grid, hint — is wrapped in one RotatedBox for
+              // Player 2, exactly the same technique battle_screen.dart
+              // already uses to flip P2's half of the battle screen 180° so
+              // the players can sit across from each other. `RotatedBox` (not
+              // a cosmetic `Transform`) is what makes this safe: it applies a
+              // REAL layout+paint+hit-test transform, so every existing tap/
+              // drag coordinate calculation in this screen and in BattleGrid
+              // (which all read raw local/global offsets via
+              // `RenderBox.globalToLocal`) keeps working completely unchanged
+              // — the rotation is transparently accounted for by the render
+              // tree, not something the interaction code needs to know about.
+              // `quarterTurns: 0` for Player 1 is a no-op passthrough.
+              child: RotatedBox(
+                quarterTurns: widget.isPlayer2 ? 2 : 0,
+                child: Column(
+                  children: [
+                    // ---------- Navy header ----------
+                    Container(
+                      width: double.infinity,
+                      color: AppColors.navy,
+                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 22),
+                      child: Column(
                         children: [
-                          GestureDetector(
-                            onTap: () {
-                              SoundService.instance.click();
-                              _exitPlacement(isLan, controller);
-                            },
-                            child: const Icon(
-                              Icons.arrow_back,
-                              color: AppColors.cream,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              'Deploy your ships',
-                              style: AppText.title(size: 24),
-                            ),
-                          ),
-                          // Deployment is the last moment before the guns
-                          // are live, and it's where you can see your
-                          // fleet laid out — so it's the natural place to
-                          // change what you're taking in, whoever you're
-                          // playing: pass-and-play, vs the AI, or a
-                          // hotspot/online match. In pass-and-play it
-                          // writes to this seat's own loadout; everywhere
-                          // else it re-equips your profile, additionally
-                          // telling the opponent when there's a live one
-                          // to tell (see `_equipFromGearDialog`).
-                          if (isLocal || isVsAI || isLan) ...[
-                            _GearButton(
-                              color: loadout.shipSkin.hull,
-                              onTap: () => _openGear(
-                                controller,
-                                isLocal: isLocal,
-                                announceToOpponent: isLan,
+                          Row(
+                            children: [
+                              GestureDetector(
+                                onTap: () {
+                                  SoundService.instance.click();
+                                  _exitPlacement(isLan, controller);
+                                },
+                                child: const Icon(
+                                  Icons.arrow_back,
+                                  color: AppColors.cream,
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                          ],
-                          if (controller.hasRemotePeer) ...[
-                            const MatchChatButton(size: 36),
-                            const SizedBox(width: 8),
-                          ],
-                          _ExitButton(
-                              onTap: () => _exitPlacement(isLan, controller)),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        '$playerLabel — drag to move and tap to rotate, or try random placement',
-                        textAlign: TextAlign.center,
-                        style: AppText.body(
-                          size: 12,
-                          color: AppColors.cream.withValues(alpha: 0.75),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          NeonButton(
-                            label: 'RANDOM',
-                            icon: Icons.shuffle,
-                            color: AppColors.blue,
-                            compact: true,
-                            onPressed: _randomizing ? null : _randomize,
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Deploy your ships',
+                                  style: AppText.title(size: 24),
+                                ),
+                              ),
+                              // Deployment is the last moment before the guns
+                              // are live, and it's where you can see your
+                              // fleet laid out — so it's the natural place to
+                              // change what you're taking in, whoever you're
+                              // playing: pass-and-play, vs the AI, or a
+                              // hotspot/online match. In pass-and-play it
+                              // writes to this seat's own loadout; everywhere
+                              // else it re-equips your profile, additionally
+                              // telling the opponent when there's a live one
+                              // to tell (see `_equipFromGearDialog`).
+                              if (isLocal || isVsAI || isLan) ...[
+                                _GearButton(
+                                  color: loadout.shipSkin.hull,
+                                  onTap: () => _openGear(
+                                    controller,
+                                    isLocal: isLocal,
+                                    announceToOpponent: isLan,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                              if (controller.hasRemotePeer) ...[
+                                const MatchChatButton(size: 36),
+                                const SizedBox(width: 8),
+                              ],
+                              _ExitButton(
+                                onTap: () => _exitPlacement(isLan, controller),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 12),
-                          NeonButton(
-                            label: _allPlaced
-                                ? 'SAVE'
-                                : 'SAVE  ${_board.ships.length}/5',
-                            icon: Icons.bolt,
-                            color: _allPlaced
-                                ? AppColors.seafoam
-                                : AppColors.inkSoft,
-                            onPressed:
-                                (_allPlaced && !_randomizing && !_waitingForPeer)
+                          const SizedBox(height: 6),
+                          Text(
+                            '$playerLabel — drag to move and tap to rotate, or try random placement',
+                            textAlign: TextAlign.center,
+                            style: AppText.body(
+                              size: 12,
+                              color: AppColors.cream.withValues(alpha: 0.75),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              NeonButton(
+                                label: 'RANDOM',
+                                icon: Icons.shuffle,
+                                color: AppColors.blue,
+                                compact: true,
+                                onPressed: _randomizing ? null : _randomize,
+                              ),
+                              const SizedBox(width: 12),
+                              NeonButton(
+                                label: _allPlaced
+                                    ? 'SAVE'
+                                    : 'SAVE  ${_board.ships.length}/5',
+                                icon: Icons.bolt,
+                                color: _allPlaced
+                                    ? AppColors.seafoam
+                                    : AppColors.inkSoft,
+                                onPressed:
+                                    (_allPlaced &&
+                                        !_randomizing &&
+                                        !_waitingForPeer)
                                     ? _save
                                     : null,
+                              ),
+                            ],
                           ),
                         ],
                       ),
-                    ],
-                  ),
-                ),
-
-                // ---------- Dock tray (draggable ship icons) ----------
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 320),
-                  curve: Curves.easeOut,
-                  height: _dockH,
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: theme.deckAccent,
-                    border: const Border(
-                      bottom: BorderSide(color: AppColors.outline, width: 3),
                     ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      for (final spec in kFleet)
-                        _DockShip(
-                          key: _dockKeys[spec.kind],
-                          spec: spec,
-                          skin: skin,
-                          cell: cellSize,
-                          placed: _board.shipOfKind(spec.kind) != null,
-                          selected: _selected == spec.kind,
-                          rotated: widget.isPlayer2,
-                          onTap: () {
-                            SoundService.instance.click();
-                            setState(
-                              () => _selected = _selected == spec.kind
-                                  ? null
-                                  : spec.kind,
-                            );
-                          },
-                        ),
-                    ],
-                  ),
-                ),
 
-                // ---------- Grid (drop target) + cannon overhang ----------
-                // The grid now fills the whole Expanded region (battle does
-                // the same per-half) instead of the old 16px-padded, 440px-
-                // capped box. The cannon is NOT a separate 92px strip that
-                // steals height from the grid — it is overlaid so only its
-                // pointy muzzle peeks onto the deck, exactly like the battle
-                // screen's parked cannon. That fixes two things at once:
-                // the grid is as large as in battle, and every family's
-                // barrel tip is visible on the deck even when parked at the
-                // back (stubby guns used to hide completely behind the old
-                // bay's deck strip).
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final w = constraints.maxWidth;
-                      final h = constraints.maxHeight;
-                      final gridSide = math.min(w, h);
-                      final gridLeft = (w - gridSide) / 2;
-                      final gridTop = (h - gridSide) / 2;
-                      final gridBottom = gridTop + gridSide;
-                      final cannonSize = gridSide * 0.24;
-                      final scale =
-                          CannonWidget.gameplaySizeScaleOf(loadout.cannonSkin);
-                      final renderSize = cannonSize * scale;
-                      final muzzleFrac = CannonWidget.muzzleFractionOf(
-                          loadout.cannonSkin);
-                      final cannonCenterY =
-                          gridBottom + renderSize * (muzzleFrac - 0.07);
-                      // Cache this build's geometry for the cannon
-                      // preview (see `_firePreviewShot`) — plain field
-                      // writes, not `setState`: nothing needs to repaint
-                      // over this, it's just bookkeeping for the NEXT
-                      // gesture that reads it.
-                      _gridLeftPx = gridLeft;
-                      _gridTopPx = gridTop;
-                      _gridSidePx = gridSide;
-                      _cannonCenterXPx = w / 2;
-                      _cannonCenterYPx = cannonCenterY;
-                      _cannonRenderSizePx = renderSize;
-                      _cannonMuzzleFrac = muzzleFrac;
-                      _cannonReload = Duration(
-                        milliseconds: (kCooldownSeconds *
-                                1000 *
-                                loadout.cannonSkin.cooldownFactor)
-                            .round(),
-                      );
-                      return Stack(
-                        key: _stackKey,
-                        clipBehavior: Clip.none,
+                    // ---------- Dock tray (draggable ship icons) ----------
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 320),
+                      curve: Curves.easeOut,
+                      height: _dockH,
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: theme.deckAccent,
+                        border: const Border(
+                          bottom: BorderSide(
+                            color: AppColors.outline,
+                            width: 3,
+                          ),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          Positioned(
-                            left: gridLeft,
-                            top: gridTop,
-                            width: gridSide,
-                            height: gridSide,
-                            child: DragTarget<({ShipKind kind, bool horizontal})>(
-                              onWillAcceptWithDetails: (_) => true,
-                              onMove: (details) {
-                                final spec = kFleet.firstWhere(
-                                  (s) => s.kind == details.data.kind,
-                                );
-                                final gridBox =
-                                    _gridKey.currentContext?.findRenderObject()
-                                        as RenderBox?;
-                                if (gridBox == null) return;
-                                final cell = gridBox.size.width / kBoardSize;
-                                final local = _dropOrigin(
-                                    gridBox,
-                                    details.offset,
-                                    spec,
-                                    details.data.horizontal,
-                                    cell);
-                                var c = (local.dx / cell).floor();
-                                var r = (local.dy / cell).floor();
-                                final hh = details.data.horizontal;
-                                if (hh && c + spec.size > kBoardSize) {
-                                  c = kBoardSize - spec.size;
-                                }
-                                if (!hh && r + spec.size > kBoardSize) {
-                                  r = kBoardSize - spec.size;
-                                }
-                                r = r.clamp(0, kBoardSize - 1);
-                                c = c.clamp(0, kBoardSize - 1);
-                                setState(() {
-                                  _previewShip = PlacedShip(
-                                    spec: spec,
-                                    row: r,
-                                    col: c,
-                                    horizontal: hh,
-                                  );
-                                  _previewValid =
-                                      _board.canPlace(spec, r, c, hh);
-                                });
-                              },
-                              onLeave: (_) =>
-                                  setState(() => _previewShip = null),
-                              onAcceptWithDetails: (details) {
-                                final spec = kFleet.firstWhere(
-                                  (s) => s.kind == details.data.kind,
-                                );
-                                final gridBox = _gridKey.currentContext
-                                        ?.findRenderObject() as RenderBox?;
-                                if (gridBox == null) return;
-                                final cell = gridBox.size.width / kBoardSize;
-                                final local = _dropOrigin(
-                                    gridBox,
-                                    details.offset,
-                                    spec,
-                                    details.data.horizontal,
-                                    cell);
-                                var c = (local.dx / cell).floor();
-                                var r = (local.dy / cell).floor();
-                                final hh = details.data.horizontal;
-                                if (hh && c + spec.size > kBoardSize) {
-                                  c = kBoardSize - spec.size;
-                                }
-                                if (!hh && r + spec.size > kBoardSize) {
-                                  r = kBoardSize - spec.size;
-                                }
-                                r = r.clamp(0, kBoardSize - 1);
-                                c = c.clamp(0, kBoardSize - 1);
-                                if (_board.canPlace(spec, r, c, hh)) {
-                                  _board.place(spec, r, c, hh);
-                                  SoundService.instance.place();
-                                  setState(() {
-                                    _selected = null;
-                                    _previewShip = null;
-                                  });
-                                } else {
-                                  SoundService.instance.denied();
-                                  setState(() => _previewShip = null);
-                                }
-                              },
-                              builder: (context, candidates, rejected) {
-                                return Container(
-                                  key: _gridKey,
-                                  // Cross-faded on the theme id AND the hull skin
-                                  // id so switching EITHER battlefield OR hull in
-                                  // the GEAR dialog dissolves from one board to
-                                  // the next — the grid paints the placed ships
-                                  // itself, so a hull-only change used to just
-                                  // pop the new ships in mid-frame. A family
-                                  // board/hull is real artwork rather than a
-                                  // palette, so there is nothing to tween between
-                                  // — two boards briefly stacked and faded is the
-                                  // only honest way to make either change smooth.
-                                  //
-                                  // The key stays on the Container OUTSIDE this,
-                                  // so the drop maths keeps measuring one stable
-                                  // box while the switch is in flight.
-                                  child: AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 320),
-                                    child: BattleGrid(
-                                      key: ValueKey('${theme.id}::${skin.id}'),
-                                      shots: List.generate(
-                                        kBoardSize,
-                                        (_) => List.filled(kBoardSize, 0),
-                                      ),
-                                      ships: _board.ships,
-                                      skin: skin,
-                                      cellColor: theme.grid,
-                                      glowColor: theme.accent,
-                                      gridLineColor: theme.gridLine,
-                                      boardFamily: boardFamily,
-                                      previewShip: _previewShip,
-                                      previewValid: _previewValid,
-                                      onTapCell:
-                                          _randomizing ? null : _onGridTap,
-                                      onShipTap:
-                                          _randomizing ? null : _rotateShip,
-                                      onShipDragEnd:
-                                          _randomizing ? null : _moveShip,
-                                      onShipDragUpdate: _onShipDragPreview,
-                                      animateEntrance: _entranceDeal,
-                                      pullInScales: _pullInScales,
-                                      pullInFrom: _pullInFrom,
-                                      clip: false,
-                                      aimCell: _previewAimCell,
-                                      cannonSkinId: loadout.cannonSkinId,
-                                      recentEvents: _previewEvents,
-                                    ),
-                                  ),
+                          for (final spec in kFleet)
+                            _DockShip(
+                              key: _dockKeys[spec.kind],
+                              spec: spec,
+                              skin: skin,
+                              cell: cellSize,
+                              placed: _board.shipOfKind(spec.kind) != null,
+                              selected: _selected == spec.kind,
+                              rotated: widget.isPlayer2,
+                              onTap: () {
+                                SoundService.instance.click();
+                                setState(
+                                  () => _selected = _selected == spec.kind
+                                      ? null
+                                      : spec.kind,
                                 );
                               },
                             ),
-                          ),
-                          // Cannon — decorative only, like the battle screen's
-                          // parked gun. Overlaps the grid's bottom edge so
-                          // only the pointy muzzle peeks onto the deck (same
-                          // 0.07 overlap the battle screen uses). In the old
-                          // layout this was a separate 92px strip below the
-                          // grid that shrank the board.
-                          Positioned(
-                            left: w / 2 - renderSize / 2,
-                            top: cannonCenterY - renderSize / 2,
-                            width: renderSize,
-                            height: renderSize,
-                            child: IgnorePointer(
-                              child: AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 320),
-                                transitionBuilder: (child, anim) =>
-                                    FadeTransition(
-                                  opacity: anim,
-                                  child: ScaleTransition(
-                                    scale:
-                                        Tween(begin: 0.86, end: 1.0).animate(
-                                      CurvedAnimation(
-                                        parent: anim,
-                                        curve: Curves.easeOut,
+                        ],
+                      ),
+                    ),
+
+                    // ---------- Grid (drop target) + cannon overhang ----------
+                    // The grid now fills the whole Expanded region (battle does
+                    // the same per-half) instead of the old 16px-padded, 440px-
+                    // capped box. The cannon is NOT a separate 92px strip that
+                    // steals height from the grid — it is overlaid so only its
+                    // pointy muzzle peeks onto the deck, exactly like the battle
+                    // screen's parked cannon. That fixes two things at once:
+                    // the grid is as large as in battle, and every family's
+                    // barrel tip is visible on the deck even when parked at the
+                    // back (stubby guns used to hide completely behind the old
+                    // bay's deck strip).
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final w = constraints.maxWidth;
+                          final h = constraints.maxHeight;
+                          final gridSide = math.min(w, h);
+                          final gridLeft = (w - gridSide) / 2;
+                          final gridTop = (h - gridSide) / 2;
+                          final gridBottom = gridTop + gridSide;
+                          final cannonSize = gridSide * 0.24;
+                          final scale = CannonWidget.gameplaySizeScaleOf(
+                            loadout.cannonSkin,
+                          );
+                          final renderSize = cannonSize * scale;
+                          final muzzleFrac = CannonWidget.muzzleFractionOf(
+                            loadout.cannonSkin,
+                          );
+                          final cannonCenterY =
+                              gridBottom + renderSize * (muzzleFrac - 0.07);
+                          // Cache this build's geometry for the cannon
+                          // preview (see `_firePreviewShot`) — plain field
+                          // writes, not `setState`: nothing needs to repaint
+                          // over this, it's just bookkeeping for the NEXT
+                          // gesture that reads it.
+                          _gridLeftPx = gridLeft;
+                          _gridTopPx = gridTop;
+                          _gridSidePx = gridSide;
+                          _cannonCenterXPx = w / 2;
+                          _cannonCenterYPx = cannonCenterY;
+                          _cannonRenderSizePx = renderSize;
+                          _cannonMuzzleFrac = muzzleFrac;
+                          _cannonReload = Duration(
+                            milliseconds:
+                                (kCooldownSeconds *
+                                        1000 *
+                                        loadout.cannonSkin.cooldownFactor)
+                                    .round(),
+                          );
+                          return Stack(
+                            key: _stackKey,
+                            clipBehavior: Clip.none,
+                            children: [
+                              Positioned(
+                                left: gridLeft,
+                                top: gridTop,
+                                width: gridSide,
+                                height: gridSide,
+                                child: DragTarget<({ShipKind kind, bool horizontal})>(
+                                  onWillAcceptWithDetails: (_) => true,
+                                  onMove: (details) {
+                                    final spec = kFleet.firstWhere(
+                                      (s) => s.kind == details.data.kind,
+                                    );
+                                    final gridBox =
+                                        _gridKey.currentContext
+                                                ?.findRenderObject()
+                                            as RenderBox?;
+                                    if (gridBox == null) return;
+                                    final cell =
+                                        gridBox.size.width / kBoardSize;
+                                    final local = _dropOrigin(
+                                      gridBox,
+                                      details.offset,
+                                      spec,
+                                      details.data.horizontal,
+                                      cell,
+                                    );
+                                    var c = (local.dx / cell).floor();
+                                    var r = (local.dy / cell).floor();
+                                    final hh = details.data.horizontal;
+                                    if (hh && c + spec.size > kBoardSize) {
+                                      c = kBoardSize - spec.size;
+                                    }
+                                    if (!hh && r + spec.size > kBoardSize) {
+                                      r = kBoardSize - spec.size;
+                                    }
+                                    r = r.clamp(0, kBoardSize - 1);
+                                    c = c.clamp(0, kBoardSize - 1);
+                                    setState(() {
+                                      _previewShip = PlacedShip(
+                                        spec: spec,
+                                        row: r,
+                                        col: c,
+                                        horizontal: hh,
+                                      );
+                                      _previewValid = _board.canPlace(
+                                        spec,
+                                        r,
+                                        c,
+                                        hh,
+                                      );
+                                    });
+                                  },
+                                  onLeave: (_) =>
+                                      setState(() => _previewShip = null),
+                                  onAcceptWithDetails: (details) {
+                                    final spec = kFleet.firstWhere(
+                                      (s) => s.kind == details.data.kind,
+                                    );
+                                    final gridBox =
+                                        _gridKey.currentContext
+                                                ?.findRenderObject()
+                                            as RenderBox?;
+                                    if (gridBox == null) return;
+                                    final cell =
+                                        gridBox.size.width / kBoardSize;
+                                    final local = _dropOrigin(
+                                      gridBox,
+                                      details.offset,
+                                      spec,
+                                      details.data.horizontal,
+                                      cell,
+                                    );
+                                    var c = (local.dx / cell).floor();
+                                    var r = (local.dy / cell).floor();
+                                    final hh = details.data.horizontal;
+                                    if (hh && c + spec.size > kBoardSize) {
+                                      c = kBoardSize - spec.size;
+                                    }
+                                    if (!hh && r + spec.size > kBoardSize) {
+                                      r = kBoardSize - spec.size;
+                                    }
+                                    r = r.clamp(0, kBoardSize - 1);
+                                    c = c.clamp(0, kBoardSize - 1);
+                                    if (_board.canPlace(spec, r, c, hh)) {
+                                      _board.place(spec, r, c, hh);
+                                      SoundService.instance.place(
+                                        shipSkinId: skin.id,
+                                      );
+                                      setState(() {
+                                        _selected = null;
+                                        _previewShip = null;
+                                      });
+                                    } else {
+                                      SoundService.instance.denied();
+                                      setState(() => _previewShip = null);
+                                    }
+                                  },
+                                  builder: (context, candidates, rejected) {
+                                    return Container(
+                                      key: _gridKey,
+                                      // Cross-faded on the theme id AND the hull skin
+                                      // id so switching EITHER battlefield OR hull in
+                                      // the GEAR dialog dissolves from one board to
+                                      // the next — the grid paints the placed ships
+                                      // itself, so a hull-only change used to just
+                                      // pop the new ships in mid-frame. A family
+                                      // board/hull is real artwork rather than a
+                                      // palette, so there is nothing to tween between
+                                      // — two boards briefly stacked and faded is the
+                                      // only honest way to make either change smooth.
+                                      //
+                                      // The key stays on the Container OUTSIDE this,
+                                      // so the drop maths keeps measuring one stable
+                                      // box while the switch is in flight.
+                                      child: AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 320,
+                                        ),
+                                        child: BattleGrid(
+                                          key: ValueKey(
+                                            '${theme.id}::${skin.id}',
+                                          ),
+                                          shots: List.generate(
+                                            kBoardSize,
+                                            (_) => List.filled(kBoardSize, 0),
+                                          ),
+                                          ships: _board.ships,
+                                          skin: skin,
+                                          cellColor: theme.grid,
+                                          glowColor: theme.accent,
+                                          gridLineColor: theme.gridLine,
+                                          boardFamily: boardFamily,
+                                          previewShip: _previewShip,
+                                          previewValid: _previewValid,
+                                          onTapCell: _randomizing
+                                              ? null
+                                              : _onGridTap,
+                                          onShipTap: _randomizing
+                                              ? null
+                                              : _rotateShip,
+                                          onShipDragStart: _randomizing
+                                              ? null
+                                              : (kind) => SoundService.instance
+                                                    .shipMove(
+                                                      shipSkinId: skin.id,
+                                                    ),
+                                          onShipDragEnd: _randomizing
+                                              ? null
+                                              : _moveShip,
+                                          onShipDragUpdate: _onShipDragPreview,
+                                          animateEntrance: _entranceDeal,
+                                          pullInScales: _pullInScales,
+                                          pullInFrom: _pullInFrom,
+                                          clip: false,
+                                          aimCell: _previewAimCell,
+                                          cannonSkinId: loadout.cannonSkinId,
+                                          recentEvents: _previewEvents,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                              // Cannon — decorative only, like the battle screen's
+                              // parked gun. Overlaps the grid's bottom edge so
+                              // only the pointy muzzle peeks onto the deck (same
+                              // 0.07 overlap the battle screen uses). In the old
+                              // layout this was a separate 92px strip below the
+                              // grid that shrank the board.
+                              Positioned(
+                                left: w / 2 - renderSize / 2,
+                                top: cannonCenterY - renderSize / 2,
+                                width: renderSize,
+                                height: renderSize,
+                                child: IgnorePointer(
+                                  child: AnimatedSwitcher(
+                                    duration: const Duration(milliseconds: 320),
+                                    transitionBuilder: (child, anim) =>
+                                        FadeTransition(
+                                          opacity: anim,
+                                          child: ScaleTransition(
+                                            scale: Tween(begin: 0.86, end: 1.0)
+                                                .animate(
+                                                  CurvedAnimation(
+                                                    parent: anim,
+                                                    curve: Curves.easeOut,
+                                                  ),
+                                                ),
+                                            child: child,
+                                          ),
+                                        ),
+                                    // The reload ring has to redraw as the
+                                    // clock runs, and nothing else on this
+                                    // screen ticks — so the cannon listens to
+                                    // it directly rather than the whole
+                                    // deploy screen rebuilding 60 times a
+                                    // second behind it.
+                                    child: AnimatedBuilder(
+                                      key: ValueKey(loadout.cannonSkinId),
+                                      animation: _previewReloadCtrl,
+                                      builder: (context, _) => CannonWidget(
+                                        skin: loadout.cannonSkin,
+                                        cooldownFraction:
+                                            _previewReloadCtrl.value,
+                                        size: renderSize,
+                                        fireTrigger: _previewFireCtrl.stream,
+                                        readyTrigger: _previewReadyCtrl.stream,
                                       ),
                                     ),
-                                    child: child,
-                                  ),
-                                ),
-                                // The reload ring has to redraw as the
-                                // clock runs, and nothing else on this
-                                // screen ticks — so the cannon listens to
-                                // it directly rather than the whole
-                                // deploy screen rebuilding 60 times a
-                                // second behind it.
-                                child: AnimatedBuilder(
-                                  key: ValueKey(loadout.cannonSkinId),
-                                  animation: _previewReloadCtrl,
-                                  builder: (context, _) => CannonWidget(
-                                    skin: loadout.cannonSkin,
-                                    cooldownFraction: _previewReloadCtrl.value,
-                                    size: renderSize,
-                                    fireTrigger: _previewFireCtrl.stream,
-                                    readyTrigger: _previewReadyCtrl.stream,
                                   ),
                                 ),
                               ),
-                            ),
-                          ),
-                          // The preview shell itself, arcing from the
-                          // cannon above to whichever empty cell was last
-                          // tapped — see `_firePreviewShot`. Only mounted
-                          // while a shot is actually in flight.
-                          if (_previewAimCell != null)
-                            _previewShotLayer(loadout.cannonSkin),
-                        ],
-                      );
-                    },
-                  ),
+                              // The preview shell itself, arcing from the
+                              // cannon above to whichever empty cell was last
+                              // tapped — see `_firePreviewShot`. Only mounted
+                              // while a shot is actually in flight.
+                              if (_previewAimCell != null)
+                                _previewShotLayer(loadout.cannonSkin),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
-        ),
+          // Opponent dropped mid-deploy: the same reconnect window a
+          // battle drop gets, mapped onto this screen. Always mounted so
+          // it can react to `NetworkService` on its own (this screen's
+          // build only watches the controller); it renders as nothing
+          // unless the peer is actually lost/gone.
+          ReconnectOverlay(onAbandon: _abandonPeer),
+        ],
       ),
     );
+  }
+
+  /// The opponent never came back (see the reconnect overlay) — the
+  /// pre-battle match is void, so drop the connection and leave the flow
+  /// entirely, mirroring the battle screen's `_abandon`.
+  void _abandonPeer() {
+    final controller = context.read<GameController>();
+    if (controller.hasRemotePeer) controller.network.stop();
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   final GlobalKey _gridKey = GlobalKey();
@@ -1706,9 +1886,10 @@ class _DockShip extends StatelessWidget {
       transitionBuilder: (child, anim) => FadeTransition(
         opacity: anim,
         child: ScaleTransition(
-          scale: Tween(begin: 0.85, end: 1.0).animate(
-            CurvedAnimation(parent: anim, curve: Curves.easeOut),
-          ),
+          scale: Tween(
+            begin: 0.85,
+            end: 1.0,
+          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOut)),
           child: child,
         ),
       ),
@@ -1743,6 +1924,10 @@ class _DockShip extends StatelessWidget {
 
     return Draggable<({ShipKind kind, bool horizontal})>(
       data: (kind: spec.kind, horizontal: true),
+      // PICKUP TICK: the moment this ship leaves the dock it plays its
+      // own skin's move sound — the lighter partner to the drop's
+      // `place` sound (see `SoundService.shipMove`).
+      onDragStarted: () => SoundService.instance.shipMove(shipSkinId: skin.id),
       // BUGFIX (placement controls): the grid's `onMove`/`onAcceptWithDetails`
       // (below) read `details.offset` — which Flutter documents as the
       // pointer's raw global position, not the feedback widget's
@@ -1898,8 +2083,9 @@ class _GearButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ink =
-        color.computeLuminance() > 0.5 ? AppColors.outline : AppColors.cream;
+    final ink = color.computeLuminance() > 0.5
+        ? AppColors.outline
+        : AppColors.cream;
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -1953,14 +2139,18 @@ class _GearDialogState extends State<_GearDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final ships =
-        Catalog.shipSkins.where((s) => widget.profile.ownsShip(s.id)).toList();
-    final cannons =
-        Catalog.cannonSkins.where((c) => widget.profile.ownsCannon(c.id)).toList();
-    final themes =
-        Catalog.gameplayThemes.where((t) => widget.profile.ownsTheme(t.id)).toList();
-    final sets =
-        FleetFamilies.all.where((f) => widget.profile.ownsFamilySet(f)).toList();
+    final ships = Catalog.shipSkins
+        .where((s) => widget.profile.ownsShip(s.id))
+        .toList();
+    final cannons = Catalog.cannonSkins
+        .where((c) => widget.profile.ownsCannon(c.id))
+        .toList();
+    final themes = Catalog.gameplayThemes
+        .where((t) => widget.profile.ownsTheme(t.id))
+        .toList();
+    final sets = FleetFamilies.all
+        .where((f) => widget.profile.ownsFamilySet(f))
+        .toList();
 
     return Dialog(
       backgroundColor: Colors.transparent,
@@ -1975,8 +2165,10 @@ class _GearDialogState extends State<_GearDialog> {
             Row(
               children: [
                 Expanded(
-                  child: Text('${widget.seatLabel} GEAR',
-                      style: AppText.title(size: 18)),
+                  child: Text(
+                    '${widget.seatLabel} GEAR',
+                    style: AppText.title(size: 18),
+                  ),
                 ),
                 GestureDetector(
                   onTap: () {
@@ -1988,9 +2180,13 @@ class _GearDialogState extends State<_GearDialog> {
               ],
             ),
             const SizedBox(height: 2),
-            Text('EVERYTHING THE SHIPYARD HAS UNLOCKED — PICK YOURS',
-                style: AppText.label(
-                    size: 9, color: AppColors.cream.withValues(alpha: 0.7))),
+            Text(
+              'EVERYTHING THE SHIPYARD HAS UNLOCKED — PICK YOURS',
+              style: AppText.label(
+                size: 9,
+                color: AppColors.cream.withValues(alpha: 0.7),
+              ),
+            ),
             const SizedBox(height: 14),
             Flexible(
               child: ListView(
@@ -2006,7 +2202,8 @@ class _GearDialogState extends State<_GearDialog> {
                           label: s.name.toUpperCase(),
                           selected: _lo.shipSkinId == s.id,
                           onTap: () => _set(
-                              _lo.copyWith(shipSkinId: s.id, shipChosen: true)),
+                            _lo.copyWith(shipSkinId: s.id, shipChosen: true),
+                          ),
                         ),
                     ],
                   ),
@@ -2063,16 +2260,19 @@ class _GearDialogState extends State<_GearDialog> {
                           _setChip(
                             family: family,
                             label: family.fleetName.toUpperCase(),
-                            selected: _lo.shipChosen &&
+                            selected:
+                                _lo.shipChosen &&
                                 _lo.shipSkinId == 'f_${family.key}' &&
                                 _lo.cannonSkinId == 'f_${family.key}' &&
                                 _lo.themeId == 'f_${family.key}',
-                            onTap: () => _set(_lo.copyWith(
-                              shipSkinId: 'f_${family.key}',
-                              shipChosen: true,
-                              cannonSkinId: 'f_${family.key}',
-                              themeId: 'f_${family.key}',
-                            )),
+                            onTap: () => _set(
+                              _lo.copyWith(
+                                shipSkinId: 'f_${family.key}',
+                                shipChosen: true,
+                                cannonSkinId: 'f_${family.key}',
+                                themeId: 'f_${family.key}',
+                              ),
+                            ),
                           ),
                       ],
                     ),
@@ -2094,9 +2294,9 @@ class _GearDialogState extends State<_GearDialog> {
   }
 
   Widget _section(String title) => Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: Text(title, style: AppText.label(size: 10)),
-      );
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Text(title, style: AppText.label(size: 10)),
+  );
 
   Widget _hullChip({
     required ShipSkin skin,
@@ -2132,11 +2332,13 @@ class _GearDialogState extends State<_GearDialog> {
               ),
             ),
             const SizedBox(height: 3),
-            Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: AppText.label(size: 8)),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: AppText.label(size: 8),
+            ),
           ],
         ),
       ),
@@ -2180,11 +2382,13 @@ class _GearDialogState extends State<_GearDialog> {
               ),
             ),
             const SizedBox(height: 3),
-            Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: AppText.label(size: 8)),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: AppText.label(size: 8),
+            ),
           ],
         ),
       ),
@@ -2234,11 +2438,13 @@ class _GearDialogState extends State<_GearDialog> {
               ),
             ),
             const SizedBox(height: 3),
-            Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: AppText.label(size: 8)),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: AppText.label(size: 8),
+            ),
           ],
         ),
       ),
@@ -2303,11 +2509,15 @@ class _ArrowScrollerState extends State<_ArrowScroller> {
   void _nudge(double delta) {
     if (!_controller.hasClients) return;
     SoundService.instance.click();
-    final target = (_controller.offset + delta)
-        .clamp(_controller.position.minScrollExtent,
-            _controller.position.maxScrollExtent);
-    _controller.animateTo(target,
-        duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
+    final target = (_controller.offset + delta).clamp(
+      _controller.position.minScrollExtent,
+      _controller.position.maxScrollExtent,
+    );
+    _controller.animateTo(
+      target,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+    );
   }
 
   @override
@@ -2330,26 +2540,24 @@ class _ArrowScrollerState extends State<_ArrowScroller> {
             children: widget.children,
           ),
           if (_canLeft)
-            Positioned(
-              left: 0,
-              child: _edgeFade(alignRight: false),
-            ),
+            Positioned(left: 0, child: _edgeFade(alignRight: false)),
           if (_canRight)
-            Positioned(
-              right: 0,
-              child: _edgeFade(alignRight: true),
-            ),
+            Positioned(right: 0, child: _edgeFade(alignRight: true)),
           if (_canLeft)
             Positioned(
               left: -6,
               child: _arrowButton(
-                  icon: Icons.chevron_left, onTap: () => _nudge(-110)),
+                icon: Icons.chevron_left,
+                onTap: () => _nudge(-110),
+              ),
             ),
           if (_canRight)
             Positioned(
               right: -6,
               child: _arrowButton(
-                  icon: Icons.chevron_right, onTap: () => _nudge(110)),
+                icon: Icons.chevron_right,
+                onTap: () => _nudge(110),
+              ),
             ),
         ],
       ),

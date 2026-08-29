@@ -92,6 +92,16 @@ Future<void> main() async {
   // cannot delay the first menu frame or the first music request.
   unawaited(SoundService.instance.init());
 
+  // Pre-warm the equipped loadout's themed pools so the very first themed
+  // sound (fire/hit/miss/reload/sunk/ship move) is never building its
+  // players on the gameplay hot path — see `SoundService.warmLoadout`.
+  // Synchronous: it only queues each pool's own async warmup.
+  SoundService.instance.warmLoadout(
+    cannonSkinId: profile.cannonSkinId,
+    shipSkinId: profile.shipSkinId,
+    themeId: profile.gameplayThemeId,
+  );
+
   final network = NetworkService();
   final controller = GameController(
     profile: profile,

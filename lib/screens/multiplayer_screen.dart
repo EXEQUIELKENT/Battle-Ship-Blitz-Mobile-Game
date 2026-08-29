@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
+import '../models/game_models.dart';
 import '../services/game_controller.dart';
 import '../services/network_service.dart';
 import '../services/online_service.dart';
@@ -18,6 +19,7 @@ import 'battle_screen.dart';
 import 'friends_screen.dart';
 import 'lan_mode_screen.dart';
 import 'matchmaking_screen.dart';
+import 'placement_screen.dart';
 
 /// Hotspot (LAN) + Online matchmaking lobby — cartoon style.
 class MultiplayerScreen extends StatefulWidget {
@@ -89,9 +91,9 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   /// screen is what actually sets `controller.mode`/`lanBattleMode` and
   /// moves on to placement once the vote locks in.
   void _enterModeVote(GameMode mode) {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => LanModeScreen(mode: mode)),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => LanModeScreen(mode: mode)));
   }
 
   /// Opens a hotspot room and waits for someone on the same network to
@@ -155,6 +157,18 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
           _resumeMatch(snapshot);
           return;
         }
+        // Pre-battle rejoin: the survivor's match is still on the mode
+        // VOTE or the DEPLOY screen (no battle snapshot exists yet). The
+        // `prematch` signal tells us which, so we rebuild that same state
+        // instead of starting a fresh lobby match.
+        final preSignal = net.takePreMatchSignal();
+        if (preSignal != null) {
+          timeout.cancel();
+          net.removeListener(listener);
+          setState(() => _connecting = false);
+          _enterPreMatch(preSignal);
+          return;
+        }
         // `joiningResumable` keeps us from racing off into the new-match
         // flow while the snapshot is still in flight.
         if (net.connected && !net.joiningResumable) {
@@ -170,8 +184,10 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         net.removeListener(listener);
         if (!mounted) return;
         setState(() => _connecting = false);
-        _toast('Connected, but never heard back from the host. Try again.',
-            type: AppNoticeType.error);
+        _toast(
+          'Connected, but never heard back from the host. Try again.',
+          type: AppNoticeType.error,
+        );
       });
     } else {
       setState(() => _connecting = false);
@@ -216,8 +232,10 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
       net.removeListener(listener);
       if (!mounted) return;
       setState(() => _connecting = false);
-      _toast('No room found with that code — check it and try again.',
-          type: AppNoticeType.error);
+      _toast(
+        'No room found with that code — check it and try again.',
+        type: AppNoticeType.error,
+      );
     });
     listener = () {
       final room = net.roomByCode(typed, myIps: net.localIps);
@@ -242,9 +260,42 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     // see NetworkService.setMatchHost.
     net.setMatchHost(snapshot['youAreHost'] == true);
     controller.restoreFromSnapshot(snapshot);
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const BattleScreen()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const BattleScreen()));
+  }
+
+  /// Rebuilds the interrupted PRE-battle match — the opponent dropped
+  /// while we were still voting or deploying, and the survivor's
+  /// `prematch` signal tells us which. Restores the fixed host role (a
+  /// returning player always arrives as the joiner; if they were the
+  /// host, nobody would run the vote countdown) and routes to the same
+  /// screen the match is on.
+  void _enterPreMatch(Map<String, dynamic> signal) {
+    final controller = context.read<GameController>();
+    final net = context.read<NetworkService>();
+    net.setMatchHost(!(signal['host'] == true));
+    final stage = signal['stage'] as String;
+    final lockedIdx = signal['mode'] as int?;
+
+    if (stage == 'deploy') {
+      final locked = lockedIdx == null
+          ? LanBattleMode.turns
+          : LanBattleMode.values[lockedIdx];
+      controller.mode = GameMode.hotspot;
+      controller.lanBattleMode = locked;
+      controller.attachNetwork();
+      controller.startPlacement();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const PlacementScreen()),
+      );
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => const LanModeScreen(mode: GameMode.hotspot),
+        ),
+      );
+    }
   }
 
   /// Looks for the game server again and signs in. The automatic attempt
@@ -288,16 +339,16 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   }
 
   void _openFriends() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const FriendsScreen()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const FriendsScreen()));
   }
 
   /// Random matchmaking: search queue → loading → both captains accept.
   void _findMatch() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const MatchmakingScreen()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const MatchmakingScreen()));
   }
 
   void _toast(String msg, {AppNoticeType type = AppNoticeType.info}) {
@@ -321,8 +372,10 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                 child: Row(
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.arrow_back,
-                          color: AppColors.cream),
+                      icon: const Icon(
+                        Icons.arrow_back,
+                        color: AppColors.cream,
+                      ),
                       onPressed: () {
                         SoundService.instance.click();
                         net.stop();
@@ -345,8 +398,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                   indicatorColor: AppColors.gold,
                   indicatorWeight: 4,
                   labelColor: AppColors.cream,
-                  unselectedLabelColor:
-                      AppColors.cream.withValues(alpha: 0.55),
+                  unselectedLabelColor: AppColors.cream.withValues(alpha: 0.55),
                   labelStyle: const TextStyle(
                     fontWeight: FontWeight.w900,
                     fontSize: 12,
@@ -411,12 +463,16 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
               const SizedBox(height: 12),
               if (net.roomCode.isNotEmpty && _hosting) ...[
                 Center(
-                  child: Text('ROOM CODE',
-                      style: AppText.label(size: 10, color: AppColors.inkSoft)),
+                  child: Text(
+                    'ROOM CODE',
+                    style: AppText.label(size: 10, color: AppColors.inkSoft),
+                  ),
                 ),
                 Center(
-                  child: Text(net.roomCode,
-                      style: AppText.title(size: 34, color: AppColors.ember)),
+                  child: Text(
+                    net.roomCode,
+                    style: AppText.title(size: 34, color: AppColors.ember),
+                  ),
                 ),
                 Center(
                   child: Text(
@@ -430,8 +486,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     child: Text(
                       'Scan not finding it? Try entering one of: '
                       '${net.localIps.skip(1).join(", ")}',
-                      style: AppText.label(
-                          size: 8.5, color: AppColors.inkSoft),
+                      style: AppText.label(size: 8.5, color: AppColors.inkSoft),
                       textAlign: TextAlign.center,
                     ),
                   ),
@@ -442,14 +497,17 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     width: 22,
                     height: 22,
                     child: CircularProgressIndicator(
-                        strokeWidth: 3, color: AppColors.ember),
+                      strokeWidth: 3,
+                      color: AppColors.ember,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 6),
                 Center(
-                  child: Text(net.statusMessage,
-                      style:
-                          AppText.body(size: 11, color: AppColors.inkSoft)),
+                  child: Text(
+                    net.statusMessage,
+                    style: AppText.body(size: 11, color: AppColors.inkSoft),
+                  ),
                 ),
               ] else
                 NeonButton(
@@ -488,8 +546,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     margin: const EdgeInsets.only(bottom: 8),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(12),
-                      border:
-                          Border.all(color: AppColors.outline, width: 2.5),
+                      border: Border.all(color: AppColors.outline, width: 2.5),
                       color: AppColors.coralLight,
                     ),
                     child: ListTile(
@@ -502,18 +559,21 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                             ? AppColors.ember
                             : AppColors.shipRed,
                       ),
-                      title: Text(room.playerName,
-                          style: AppText.heading(
-                              size: 12, color: AppColors.navy)),
+                      title: Text(
+                        room.playerName,
+                        style: AppText.heading(size: 12, color: AppColors.navy),
+                      ),
                       subtitle: Text(
-                          room.resumable
-                              ? 'MATCH IN PROGRESS — YOUR SEAT IS HELD'
-                              : '${room.host} • ${room.code}',
-                          style: AppText.label(
-                              size: 9,
-                              color: room.resumable
-                                  ? AppColors.ember
-                                  : AppColors.inkSoft)),
+                        room.resumable
+                            ? 'MATCH IN PROGRESS — YOUR SEAT IS HELD'
+                            : '${room.host} • ${room.code}',
+                        style: AppText.label(
+                          size: 9,
+                          color: room.resumable
+                              ? AppColors.ember
+                              : AppColors.inkSoft,
+                        ),
+                      ),
                       trailing: NeonButton(
                         label: room.resumable ? 'REJOIN' : 'JOIN',
                         color: room.resumable
@@ -522,8 +582,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                         compact: true,
                         onPressed: _connecting
                             ? null
-                            : () =>
-                                _join(room.host, resuming: room.resumable),
+                            : () => _join(room.host, resuming: room.resumable),
                       ),
                     ),
                   ),
@@ -550,11 +609,13 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                       // digits and dots too.
                       inputFormatters: [
                         FilteringTextInputFormatter.allow(
-                            RegExp(r'[A-Za-z2-9.]')),
+                          RegExp(r'[A-Za-z2-9.]'),
+                        ),
                         LengthLimitingTextInputFormatter(15),
                         TextInputFormatter.withFunction(
                           (oldValue, newValue) => newValue.copyWith(
-                              text: newValue.text.toUpperCase()),
+                            text: newValue.text.toUpperCase(),
+                          ),
                         ),
                       ],
                       style: AppText.body(size: 13, color: AppColors.navy),
@@ -572,9 +633,11 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
               ),
               if (net.statusMessage.isNotEmpty && !_hosting) ...[
                 const SizedBox(height: 8),
-                Text(net.statusMessage,
-                    style: AppText.label(size: 9, color: AppColors.inkSoft),
-                    textAlign: TextAlign.center),
+                Text(
+                  net.statusMessage,
+                  style: AppText.label(size: 9, color: AppColors.inkSoft),
+                  textAlign: TextAlign.center,
+                ),
               ],
             ],
           ),
@@ -603,8 +666,8 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     ready
                         ? Icons.check_circle
                         : online.busy
-                            ? Icons.radar
-                            : Icons.warning_amber,
+                        ? Icons.radar
+                        : Icons.warning_amber,
                     size: 16,
                     color: ready ? AppColors.green : AppColors.ember,
                   ),
@@ -614,10 +677,10 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                       ready
                           ? 'Signed in as ${online.myName} (${online.myTag}).'
                           : online.busy
-                              ? 'Looking for the game server on this '
-                                  'Wi-Fi…'
-                              : (online.lastError ??
-                                  'Not connected to a game server yet.'),
+                          ? 'Looking for the game server on this '
+                                'Wi-Fi…'
+                          : (online.lastError ??
+                                'Not connected to a game server yet.'),
                       style: AppText.body(size: 11, color: AppColors.inkSoft),
                     ),
                   ),
@@ -634,8 +697,8 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                 const SizedBox(height: 10),
                 Center(
                   child: TextButton(
-                    onPressed: () => setState(
-                        () => _showServerField = !_showServerField),
+                    onPressed: () =>
+                        setState(() => _showServerField = !_showServerField),
                     child: Text(
                       _showServerField
                           ? 'HIDE MANUAL ADDRESS'
@@ -651,7 +714,8 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     controller: _serverCtrl,
                     style: AppText.body(size: 11, color: AppColors.ink),
                     decoration: _inputDeco(
-                        'e.g. https://your-tunnel.example/…/server'),
+                      'e.g. https://your-tunnel.example/…/server',
+                    ),
                   ),
                   const SizedBox(height: 8),
                   NeonButton(
@@ -808,11 +872,15 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
             onPressed: () => _addFromHistory(online, entry),
           )
         else if (!isFriend && hasPending)
-          Text('PENDING',
-              style: AppText.label(size: 8.5, color: AppColors.inkSoft))
+          Text(
+            'PENDING',
+            style: AppText.label(size: 8.5, color: AppColors.inkSoft),
+          )
         else
-          Text('FRIENDS',
-              style: AppText.label(size: 8.5, color: AppColors.inkSoft)),
+          Text(
+            'FRIENDS',
+            style: AppText.label(size: 8.5, color: AppColors.inkSoft),
+          ),
         if (canInvite) ...[
           const SizedBox(width: 6),
           NeonButton(
@@ -831,12 +899,16 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   // ignore: unused_element
   Widget _historyAddButton(OnlineService online, MatchHistoryEntry entry) {
     if (online.isFriend(entry.opponentId)) {
-      return Text('FRIENDS',
-          style: AppText.label(size: 8.5, color: AppColors.inkSoft));
+      return Text(
+        'FRIENDS',
+        style: AppText.label(size: 8.5, color: AppColors.inkSoft),
+      );
     }
     if (online.hasOutgoingRequest(entry.opponentId)) {
-      return Text('PENDING',
-          style: AppText.label(size: 8.5, color: AppColors.inkSoft));
+      return Text(
+        'PENDING',
+        style: AppText.label(size: 8.5, color: AppColors.inkSoft),
+      );
     }
     return NeonButton(
       label: 'ADD',
@@ -848,7 +920,9 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   }
 
   Future<void> _addFromHistory(
-      OnlineService online, MatchHistoryEntry entry) async {
+    OnlineService online,
+    MatchHistoryEntry entry,
+  ) async {
     final ok = await online.requestById(entry.opponentId);
     if (!mounted) return;
     _toast(
@@ -860,7 +934,9 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   }
 
   Future<void> _inviteFromHistory(
-      OnlineService online, MatchHistoryEntry entry) async {
+    OnlineService online,
+    MatchHistoryEntry entry,
+  ) async {
     final ok = await online.invite(entry.opponentId);
     if (!mounted) return;
     _toast(
@@ -917,20 +993,19 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   }
 
   InputDecoration _inputDeco(String hint) => InputDecoration(
-        hintText: hint,
-        hintStyle: AppText.body(size: 11, color: AppColors.inkSoft),
-        counterText: '',
-        filled: true,
-        fillColor: AppColors.coralLight,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: AppColors.outline, width: 2.5),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: AppColors.blue, width: 2.5),
-        ),
-      );
+    hintText: hint,
+    hintStyle: AppText.body(size: 11, color: AppColors.inkSoft),
+    counterText: '',
+    filled: true,
+    fillColor: AppColors.coralLight,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(10),
+      borderSide: const BorderSide(color: AppColors.outline, width: 2.5),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(10),
+      borderSide: const BorderSide(color: AppColors.blue, width: 2.5),
+    ),
+  );
 }

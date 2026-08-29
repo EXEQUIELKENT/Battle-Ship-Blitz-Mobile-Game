@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../core/fleet_identity.dart';
 import '../core/theme.dart';
+import '../models/game_models.dart';
 import '../services/game_controller.dart';
 import '../services/network_service.dart';
 import '../services/online_service.dart';
@@ -16,6 +17,7 @@ import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'battle_screen.dart';
 import 'lan_mode_screen.dart';
+import 'placement_screen.dart';
 
 /// The online lobby: your captain name, your friends and their stats,
 /// who's online right now, and the invitations that start a match.
@@ -195,16 +197,31 @@ class _FriendsScreenState extends State<FriendsScreen> {
       void listener() {
         if (!mounted) return;
         final snapshot = net.takeResume();
-        if (snapshot == null) return;
-        timeout.cancel();
-        net.removeListener(listener);
-        controller.mode = GameMode.online;
-        net.setMatchHost(snapshot['youAreHost'] == true);
-        controller.restoreFromSnapshot(snapshot);
-        // Not awaited for lifecycle purposes — see `_onNet`, which is what
-        // decides the match is actually over.
-        Navigator.of(context)
-            .push(MaterialPageRoute(builder: (_) => const BattleScreen()));
+        if (snapshot != null) {
+          timeout.cancel();
+          net.removeListener(listener);
+          setState(() => _launching = false);
+          controller.mode = GameMode.online;
+          net.setMatchHost(snapshot['youAreHost'] == true);
+          controller.restoreFromSnapshot(snapshot);
+          // Not awaited for lifecycle purposes — see `_onNet`, which is
+          // what decides the match is actually over.
+          Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const BattleScreen()));
+          return;
+        }
+        // The match never got past the mode VOTE or the DEPLOY screen
+        // before the drop — the survivor's `prematch` signal tells us
+        // which, so we rebuild the same state instead of a fresh lobby.
+        final preSignal = net.takePreMatchSignal();
+        if (preSignal != null) {
+          timeout.cancel();
+          net.removeListener(listener);
+          setState(() => _launching = false);
+          _enterPreMatchOnline(preSignal);
+          return;
+        }
       }
 
       net.addListener(listener);
@@ -213,9 +230,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
         if (!mounted) return;
         setState(() => _launching = false);
         _toast(
-            "Couldn't reach ${match.peerName} to resume the match. "
-            'Try again from the rejoin banner.',
-            type: AppNoticeType.error);
+          "Couldn't reach ${match.peerName} to resume the match. "
+          'Try again from the rejoin banner.',
+          type: AppNoticeType.error,
+        );
       });
       return;
     }
@@ -225,6 +243,38 @@ class _FriendsScreenState extends State<FriendsScreen> {
         builder: (_) => const LanModeScreen(mode: GameMode.online),
       ),
     );
+  }
+
+  /// Pre-battle online rejoin: the survivor's match is still on the mode
+  /// VOTE or the DEPLOY screen (there is no battle snapshot yet), and
+  /// their `prematch` signal says which. Restores the fixed host role and
+  /// routes to that same screen — mirror of
+  /// `MultiplayerScreen._enterPreMatch` for the online transport.
+  void _enterPreMatchOnline(Map<String, dynamic> signal) {
+    final net = context.read<NetworkService>();
+    final controller = context.read<GameController>();
+    net.setMatchHost(!(signal['host'] == true));
+    final stage = signal['stage'] as String;
+    final lockedIdx = signal['mode'] as int?;
+
+    if (stage == 'deploy') {
+      final locked = lockedIdx == null
+          ? LanBattleMode.turns
+          : LanBattleMode.values[lockedIdx];
+      controller.mode = GameMode.online;
+      controller.lanBattleMode = locked;
+      controller.attachNetwork();
+      controller.startPlacement();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const PlacementScreen()),
+      );
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => const LanModeScreen(mode: GameMode.online),
+        ),
+      );
+    }
   }
 
   /// The match really is over (see [_onNet]). Freeing the seat on the
@@ -249,8 +299,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
   Future<void> _search() async {
     final q = _searchCtrl.text.trim();
     if (q.isEmpty) {
-      _toast('Type the name of the captain you want to add.',
-          type: AppNoticeType.error);
+      _toast(
+        'Type the name of the captain you want to add.',
+        type: AppNoticeType.error,
+      );
       return;
     }
     SoundService.instance.click();
@@ -277,8 +329,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
         type: AppNoticeType.success,
       );
     } else {
-      _toast(_online.lastError ?? 'Could not send that request.',
-          type: AppNoticeType.error);
+      _toast(
+        _online.lastError ?? 'Could not send that request.',
+        type: AppNoticeType.error,
+      );
     }
   }
 
@@ -286,8 +340,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
     final ok = await _online.invite(friend.id);
     if (!mounted) return;
     if (!ok) {
-      _toast(_online.lastError ?? 'Could not send that invitation.',
-          type: AppNoticeType.error);
+      _toast(
+        _online.lastError ?? 'Could not send that invitation.',
+        type: AppNoticeType.error,
+      );
     }
   }
 
@@ -314,8 +370,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
                 child: Row(
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.arrow_back,
-                          color: AppColors.cream),
+                      icon: const Icon(
+                        Icons.arrow_back,
+                        color: AppColors.cream,
+                      ),
                       onPressed: () {
                         SoundService.instance.click();
                         Navigator.pop(context);
@@ -330,8 +388,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
                         height: 16,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          valueColor:
-                              AlwaysStoppedAnimation(AppColors.cream),
+                          valueColor: AlwaysStoppedAnimation(AppColors.cream),
                         ),
                       ),
                   ],
@@ -394,7 +451,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
               style: AppText.body(size: 12, color: AppColors.inkSoft),
             ),
           ),
-        for (final f in online.friends) _friendTile(f, canInvite: match == null),
+        for (final f in online.friends)
+          _friendTile(f, canInvite: match == null),
         if (online.outgoingRequests.isNotEmpty) ...[
           const SizedBox(height: 18),
           _sectionTitle('WAITING ON THEM'),
@@ -402,9 +460,11 @@ class _FriendsScreenState extends State<FriendsScreen> {
         ],
         if (online.lastError != null) ...[
           const SizedBox(height: 18),
-          Text(online.lastError!,
-              textAlign: TextAlign.center,
-              style: AppText.label(size: 9.5, color: AppColors.hit)),
+          Text(
+            online.lastError!,
+            textAlign: TextAlign.center,
+            style: AppText.label(size: 9.5, color: AppColors.hit),
+          ),
         ],
       ],
     );
@@ -414,9 +474,9 @@ class _FriendsScreenState extends State<FriendsScreen> {
   // behind it — so section titles use dark navy ink instead of the
   // default cream, which all but disappeared here.
   Widget _sectionTitle(String text) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(text, style: AppText.label(size: 10, color: AppColors.navy)),
-      );
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Text(text, style: AppText.label(size: 10, color: AppColors.navy)),
+  );
 
   Widget _setupCard(OnlineService online) {
     final busy = online.busy;
@@ -445,9 +505,9 @@ class _FriendsScreenState extends State<FriendsScreen> {
                 busy
                     ? 'Sweeping this Wi-Fi for the game server…'
                     : (online.lastError ??
-                        'No game server found on this Wi-Fi. Start it '
-                            '(XAMPP: Apache + MySQL), make sure this device '
-                            'is on the same network, then try again.'),
+                          'No game server found on this Wi-Fi. Start it '
+                              '(XAMPP: Apache + MySQL), make sure this device '
+                              'is on the same network, then try again.'),
                 textAlign: TextAlign.center,
                 style: AppText.body(size: 12, color: AppColors.inkSoft),
               ),
@@ -473,11 +533,15 @@ class _FriendsScreenState extends State<FriendsScreen> {
     if (!mounted) return;
     if (_online.signedIn && _online.reachable) {
       _online.startHeartbeat();
-      _toast('Connected as ${_online.myName} — code ${_online.myTag}',
-          type: AppNoticeType.success);
+      _toast(
+        'Connected as ${_online.myName} — code ${_online.myTag}',
+        type: AppNoticeType.success,
+      );
     } else {
-      _toast(_online.lastError ?? 'No game server found.',
-          type: AppNoticeType.error);
+      _toast(
+        _online.lastError ?? 'No game server found.',
+        type: AppNoticeType.error,
+      );
     }
   }
 
@@ -560,8 +624,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
               SoundService.instance.click();
               await _online.endMatch();
             },
-            child: Text('CANCEL',
-                style: AppText.label(size: 10, color: AppColors.hit)),
+            child: Text(
+              'CANCEL',
+              style: AppText.label(size: 10, color: AppColors.hit),
+            ),
           ),
         ],
       ),
@@ -575,11 +641,15 @@ class _FriendsScreenState extends State<FriendsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('BATTLE IN PROGRESS vs ${match.peerName.toUpperCase()}',
-              style: AppText.label(size: 11)),
+          Text(
+            'BATTLE IN PROGRESS vs ${match.peerName.toUpperCase()}',
+            style: AppText.label(size: 11),
+          ),
           const SizedBox(height: 4),
-          Text('Your seat is still held. Go back in where you left off.',
-              style: AppText.body(size: 11, color: AppColors.cream)),
+          Text(
+            'Your seat is still held. Go back in where you left off.',
+            style: AppText.body(size: 11, color: AppColors.cream),
+          ),
           const SizedBox(height: 12),
           NeonButton(
             label: 'RETURN TO BATTLE',
@@ -604,8 +674,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('YOUR CAPTAIN NAME',
-              style: AppText.label(size: 10, color: AppColors.inkSoft)),
+          Text(
+            'YOUR CAPTAIN NAME',
+            style: AppText.label(size: 10, color: AppColors.inkSoft),
+          ),
           const SizedBox(height: 8),
           Row(
             children: [
@@ -632,7 +704,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
             'Friends add you by searching this name. '
             'Your code ${online.myTag.isEmpty ? '……' : online.myTag} '
             'works too.',
-            style: AppText.body(size: 11, color: AppColors.inkSoft)),
+            style: AppText.body(size: 11, color: AppColors.inkSoft),
+          ),
         ],
       ),
     );
@@ -645,8 +718,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('ADD A FRIEND BY NAME',
-              style: AppText.label(size: 10, color: AppColors.inkSoft)),
+          Text(
+            'ADD A FRIEND BY NAME',
+            style: AppText.label(size: 10, color: AppColors.inkSoft),
+          ),
           const SizedBox(height: 10),
           Row(
             children: [
@@ -659,22 +734,27 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   style: AppText.body(size: 14, color: AppColors.navy),
                   decoration: InputDecoration(
                     hintText: 'CAPTAIN NAME',
-                    hintStyle:
-                        AppText.body(size: 12, color: AppColors.inkSoft),
+                    hintStyle: AppText.body(size: 12, color: AppColors.inkSoft),
                     counterText: '',
                     filled: true,
                     fillColor: AppColors.coralLight,
                     contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(10),
                       borderSide: const BorderSide(
-                          color: AppColors.outline, width: 2.5),
+                        color: AppColors.outline,
+                        width: 2.5,
+                      ),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(10),
-                      borderSide:
-                          const BorderSide(color: AppColors.blue, width: 2.5),
+                      borderSide: const BorderSide(
+                        color: AppColors.blue,
+                        width: 2.5,
+                      ),
                     ),
                   ),
                 ),
@@ -709,11 +789,15 @@ class _FriendsScreenState extends State<FriendsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(p.name.toUpperCase(),
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.label(size: 12, color: AppColors.navy)),
-                Text('${p.tag} · ${p.rankTitle} · ${p.rp} RP',
-                    style: AppText.body(size: 10.5, color: AppColors.inkSoft)),
+                Text(
+                  p.name.toUpperCase(),
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.label(size: 12, color: AppColors.navy),
+                ),
+                Text(
+                  '${p.tag} · ${p.rankTitle} · ${p.rp} RP',
+                  style: AppText.body(size: 10.5, color: AppColors.inkSoft),
+                ),
               ],
             ),
           ),
@@ -754,23 +838,30 @@ class _FriendsScreenState extends State<FriendsScreen> {
                 Row(
                   children: [
                     Flexible(
-                      child: Text(p.name.toUpperCase(),
-                          overflow: TextOverflow.ellipsis,
-                          style: AppText.label(
-                              size: 12, color: AppColors.navy)),
+                      child: Text(
+                        p.name.toUpperCase(),
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.label(size: 12, color: AppColors.navy),
+                      ),
                     ),
                     const SizedBox(width: 6),
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
                       decoration: BoxDecoration(
                         color: look.color,
                         borderRadius: BorderRadius.circular(6),
-                        border:
-                            Border.all(color: AppColors.outline, width: 1.5),
+                        border: Border.all(
+                          color: AppColors.outline,
+                          width: 1.5,
+                        ),
                       ),
-                      child: Text(p.tag,
-                          style: AppText.label(size: 8, color: look.ink)),
+                      child: Text(
+                        p.tag,
+                        style: AppText.label(size: 8, color: look.ink),
+                      ),
                     ),
                   ],
                 ),
@@ -780,10 +871,13 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   '${p.winRate == null ? '' : ' · ${p.winRate}%'}',
                   style: AppText.body(size: 10.5, color: AppColors.inkSoft),
                 ),
-                Text(p.presenceLabel,
-                    style: AppText.label(
-                        size: 8,
-                        color: p.online ? AppColors.green : AppColors.inkSoft)),
+                Text(
+                  p.presenceLabel,
+                  style: AppText.label(
+                    size: 8,
+                    color: p.online ? AppColors.green : AppColors.inkSoft,
+                  ),
+                ),
               ],
             ),
           ),
@@ -817,11 +911,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(p.name.toUpperCase(),
-                    style: AppText.label(size: 12, color: AppColors.navy)),
-                Text('${p.tag} · ${p.rankTitle} · ${p.rp} RP',
-                    style:
-                        AppText.body(size: 10.5, color: AppColors.inkSoft)),
+                Text(
+                  p.name.toUpperCase(),
+                  style: AppText.label(size: 12, color: AppColors.navy),
+                ),
+                Text(
+                  '${p.tag} · ${p.rankTitle} · ${p.rp} RP',
+                  style: AppText.body(size: 10.5, color: AppColors.inkSoft),
+                ),
               ],
             ),
           ),
@@ -854,29 +951,36 @@ class _FriendsScreenState extends State<FriendsScreen> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.hourglass_bottom,
-              size: 15, color: AppColors.inkSoft),
+          const Icon(
+            Icons.hourglass_bottom,
+            size: 15,
+            color: AppColors.inkSoft,
+          ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text('${p.name.toUpperCase()} · ${p.tag}',
-                style: AppText.label(size: 10, color: AppColors.navy)),
+            child: Text(
+              '${p.name.toUpperCase()} · ${p.tag}',
+              style: AppText.label(size: 10, color: AppColors.navy),
+            ),
           ),
-          Text('PENDING',
-              style: AppText.label(size: 9, color: AppColors.inkSoft)),
+          Text(
+            'PENDING',
+            style: AppText.label(size: 9, color: AppColors.inkSoft),
+          ),
         ],
       ),
     );
   }
 
   Widget _presenceDot(bool online) => Container(
-        width: 11,
-        height: 11,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: online ? AppColors.green : AppColors.cellGrey,
-          border: Border.all(color: AppColors.outline, width: 2),
-        ),
-      );
+    width: 11,
+    height: 11,
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      color: online ? AppColors.green : AppColors.cellGrey,
+      border: Border.all(color: AppColors.outline, width: 2),
+    ),
+  );
 
   void _showProfile(OnlinePlayer p) {
     SoundService.instance.click();
@@ -892,14 +996,18 @@ class _FriendsScreenState extends State<FriendsScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(p.name.toUpperCase(), style: AppText.title(size: 20)),
-              Text('${p.tag} · ${p.presenceLabel}',
-                  style: AppText.label(size: 9, color: AppColors.gold)),
+              Text(
+                '${p.tag} · ${p.presenceLabel}',
+                style: AppText.label(size: 9, color: AppColors.gold),
+              ),
               const SizedBox(height: 14),
               _stat('RANK', p.rankTitle),
               _stat('RANK POINTS', '${p.rp}'),
               _stat('RECORD', '${p.wins}W · ${p.losses}L'),
-              _stat('WIN RATE',
-                  p.winRate == null ? 'NO BATTLES YET' : '${p.winRate}%'),
+              _stat(
+                'WIN RATE',
+                p.winRate == null ? 'NO BATTLES YET' : '${p.winRate}%',
+              ),
               _stat('BEST STREAK', '${p.bestStreak}'),
               const SizedBox(height: 16),
               NeonButton(
@@ -925,15 +1033,19 @@ class _FriendsScreenState extends State<FriendsScreen> {
   }
 
   Widget _stat(String label, String value) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(label,
-                style: AppText.label(
-                    size: 9, color: AppColors.cream.withValues(alpha: 0.7))),
-            Text(value, style: AppText.label(size: 11)),
-          ],
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: AppText.label(
+            size: 9,
+            color: AppColors.cream.withValues(alpha: 0.7),
+          ),
         ),
-      );
+        Text(value, style: AppText.label(size: 11)),
+      ],
+    ),
+  );
 }

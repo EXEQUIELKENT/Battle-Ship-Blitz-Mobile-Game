@@ -218,6 +218,60 @@ class SoundService {
     'turn_pass_f_volcanic': 'sfx/turn_pass_f_volcanic.wav',
     'turn_pass_scifi': 'sfx/turn_pass_scifi.wav',
     'turn_pass_f_scifi': 'sfx/turn_pass_f_scifi.wav',
+    // Sunk (ship destroyed) variants — one per ship skin, legacy and
+    // family alike. The destroyed hull's own skin picks it (see
+    // `SoundService.sunk`).
+    'sunk_steel': 'sfx/sunk_steel.wav',
+    'sunk_crimson': 'sfx/sunk_crimson.wav',
+    'sunk_emerald': 'sfx/sunk_emerald.wav',
+    'sunk_gold': 'sfx/sunk_gold.wav',
+    'sunk_abyss': 'sfx/sunk_abyss.wav',
+    'sunk_arctic': 'sfx/sunk_arctic.wav',
+    'sunk_coral': 'sfx/sunk_coral.wav',
+    'sunk_midnight': 'sfx/sunk_midnight.wav',
+    'sunk_toxic': 'sfx/sunk_toxic.wav',
+    'sunk_f_pirate': 'sfx/sunk_f_pirate.wav',
+    'sunk_f_naval': 'sfx/sunk_f_naval.wav',
+    'sunk_f_arctic': 'sfx/sunk_f_arctic.wav',
+    'sunk_f_steam': 'sfx/sunk_f_steam.wav',
+    'sunk_f_volcanic': 'sfx/sunk_f_volcanic.wav',
+    'sunk_f_scifi': 'sfx/sunk_f_scifi.wav',
+    // Place (ship set down) variants — one per ship skin, played on the
+    // deploy screen whenever a ship is placed, moved or rotated.
+    'place_steel': 'sfx/place_steel.wav',
+    'place_crimson': 'sfx/place_crimson.wav',
+    'place_emerald': 'sfx/place_emerald.wav',
+    'place_gold': 'sfx/place_gold.wav',
+    'place_abyss': 'sfx/place_abyss.wav',
+    'place_arctic': 'sfx/place_arctic.wav',
+    'place_coral': 'sfx/place_coral.wav',
+    'place_midnight': 'sfx/place_midnight.wav',
+    'place_toxic': 'sfx/place_toxic.wav',
+    'place_f_pirate': 'sfx/place_f_pirate.wav',
+    'place_f_naval': 'sfx/place_f_naval.wav',
+    'place_f_arctic': 'sfx/place_f_arctic.wav',
+    'place_f_steam': 'sfx/place_f_steam.wav',
+    'place_f_volcanic': 'sfx/place_f_volcanic.wav',
+    'place_f_scifi': 'sfx/place_f_scifi.wav',
+    // Drag/pickup variants — one per ship skin. The lighter partner to
+    // the place sound: plays the moment a ship is picked up on the
+    // deploy screen (off the dock, or grabbed on the grid).
+    'move': 'sfx/move.wav',
+    'move_steel': 'sfx/move_steel.wav',
+    'move_crimson': 'sfx/move_crimson.wav',
+    'move_emerald': 'sfx/move_emerald.wav',
+    'move_gold': 'sfx/move_gold.wav',
+    'move_abyss': 'sfx/move_abyss.wav',
+    'move_arctic': 'sfx/move_arctic.wav',
+    'move_coral': 'sfx/move_coral.wav',
+    'move_midnight': 'sfx/move_midnight.wav',
+    'move_toxic': 'sfx/move_toxic.wav',
+    'move_f_pirate': 'sfx/move_f_pirate.wav',
+    'move_f_naval': 'sfx/move_f_naval.wav',
+    'move_f_arctic': 'sfx/move_f_arctic.wav',
+    'move_f_steam': 'sfx/move_f_steam.wav',
+    'move_f_volcanic': 'sfx/move_f_volcanic.wav',
+    'move_f_scifi': 'sfx/move_f_scifi.wav',
   };
 
   /// Core effects warmed up immediately at start.
@@ -239,10 +293,20 @@ class SoundService {
   ];
 
   static int _poolSizeFor(String key) {
-    if (key.startsWith('cannon_fire') || key.startsWith('hit') || key.startsWith('miss')) {
+    if (key.startsWith('cannon_fire') ||
+        key.startsWith('hit') ||
+        key.startsWith('miss')) {
       return 3;
     }
-    if (key == 'sunk' || key == 'place' || key == 'click') {
+    // Reload / sunk / place variants can genuinely overlap: in BLITZ and
+    // CHAOS both guns finish reloading on their own clocks (often the
+    // same instant), and a sinking or a set-down can coincide with the
+    // turn-pass cue. A single fixed player used to cut one of them.
+    if (key.startsWith('sunk') ||
+        key.startsWith('place') ||
+        key.startsWith('cannon_ready') ||
+        key.startsWith('turn_pass') ||
+        key == 'click') {
       return 2;
     }
     return 1;
@@ -341,8 +405,62 @@ class SoundService {
       safetyTimeout: _safetyTimeoutFor(key),
     );
     _pools[key] = pool;
-    unawaited(pool.warmUp());
+    // NOTE: deliberately NOT `unawaited(pool.warmUp())` here any more —
+    // see `_play`, which now `await`s `ensureWarm()` instead. A
+    // fire-and-forget warmup meant the very first play of a themed
+    // effect (any purchased cannon/ship/deck) raced its own pool build:
+    // `play()` found an empty pool and fell through to the expensive
+    // mid-gameplay `_create()` path the pool design exists to avoid —
+    // and on Windows, where `setSource` is loaded asynchronously on a
+    // native thread, that race could make the sound come up SILENT.
+    // That is why themed effects "didn't play consistently on different
+    // skins" on both phone and Windows builds while the base effects
+    // (pre-warmed in `init`) always did.
     return pool;
+  }
+
+  /// Pre-warms every themed pool a captain's loadout can ask for — the
+  /// cannon's fire/reload/hit/miss, the ship skin's hit/sunk, and the
+  /// deck's miss/turn-pass — so the FIRST shot, hit, miss, reload,
+  /// sinking or ship move with a purchased skin never has to build its
+  /// players on the gameplay hot path. Called for the equipped profile at
+  /// app start (see `main.dart`), for both captains' loadouts the moment
+  /// a battle screen opens, and for the seat's loadout on the deploy
+  /// screen — all well before the first sound can be requested.
+  void warmLoadout({
+    required String cannonSkinId,
+    required String shipSkinId,
+    required String themeId,
+  }) {
+    _warmSkinKeys([
+      'cannon_fire_$cannonSkinId',
+      'cannon_ready_$cannonSkinId',
+      'hit_$cannonSkinId',
+      'miss_$cannonSkinId',
+      'miss_$themeId',
+      'turn_pass_$themeId',
+      'hit_$shipSkinId',
+      'sunk_$shipSkinId',
+      'place_$shipSkinId',
+      'move_$shipSkinId',
+    ]);
+  }
+
+  void _warmSkinKeys(Iterable<String> keys) {
+    for (final key in keys) {
+      final file = _files[key];
+      if (file == null) continue;
+      final pool = _pools.putIfAbsent(
+        key,
+        () => _ManagedPool(
+          asset: file,
+          size: _poolSizeFor(key),
+          audioContext: _sfxAudioContext,
+          safetyTimeout: _safetyTimeoutFor(key),
+        ),
+      );
+      unawaited(pool.ensureWarm());
+    }
   }
 
   /// BUGFIX (all sound effects going silent mid-game on phones): nothing
@@ -473,6 +591,11 @@ class SoundService {
     if (!enabled) return;
     final pool = _getPool(key);
     if (pool == null) return;
+    // A lazily-created pool (any themed variant) is guaranteed fully
+    // built before its first play — see the note on `_getPool` for the
+    // race this closes. `ensureWarm` caches its future, so concurrent
+    // first-plays share one warmup and later plays await nothing.
+    await pool.ensureWarm();
     final rate = _hasVariedPitch(key)
         ? 0.94 + _rng.nextDouble() * 0.12 // ~±6% pitch/speed wobble
         : 1.0;
@@ -687,8 +810,21 @@ class SoundService {
     _play('miss');
   }
 
-  void sunk() {
+  void sunk({String? shipSkinId}) {
     HapticFeedback.heavyImpact();
+    if (shipSkinId != null) {
+      final k1 = 'sunk_$shipSkinId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = shipSkinId.replaceFirst('f_', '');
+      final k2 = 'sunk_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
     _play('sunk');
   }
 
@@ -701,7 +837,47 @@ class SoundService {
     _play('defeat');
   }
 
-  void place() => _play('place');
+  /// A ship set down on the deploy grid — placing from the dock, dragging
+  /// a placed hull to new water, or rotating. Each equipped ship skin has
+  /// its own set-down sound (see `tool/gen_sounds.dart`), falling back to
+  /// the shared one for skins without a variant.
+  void place({String? shipSkinId}) {
+    if (shipSkinId != null) {
+      final k1 = 'place_$shipSkinId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = shipSkinId.replaceFirst('f_', '');
+      final k2 = 'place_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
+    _play('place');
+  }
+
+  /// The lighter partner to [place]: the tick that plays the moment a
+  /// ship is PICKED UP on the deploy screen — grabbed off the dock tray,
+  /// or seized on the grid to be dragged — keyed by that ship's skin so
+  /// every fleet moves to its own sound.
+  void shipMove({String? shipSkinId}) {
+    if (shipSkinId != null) {
+      final k1 = 'move_$shipSkinId';
+      if (_hasSound(k1)) {
+        _play(k1);
+        return;
+      }
+      final clean = shipSkinId.replaceFirst('f_', '');
+      final k2 = 'move_$clean';
+      if (_hasSound(k2)) {
+        _play(k2);
+        return;
+      }
+    }
+    _play('move');
+  }
 
   /// UI click. Same pooled path as everything else now — no longer needs
   /// a special case to stay reliable while the pools are still warming up,
@@ -890,6 +1066,25 @@ class _ManagedPool {
       } catch (_) {/* best effort — a missing slot just means slightly
                       less overlap headroom for this one effect */}
     }
+  }
+
+  /// The warmup this pool is currently running (or has run), so a play
+  /// arriving before the pool is built can WAIT for it instead of racing
+  /// it. See the note on [SoundService._getPool]: a fire-and-forget
+  /// warmup let a themed effect's very first play slip past the empty
+  /// pool into the mid-gameplay `_create()` path — and on Windows, where
+  /// `setSource` completes asynchronously on a native thread, that race
+  /// could silence the clip entirely. Awaiting this makes the first play
+  /// of any themed effect deterministic: it fires once the pool is ready
+  /// (normally well before gameplay, via [SoundService.warmLoadout]).
+  Future<void>? _warm;
+
+  Future<void> ensureWarm() {
+    final existing = _warm;
+    if (existing != null) return existing;
+    final f = warmUp();
+    _warm = f;
+    return f;
   }
 
   Future<AudioPlayer> _create() async {
@@ -1115,6 +1310,10 @@ class _ManagedPool {
     _idle.clear();
     _busy.clear();
     _setupDone.clear();
+    // A rebuild's fresh `warmUp()` must be awaited by the next play too —
+    // drop the cached future so `ensureWarm` re-runs rather than handing
+    // back the pre-rebuild (now meaningless) future.
+    _warm = null;
   }
 
   /// Tears down and recreates every player in this pool — see the bugfix

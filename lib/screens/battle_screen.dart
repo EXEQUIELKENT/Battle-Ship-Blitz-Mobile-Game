@@ -309,7 +309,10 @@ class _BattleScreenState extends State<BattleScreen>
   }) {
     switch (result) {
       case ShotResult.sunk:
-        SoundService.instance.sunk();
+        // The sinking hull's own skin picks the sound — a Blackpowder
+        // galleon goes down to splintering timber, a Helios Drift
+        // catamaran to an energy implosion (see `SoundService.sunk`).
+        SoundService.instance.sunk(shipSkinId: targetSkin?.id);
         break;
       case ShotResult.hit:
         SoundService.instance.hit(
@@ -419,6 +422,25 @@ class _BattleScreenState extends State<BattleScreen>
             _lan);
     _mirrorTopHalf = !_lan;
     _iAmBlue = _lan && !controller.network.isHost;
+
+    // Warm both captains' themed sound pools BEFORE the first shot can
+    // ask for them (see `SoundService.warmLoadout`): without this, the
+    // very first fire/hit/miss/reload/sinking with any purchased skin
+    // raced its own pool build and could come up silent — inconsistently
+    // across skins, and worst on Windows where the asset load completes
+    // asynchronously on a native thread.
+    final p1Loadout = _loadoutFor(true);
+    SoundService.instance.warmLoadout(
+      cannonSkinId: p1Loadout.cannonSkinId,
+      shipSkinId: p1Loadout.shipSkinId,
+      themeId: p1Loadout.themeId,
+    );
+    final p2Loadout = _loadoutFor(false);
+    SoundService.instance.warmLoadout(
+      cannonSkinId: p2Loadout.cannonSkinId,
+      shipSkinId: p2Loadout.shipSkinId,
+      themeId: p2Loadout.themeId,
+    );
 
     // A match rebuilt from a resume snapshot comes back with every past
     // shot already landed (see `GameController._seedEventsFromShots`), so

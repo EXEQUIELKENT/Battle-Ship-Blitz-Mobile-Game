@@ -172,6 +172,95 @@ void main() {
       sweep(0.8, (t) => 0.32 - 0.26 * t, volume: 0.24, decay: 2.6));
   writeWav('assets/sfx/sunk.wav', sunk);
 
+  // =========================================================================
+  // SUNK VARIANTS — one per ship skin (the nine legacy hulls and the six
+  // family fleets). Each keeps the base sinking arc (crash → hull groan →
+  // wash-out) but wears its own fleet's character; see `SoundService.sunk`.
+  // =========================================================================
+
+  /// Composes one skin's sinking: a filtered crash, a falling hull tone,
+  /// optional metallic chime partials, the wash-out, and an optional extra
+  /// synth layer for the energy/steam-driven fleets.
+  void writeSunkVariant(
+    String id, {
+    required double fund,
+    double fundVol = 0.5,
+    required double noiseCut,
+    double noiseVol = 0.55,
+    List<double> chime = const [],
+    double chimeVol = 0.3,
+    bool wash = true,
+    void Function(Float64List out)? extra,
+    double seconds = 1.2,
+  }) {
+    final out = buf(seconds);
+    add(out, 0,
+        noise(seconds * 0.4, volume: noiseVol, decay: 6, cutoff: noiseCut));
+    add(out, 0,
+        tone(seconds * 0.45, (t) => fund - fund * 0.45 * t, volume: fundVol, decay: 4.6));
+    for (var k = 0; k < chime.length; k++) {
+      add(out, (0.03 * sr).toInt(),
+          harmonicTone(0.40, chime[k], [0.4, 0.25, 0.15], volume: chimeVol, decay: 7 + k * 1.5));
+    }
+    if (wash) {
+      add(out, (0.4 * sr).toInt(),
+          sweep(0.7, (t) => 0.32 - 0.26 * t, volume: 0.24, decay: 2.6));
+    }
+    extra?.call(out);
+    writeWav('assets/sfx/sunk_$id.wav', out);
+  }
+
+  // Legacy nine — palette skins on the shared hull, each with its own
+  // way of going under.
+  writeSunkVariant('steel',
+      fund: 120, noiseCut: 0.20, chime: [620, 930]); // steel plates tearing
+  writeSunkVariant('crimson',
+      fund: 95, noiseVol: 0.62, noiseCut: 0.40, seconds: 1.25); // fiery crash
+  writeSunkVariant('emerald',
+      fund: 180, noiseCut: 0.30, extra: (o) =>
+          add(o, (0.06 * sr).toInt(), noise(0.22, volume: 0.40, decay: 12, cutoff: 0.6))); // green-water splash
+  writeSunkVariant('gold',
+      fund: 140, noiseCut: 0.22, chime: [1318, 1976], chimeVol: 0.20); // gilded glitter
+  writeSunkVariant('abyss',
+      fund: 70, noiseCut: 0.12, chime: [880], chimeVol: 0.16); // abyssal thud + ping
+  writeSunkVariant('arctic',
+      fund: 230, noiseCut: 0.50, chime: [2400], chimeVol: 0.18); // ice crack
+  writeSunkVariant('coral',
+      fund: 160, noiseCut: 0.35, chime: [520]); // reef-crash splash
+  writeSunkVariant('midnight',
+      fund: 85, fundVol: 0.40, noiseVol: 0.40, noiseCut: 0.14); // silent-op thud
+  writeSunkVariant('toxic',
+      fund: 130, noiseCut: 0.30, chime: [392], chimeVol: 0.22, extra: (o) {
+        // Bubbling goo — three rising blips.
+        for (var k = 0; k < 3; k++) {
+          add(o, ((0.10 + k * 0.09) * sr).toInt(),
+              fmTone(0.12, (t) => 300 + 260 * k + 500 * t, 60, 1.2, volume: 0.22, decay: 14));
+        }
+      });
+
+  // The six families — each fleet's own hull art gets its own demise.
+  writeSunkVariant('f_pirate',
+      fund: 110, noiseCut: 0.45, chime: [330, 415], chimeVol: 0.34); // timber splinters
+  writeSunkVariant('f_naval',
+      fund: 100, noiseCut: 0.25, chime: [740, 1108], chimeVol: 0.30); // rivets shearing
+  writeSunkVariant('f_arctic',
+      fund: 210, noiseCut: 0.50, chime: [1865], chimeVol: 0.24); // calving glacier
+  writeSunkVariant('f_steam',
+      fund: 90, noiseCut: 0.20, chime: [523], chimeVol: 0.30, extra: (o) =>
+          add(o, (0.05 * sr).toInt(),
+              sweep(0.55, (t) => 0.75 - 0.45 * t, volume: 0.30, decay: 6))); // boiler burst
+  writeSunkVariant('f_volcanic',
+      fund: 65, noiseVol: 0.65, noiseCut: 0.10, wash: false, chime: [196], chimeVol: 0.34, seconds: 1.3, extra: (o) =>
+          add(o, (0.15 * sr).toInt(),
+              noise(0.5, volume: 0.22, decay: 8, cutoff: 0.8))); // magma rumble + embers
+  writeSunkVariant('f_scifi',
+      fund: 90, noiseCut: 0.15, wash: false, extra: (o) {
+        // Energy implosion — a long descending FM sweep with shimmer.
+        add(o, 0, fmTone(0.85, (t) => 1400 - 1200 * t, 90, 4.0, volume: 0.42, decay: 3.5));
+        add(o, (0.05 * sr).toInt(),
+            harmonicTone(0.6, 1568, [0.3, 0.2], volume: 0.16, decay: 5));
+      });
+
   // ---- VICTORY: triumphant fanfare ----
   final victory = buf(1.9);
   const vNotes = [392.00, 523.25, 659.25, 783.99];
@@ -206,6 +295,85 @@ void main() {
   add(place, (0.01 * sr).toInt(),
       tone(0.08, (t) => 180, volume: 0.22, decay: 40));
   writeWav('assets/sfx/place.wav', place);
+
+  // =========================================================================
+  // PLACE + MOVE VARIANTS — one pair per ship skin (legacy nine + six
+  // families). `place` is the set-down (dock drop, drag-to-new-water,
+  // rotate); `move` is the lighter pick-up tick the moment a ship is
+  // grabbed. See `SoundService.place` / `SoundService.shipMove`.
+  // =========================================================================
+
+  /// Composes one skin's set-down: a falling body tone with harmonic
+  /// colour, an optional watery sweep, and a short contact noise.
+  void writePlaceVariant(
+    String id, {
+    required double f,
+    List<double> harm = const [0.45, 0.25],
+    double vol = 0.5,
+    bool watery = false,
+    double noiseCut = 0.5,
+  }) {
+    final out = buf(0.22);
+    if (watery) {
+      add(out, 0,
+          sweep(0.10, (t) => 0.65 - 0.30 * t, volume: 0.30, decay: 22));
+    }
+    add(out, 0, tone(0.07, (t) => f - f * 0.3 * t, volume: vol, decay: 32));
+    add(out, 0,
+        harmonicTone(0.15, f, harm, volume: vol * 0.6, decay: 20));
+    add(out, 0, noise(0.04, volume: 0.26, decay: 55, cutoff: noiseCut));
+    writeWav('assets/sfx/place_$id.wav', out);
+  }
+
+  /// Composes one skin's pick-up: a soft body tick over a short slide.
+  void writeMoveVariant(
+    String id, {
+    required double f,
+    double vol = 0.30,
+    double slideCut = 0.5,
+  }) {
+    final out = buf(0.15);
+    add(out, 0,
+        sweep(0.11, (t) => slideCut - slideCut * 0.4 * t, volume: 0.22, decay: 12));
+    add(out, 0, tone(0.05, (t) => f, volume: vol, decay: 28));
+    // An empty id is the shared fallback clip (`move.wav`), not `move_.wav`.
+    writeWav(id.isEmpty ? 'assets/sfx/move.wav' : 'assets/sfx/move_$id.wav', out);
+  }
+
+  // Base move (shared fallback): a neutral hull slide.
+  writeMoveVariant('', f: 620);
+  // The legacy nine.
+  writePlaceVariant('steel', f: 520); // solid iron clunk
+  writeMoveVariant('steel', f: 560);
+  writePlaceVariant('crimson', f: 360, noiseCut: 0.65); // hot metal tick
+  writeMoveVariant('crimson', f: 420, slideCut: 0.65);
+  writePlaceVariant('emerald', f: 440, watery: true); // wet knock
+  writeMoveVariant('emerald', f: 480);
+  writePlaceVariant('gold', f: 660, harm: [0.5, 0.3]); // brass settle
+  writeMoveVariant('gold', f: 760, slideCut: 0.6);
+  writePlaceVariant('abyss', f: 240); // hollow deep thud
+  writeMoveVariant('abyss', f: 260, slideCut: 0.3);
+  writePlaceVariant('arctic', f: 900, watery: true); // frost crunch
+  writeMoveVariant('arctic', f: 980, slideCut: 0.7);
+  writePlaceVariant('coral', f: 480, watery: true);
+  writeMoveVariant('coral', f: 520);
+  writePlaceVariant('midnight', f: 200, vol: 0.40); // stealth-soft
+  writeMoveVariant('midnight', f: 300, vol: 0.22);
+  writePlaceVariant('toxic', f: 350, watery: true); // goo squelch
+  writeMoveVariant('toxic', f: 380, slideCut: 0.4);
+  // The six families — each hull lands in its own material.
+  writePlaceVariant('f_pirate', f: 300, harm: [0.55, 0.4]); // timber
+  writeMoveVariant('f_pirate', f: 330, slideCut: 0.45);
+  writePlaceVariant('f_naval', f: 540, harm: [0.5, 0.2]); // hydraulic clamp
+  writeMoveVariant('f_naval', f: 600, slideCut: 0.55);
+  writePlaceVariant('f_arctic', f: 1000, watery: true); // ice settle
+  writeMoveVariant('f_arctic', f: 1050, slideCut: 0.7);
+  writePlaceVariant('f_steam', f: 380, harm: [0.4, 0.3]); // gear ratchet
+  writeMoveVariant('f_steam', f: 440, slideCut: 0.6);
+  writePlaceVariant('f_volcanic', f: 200); // stone slab
+  writeMoveVariant('f_volcanic', f: 220, slideCut: 0.3);
+  writePlaceVariant('f_scifi', f: 1400, harm: [0.35, 0.2]); // magnetic snap
+  writeMoveVariant('f_scifi', f: 1500, slideCut: 0.65);
 
   // ---- WHIR: screen transition whoosh ----
   final whir = buf(0.5);

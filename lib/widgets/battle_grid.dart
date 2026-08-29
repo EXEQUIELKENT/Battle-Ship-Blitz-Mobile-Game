@@ -90,6 +90,12 @@ class BattleGrid extends StatefulWidget {
 
   /// Placement-mode interactions.
   final void Function(ShipKind kind, int newRow, int newCol)? onShipDragEnd;
+
+  /// Called the moment a draggable ship is actually PICKED UP (finger
+  /// down on one of [ships]) — before any preview highlight appears. The
+  /// deploy screen uses it to play that fleet's own pick-up tick (see
+  /// `SoundService.shipMove`); null on grids where nothing is draggable.
+  final void Function(ShipKind kind)? onShipDragStart;
   final void Function(ShipKind kind)? onShipTap;
 
   /// Fired continuously while an already-placed ship is being dragged
@@ -179,6 +185,7 @@ const BattleGrid({
     this.aimCell,
     this.cannonSkinId,
     this.onShipDragEnd,
+    this.onShipDragStart,
     this.onShipTap,
     this.onShipDragUpdate,
     this.movableShips,
@@ -604,6 +611,7 @@ class _BattleGridState extends State<BattleGrid>
       final r = (d.localPosition.dy / cell).floor();
       for (final s in widget.ships!) {
         if (s.containsCell(r, c) && _movable(s)) {
+          widget.onShipDragStart?.call(s.spec.kind);
           setState(() {
             _dragKind = s.spec.kind;
             _dragging = true;

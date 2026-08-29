@@ -12,6 +12,7 @@ import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/match_chat.dart';
 import '../widgets/ocean_background.dart';
+import '../widgets/reconnect_overlay.dart';
 import 'placement_screen.dart';
 
 /// One icon per mode. MANOEUVRE used to share TURN BASED's icon, which
@@ -22,14 +23,14 @@ import 'placement_screen.dart';
 /// Top-level (not a method on [LanModeScreen]) so [VsAiModeScreen]'s own
 /// mode cards — same picker, no peer to vote with — can share it too.
 IconData lanModeIcon(LanBattleMode mode) => switch (mode) {
-      LanBattleMode.chaos => Icons.whatshot,
-      LanBattleMode.turns => Icons.swap_vert_circle,
-      LanBattleMode.rearrange => Icons.open_with,
-      LanBattleMode.blitz => Icons.bolt,
-      LanBattleMode.ghost => Icons.blur_on,
-      LanBattleMode.powerPlay => Icons.auto_awesome,
-      LanBattleMode.phantom => Icons.visibility_off,
-    };
+  LanBattleMode.chaos => Icons.whatshot,
+  LanBattleMode.turns => Icons.swap_vert_circle,
+  LanBattleMode.rearrange => Icons.open_with,
+  LanBattleMode.blitz => Icons.bolt,
+  LanBattleMode.ghost => Icons.blur_on,
+  LanBattleMode.powerPlay => Icons.auto_awesome,
+  LanBattleMode.phantom => Icons.visibility_off,
+};
 
 /// Sits between "the two devices are connected" and "deploy your fleet":
 /// both captains tap the mode they want to play, the mode with the most
@@ -67,6 +68,27 @@ class _LanModeScreenState extends State<LanModeScreen> {
     super.initState();
     _net = context.read<NetworkService>();
     _net.addListener(_onNet);
+    // This screen IS the pre-battle match — mark it so a dropped opponent
+    // here opens the reconnect window (see `NetworkService.beginPreMatch`
+    // for the full contract).
+    //
+    // BUGFIX: `beginPreMatch()` calls `notifyListeners()`, which — called
+    // straight from `initState()`, synchronously — trips Flutter's own
+    // "setState() or markNeedsBuild() called during build" assertion:
+    // `NetworkService`'s `ChangeNotifierProvider` sits ABOVE this screen
+    // (at the app root, see `main.dart`), and this screen is still mid
+    // MOUNT (inside the very frame that is building it, whether that's
+    // the app's first frame or a later `Navigator.push`) when this runs.
+    // Only an assert — stripped from release builds, so it never broke
+    // anything a player could see — but a real one in any debug run
+    // (`flutter run`, `flutter test`) all the same, and this screen is
+    // exactly where it fired every time a hotspot/online match reached
+    // the vote. One frame's delay changes nothing here: `preMatch` is
+    // never read by `build()`, only later by an actual network callback,
+    // which cannot possibly arrive before this same frame finishes.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _net.beginPreMatch();
+    });
     // Deliberately NOT resetting the vote here: `hostHotspot`/`joinHotspot`
     // both call `stop()` (which clears it) before the socket is even
     // opened, so it's already fresh by the time a connection exists.
@@ -83,7 +105,27 @@ class _LanModeScreenState extends State<LanModeScreen> {
 
   void _onNet() {
     if (!mounted) return;
-    if (_net.lockedMode != null && _lockHold == null && !_navigated) {
+    // A lock that resolved AFTER the opponent dropped must not drag us off
+    // this screen under the reconnect overlay — navigation waits for them
+    // to return (then `_onNet` fires again and this same block runs).
+    //
+    // BUGFIX (both players stranded on this screen forever): a drop that
+    // lands mid-hold — AFTER the mode locked and this timer was armed,
+    // but BEFORE its 900ms is up — makes `_startMatch` bail out via its
+    // own `peerLost`/`peerGone` guard below when it fires, without ever
+    // resetting `_lockHold`. Checking `_lockHold == null` here used to
+    // treat that stale, already-fired Timer as "a hold is still running"
+    // forever after, so the peer's later return could never re-arm this
+    // block and the match was stuck exactly where the drop happened —
+    // locked, reconnect overlay gone, but nobody ever pushed to
+    // placement. `isActive` is false the instant a one-shot Timer's
+    // callback has run, so this re-arms on the very next `_onNet` firing
+    // the drop's rejoin produces.
+    if (_net.lockedMode != null &&
+        !_net.peerLost &&
+        !_net.peerGone &&
+        !(_lockHold?.isActive ?? false) &&
+        !_navigated) {
       // The "match locked" clunk plays the device owner's own equipped
       // cannon's reload sound — the gun they're about to sail into the
       // match with (see `_firePreviewShot` on the deploy screen for the
@@ -99,6 +141,10 @@ class _LanModeScreenState extends State<LanModeScreen> {
     if (!mounted || _navigated) return;
     final chosen = _net.lockedMode;
     if (chosen == null) return;
+    // Belt-and-braces alongside the `_onNet` guard: the _lockHold timer
+    // can be mid-flight when the drop lands, and we must not sail into
+    // placement for a match whose opponent is gone.
+    if (_net.peerLost || _net.peerGone) return;
     _navigated = true;
     final controller = context.read<GameController>();
     controller.mode = widget.mode;
@@ -123,6 +169,16 @@ class _LanModeScreenState extends State<LanModeScreen> {
     Navigator.pop(context);
   }
 
+  /// The opponent never came back (see the reconnect overlay). The match
+  /// is void, so tear it down and leave the whole flow — same result the
+  /// battle screen's `_abandon` reaches for a mid-battle drop.
+  void _abandon() {
+    _lockHold?.cancel();
+    _lockHold = null;
+    _net.stop();
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
   /// How each captain reads on screen. The host commands the red fleet
   /// and the joiner the blue one — unless one of them equipped a hull of
   /// their own in the shipyard, in which case that is their colour here
@@ -139,10 +195,10 @@ class _LanModeScreenState extends State<LanModeScreen> {
   }
 
   FleetLook get _peerLook => fleetLook(
-        isRedSide: !_net.isHost,
-        equippedShipSkinId: _net.peerShipSkinId,
-        chosen: _net.peerShipSkinChosen,
-      );
+    isRedSide: !_net.isHost,
+    equippedShipSkinId: _net.peerShipSkinId,
+    chosen: _net.peerShipSkinChosen,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -163,96 +219,111 @@ class _LanModeScreenState extends State<LanModeScreen> {
         body: OceanBackground(
           showSonar: false,
           child: SafeArea(
-            child: Column(
+            child: Stack(
               children: [
-                // ---------- Navy header ----------
-                Container(
-                  width: double.infinity,
-                  color: AppColors.navy,
-                  padding: const EdgeInsets.fromLTRB(8, 10, 14, 14),
-                  child: Column(
-                    children: [
-                      Row(
+                Column(
+                  children: [
+                    // ---------- Navy header ----------
+                    Container(
+                      width: double.infinity,
+                      color: AppColors.navy,
+                      padding: const EdgeInsets.fromLTRB(8, 10, 14, 14),
+                      child: Column(
                         children: [
-                          IconButton(
-                            icon: const Icon(Icons.arrow_back,
-                                color: AppColors.cream),
-                            onPressed: _leave,
+                          Row(
+                            children: [
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.arrow_back,
+                                  color: AppColors.cream,
+                                ),
+                                onPressed: _leave,
+                              ),
+                              Expanded(
+                                child: Text(
+                                  'CHOOSE BATTLE MODE',
+                                  style: AppText.title(size: 18),
+                                ),
+                              ),
+                              // In the header rather than floating over the
+                              // cards: a split vote is resolved by talking,
+                              // so the chat has to be reachable without
+                              // covering the very thing you're discussing.
+                              const MatchChatButton(size: 36),
+                            ],
                           ),
-                          Expanded(
-                            child: Text('CHOOSE BATTLE MODE',
-                                style: AppText.title(size: 18)),
+                          const SizedBox(height: 6),
+                          // Who's who — this is also the first place either
+                          // player sees which fleet colour they command.
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              _CaptainChip(
+                                name: myName.toUpperCase(),
+                                role: net.isHost ? 'HOST' : 'CHALLENGER',
+                                look: _myLook,
+                              ),
+                              const SizedBox(width: 10),
+                              Text('VS', style: AppText.label(size: 11)),
+                              const SizedBox(width: 10),
+                              _CaptainChip(
+                                name: net.peerName.toUpperCase(),
+                                role: net.isHost ? 'CHALLENGER' : 'HOST',
+                                look: _peerLook,
+                              ),
+                            ],
                           ),
-                          // In the header rather than floating over the
-                          // cards: a split vote is resolved by talking,
-                          // so the chat has to be reachable without
-                          // covering the very thing you're discussing.
-                          const MatchChatButton(size: 36),
                         ],
                       ),
-                      const SizedBox(height: 6),
-                      // Who's who — this is also the first place either
-                      // player sees which fleet colour they command.
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                    ),
+
+                    // ---------- The two modes ----------
+                    Expanded(
+                      child: ListView(
+                        padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
                         children: [
-                          _CaptainChip(
-                            name: myName.toUpperCase(),
-                            role: net.isHost ? 'HOST' : 'CHALLENGER',
-                            look: _myLook,
+                          Text(
+                            'BOTH CAPTAINS MUST PICK THE SAME MODE.\n'
+                            'THE MATCH WILL NOT START ON A SPLIT VOTE.',
+                            textAlign: TextAlign.center,
+                            // Sits directly on the coral deck (no card, no
+                            // navy panel behind it) — cream was unreadable
+                            // here, so this uses the same dark navy ink the
+                            // cards below it use.
+                            style: AppText.label(
+                              size: 10,
+                              color: AppColors.navy,
+                            ),
                           ),
-                          const SizedBox(width: 10),
-                          Text('VS', style: AppText.label(size: 11)),
-                          const SizedBox(width: 10),
-                          _CaptainChip(
-                            name: net.peerName.toUpperCase(),
-                            role: net.isHost ? 'CHALLENGER' : 'HOST',
-                            look: _peerLook,
-                          ),
+                          const SizedBox(height: 14),
+                          // Four modes now, so this scrolls — which it
+                          // already did, since a phone was never going to fit
+                          // three cards of this weight either.
+                          for (final mode in LanBattleMode.values) ...[
+                            _modeCard(net, mode, myName),
+                            const SizedBox(height: 12),
+                          ],
                         ],
                       ),
-                    ],
-                  ),
-                ),
+                    ),
 
-                // ---------- The two modes ----------
-                Expanded(
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
-                    children: [
-                      Text(
-                        'BOTH CAPTAINS MUST PICK THE SAME MODE.\n'
-                        'THE MATCH WILL NOT START ON A SPLIT VOTE.',
-                        textAlign: TextAlign.center,
-                        // Sits directly on the coral deck (no card, no
-                        // navy panel behind it) — cream was unreadable
-                        // here, so this uses the same dark navy ink the
-                        // cards below it use.
-                        style: AppText.label(size: 10, color: AppColors.navy),
-                      ),
-                      const SizedBox(height: 14),
-                      // Four modes now, so this scrolls — which it
-                      // already did, since a phone was never going to fit
-                      // three cards of this weight either.
-                      for (final mode in LanBattleMode.values) ...[
-                        _modeCard(net, mode, myName),
-                        const SizedBox(height: 12),
-                      ],
-                    ],
-                  ),
-                ),
-
-                // ---------- Countdown / status ----------
-                Container(
-                  width: double.infinity,
-                  color: AppColors.navy,
-                  padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
-                  child: locked != null
-                      ? _lockedBanner(locked)
-                      : net.voteCountdown != null
+                    // ---------- Countdown / status ----------
+                    Container(
+                      width: double.infinity,
+                      color: AppColors.navy,
+                      padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
+                      child: locked != null
+                          ? _lockedBanner(locked)
+                          : net.voteCountdown != null
                           ? _countdown(net.voteCountdown!)
                           : _waitingLine(net),
+                    ),
+                  ],
                 ),
+                // Opponent dropped mid-vote: the same reconnect window a
+                // battle drop gets, mapped onto this screen.
+                if (net.peerLost || net.peerGone)
+                  ReconnectOverlay(onAbandon: _abandon),
               ],
             ),
           ),
@@ -279,10 +350,10 @@ class _LanModeScreenState extends State<LanModeScreen> {
     final accent = isWinner
         ? AppColors.seafoam
         : myPick
-            ? me.color
-            : peerPick
-                ? peer.color
-                : AppColors.outline;
+        ? me.color
+        : peerPick
+        ? peer.color
+        : AppColors.outline;
 
     return Opacity(
       opacity: lostOut ? 0.42 : 1,
@@ -314,7 +385,8 @@ class _LanModeScreenState extends State<LanModeScreen> {
                     // The card body is cream, so a near-white hull colour
                     // would vanish on it — fall back to the outline ink
                     // for very pale identities.
-                    color: accent == AppColors.outline ||
+                    color:
+                        accent == AppColors.outline ||
                             accent.computeLuminance() > 0.7
                         ? AppColors.navy
                         : accent,
@@ -322,19 +394,25 @@ class _LanModeScreenState extends State<LanModeScreen> {
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(mode.label,
-                        style: AppText.title(size: 20, color: AppColors.navy)),
+                    child: Text(
+                      mode.label,
+                      style: AppText.title(size: 20, color: AppColors.navy),
+                    ),
                   ),
                   // Live tally — the "most taps" rule made visible.
                   _VoteTally(votes: votes, accent: accent),
                 ],
               ),
               const SizedBox(height: 4),
-              Text(mode.tagline,
-                  style: AppText.label(size: 10, color: AppColors.inkSoft)),
+              Text(
+                mode.tagline,
+                style: AppText.label(size: 10, color: AppColors.inkSoft),
+              ),
               const SizedBox(height: 6),
-              Text(mode.blurb,
-                  style: AppText.body(size: 11, color: AppColors.inkSoft)),
+              Text(
+                mode.blurb,
+                style: AppText.body(size: 11, color: AppColors.inkSoft),
+              ),
               const SizedBox(height: 10),
               // Who voted for THIS mode. Both badges can sit here at once
               // (a 2–0 agreement); a badge moves the instant that player
@@ -346,15 +424,20 @@ class _LanModeScreenState extends State<LanModeScreen> {
                   children: [
                     if (myPick)
                       _VoterBadge(
-                          label: '${myName.toUpperCase()} (YOU)', look: me),
+                        label: '${myName.toUpperCase()} (YOU)',
+                        look: me,
+                      ),
                     if (myPick && peerPick) const SizedBox(width: 8),
                     if (peerPick)
                       _VoterBadge(
-                          label: net.peerName.toUpperCase(), look: peer),
+                        label: net.peerName.toUpperCase(),
+                        look: peer,
+                      ),
                     if (!myPick && !peerPick)
-                      Text('NO VOTES YET',
-                          style: AppText.label(
-                              size: 9, color: AppColors.inkSoft)),
+                      Text(
+                        'NO VOTES YET',
+                        style: AppText.label(size: 9, color: AppColors.inkSoft),
+                      ),
                   ],
                 ),
               ),
@@ -376,12 +459,14 @@ class _LanModeScreenState extends State<LanModeScreen> {
       // patience: both have picked, and the match still isn't starting.
       icon = Icons.sync_problem;
       color = AppColors.gold;
-      msg = 'PICKS DO NOT MATCH — ONE OF YOU MUST SWITCH\n'
+      msg =
+          'PICKS DO NOT MATCH — ONE OF YOU MUST SWITCH\n'
           'BEFORE THE BATTLE CAN START';
     } else if (net.myVote == null && net.peerVote == null) {
       msg = 'BOTH CAPTAINS STILL DECIDING…';
     } else if (net.myVote == null) {
-      msg = '${net.peerName.toUpperCase()} PICKED ${net.peerVote!.label}'
+      msg =
+          '${net.peerName.toUpperCase()} PICKED ${net.peerVote!.label}'
           ' — YOUR CALL';
     } else {
       msg = 'WAITING FOR ${net.peerName.toUpperCase()}…';
@@ -394,9 +479,11 @@ class _LanModeScreenState extends State<LanModeScreen> {
           const SizedBox(width: 10),
         ],
         Flexible(
-          child: Text(msg,
-              textAlign: TextAlign.center,
-              style: AppText.label(size: 10.5, color: color)),
+          child: Text(
+            msg,
+            textAlign: TextAlign.center,
+            style: AppText.label(size: 10.5, color: color),
+          ),
         ),
       ],
     );
@@ -423,8 +510,7 @@ class _LanModeScreenState extends State<LanModeScreen> {
                     value: v.clamp(0.0, 1.0),
                     strokeWidth: 5,
                     backgroundColor: AppColors.navyDeep,
-                    valueColor:
-                        const AlwaysStoppedAnimation(AppColors.gold),
+                    valueColor: const AlwaysStoppedAnimation(AppColors.gold),
                   ),
                 ),
               ),
@@ -450,8 +536,10 @@ class _LanModeScreenState extends State<LanModeScreen> {
         const Icon(Icons.check_circle, color: AppColors.seafoam, size: 22),
         const SizedBox(width: 10),
         Flexible(
-          child: Text('${mode.label} — DEPLOYING FLEETS…',
-              style: AppText.label(size: 12)),
+          child: Text(
+            '${mode.label} — DEPLOYING FLEETS…',
+            style: AppText.label(size: 12),
+          ),
         ),
       ],
     );
@@ -465,8 +553,11 @@ class _CaptainChip extends StatelessWidget {
   final String role;
   final FleetLook look;
 
-  const _CaptainChip(
-      {required this.name, required this.role, required this.look});
+  const _CaptainChip({
+    required this.name,
+    required this.role,
+    required this.look,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -484,9 +575,11 @@ class _CaptainChip extends StatelessWidget {
             // Ink picked from the fill's own brightness. Hull colours run
             // from Midnight Ops to Arctic Storm, so a fixed cream label
             // is unreadable on a good third of the catalogue.
-            Text(name,
-                overflow: TextOverflow.ellipsis,
-                style: AppText.label(size: 11, color: look.ink)),
+            Text(
+              name,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.label(size: 11, color: look.ink),
+            ),
             Text(role, style: AppText.label(size: 8, color: look.inkSoft)),
           ],
         ),
@@ -506,8 +599,9 @@ class _VoteTally extends StatelessWidget {
   Widget build(BuildContext context) {
     final on = votes > 0;
     final fill = on ? accent : AppColors.miss;
-    final ink =
-        fill.computeLuminance() > 0.5 ? AppColors.outline : AppColors.cream;
+    final ink = fill.computeLuminance() > 0.5
+        ? AppColors.outline
+        : AppColors.cream;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
       decoration: BoxDecoration(
@@ -515,8 +609,10 @@ class _VoteTally extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: AppColors.outline, width: 2),
       ),
-      child: Text(votes == 1 ? '1 VOTE' : '$votes VOTES',
-          style: AppText.label(size: 9, color: ink)),
+      child: Text(
+        votes == 1 ? '1 VOTE' : '$votes VOTES',
+        style: AppText.label(size: 9, color: ink),
+      ),
     );
   }
 }
@@ -544,9 +640,11 @@ class _VoterBadge extends StatelessWidget {
             Icon(Icons.how_to_vote, size: 12, color: look.ink),
             const SizedBox(width: 5),
             Flexible(
-              child: Text(label,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.label(size: 9.5, color: look.ink)),
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: AppText.label(size: 9.5, color: look.ink),
+              ),
             ),
           ],
         ),

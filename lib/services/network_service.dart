@@ -94,7 +94,9 @@ class SocketLink implements GameLink {
       if (line.isEmpty) continue;
       try {
         _in.add(Map<String, dynamic>.from(jsonDecode(line) as Map));
-      } catch (_) {/* ignore malformed */}
+      } catch (_) {
+        /* ignore malformed */
+      }
     }
   }
 
@@ -102,7 +104,9 @@ class SocketLink implements GameLink {
   void send(Map<String, dynamic> msg) {
     try {
       socket.write('${jsonEncode(msg)}\n');
-    } catch (_) {/* socket closed */}
+    } catch (_) {
+      /* socket closed */
+    }
   }
 
   @override
@@ -138,7 +142,8 @@ class NetworkService extends ChangeNotifier {
   /// rejoining `RelayLink` can be built with [startRelayMatch]'s `since`
   /// pointed at wherever this device last actually got to, rather than
   /// replaying the match's entire message history from the start.
-  int? get relayMatchId => _link is RelayLink ? (_link as RelayLink).matchId : null;
+  int? get relayMatchId =>
+      _link is RelayLink ? (_link as RelayLink).matchId : null;
   int? get relaySince => _link is RelayLink ? (_link as RelayLink).since : null;
 
   /// Every address this device answers to across all its active network
@@ -184,6 +189,17 @@ class NetworkService extends ChangeNotifier {
   /// it, a drop opens the reconnect window below.
   bool inMatch = false;
 
+  /// True while a real match is running but hasn't reached battle yet —
+  /// the mode VOTE screen (`LanModeScreen`) or fleet DEPLOYMENT
+  /// (`PlacementScreen`). A dropped opponent there used to be treated
+  /// exactly like a failed lobby attempt: no grace window, no "lost
+  /// connection" notice, no way back to the same vote/deploy state. From
+  /// here the match is just as real as mid-battle, so a drop opens the
+  /// same reconnect window — and a returning player is told where the
+  /// match stands (see the `prematch` message and [takePreMatchSignal])
+  /// so they land on the vote or deploy screen instead of a fresh lobby.
+  bool preMatch = false;
+
   /// The peer's connection has gone away mid-match and we are holding the
   /// match open for them.
   bool peerLost = false;
@@ -215,6 +231,22 @@ class NetworkService extends ChangeNotifier {
   /// it, so the lobby should wait for a resume snapshot instead of walking
   /// through mode-vote and placement again.
   bool joiningResumable = false;
+
+  /// The survivor's answer to a PRE-BATTLE rejoin — where the match
+  /// stands, so a player returning mid-VOTE or mid-DEPLOY can rebuild the
+  /// right screen. Retained the moment it arrives, exactly like
+  /// [_resumeMsg], because the screen that consumes it (the lobby/join
+  /// flow) is usually not watching the notifier when the message lands.
+  ///
+  /// Shape: `{ 'stage': 'vote' | 'deploy', 'host': {survivor is host},
+  ///   'mode': {locked mode index, deploy stage only} }`.
+  Map<String, dynamic>? _preMatchSignal;
+
+  Map<String, dynamic>? takePreMatchSignal() {
+    final m = _preMatchSignal;
+    _preMatchSignal = null;
+    return m;
+  }
 
   ServerSocket? _server;
   RawDatagramSocket? _udp;
@@ -400,7 +432,9 @@ class NetworkService extends ChangeNotifier {
     // spend the last second of a short scan with nothing sent at all).
     _sendBeaconOnce(resumable);
     _beaconTimer = Timer.periodic(
-        const Duration(seconds: 1), (_) => _sendBeaconOnce(resumable));
+      const Duration(seconds: 1),
+      (_) => _sendBeaconOnce(resumable),
+    );
   }
 
   void _sendBeaconOnce(bool resumable) {
@@ -414,25 +448,29 @@ class NetworkService extends ChangeNotifier {
     for (final ip in localIps) {
       final directed = _subnetBroadcastOf(ip);
       if (directed == null) continue;
-      final bytes = utf8.encode(jsonEncode({
-        'magic': _magic,
-        'code': roomCode,
-        'host': ip,
-        'name': _selfName,
-        if (resumable) 'resume': 1,
-      }));
+      final bytes = utf8.encode(
+        jsonEncode({
+          'magic': _magic,
+          'code': roomCode,
+          'host': ip,
+          'name': _selfName,
+          if (resumable) 'resume': 1,
+        }),
+      );
       try {
         _udp?.send(bytes, InternetAddress(directed), 45679);
       } catch (_) {}
     }
     if (localIps.isNotEmpty) {
-      final bytes = utf8.encode(jsonEncode({
-        'magic': _magic,
-        'code': roomCode,
-        'host': localIps.first,
-        'name': _selfName,
-        if (resumable) 'resume': 1,
-      }));
+      final bytes = utf8.encode(
+        jsonEncode({
+          'magic': _magic,
+          'code': roomCode,
+          'host': localIps.first,
+          'name': _selfName,
+          if (resumable) 'resume': 1,
+        }),
+      );
       try {
         _udp?.send(bytes, InternetAddress('255.255.255.255'), 45679);
       } catch (_) {}
@@ -497,12 +535,14 @@ class NetworkService extends ChangeNotifier {
         try {
           final msg = jsonDecode(utf8.decode(dg.data)) as Map<String, dynamic>;
           if (msg['magic'] == _magic) {
-            _ingestRoom(RoomInfo(
-              code: msg['code'] as String,
-              host: msg['host'] as String,
-              playerName: msg['name'] as String? ?? 'Captain',
-              resumable: msg['resume'] == 1,
-            ));
+            _ingestRoom(
+              RoomInfo(
+                code: msg['code'] as String,
+                host: msg['host'] as String,
+                playerName: msg['name'] as String? ?? 'Captain',
+                resumable: msg['resume'] == 1,
+              ),
+            );
           }
         } catch (_) {}
       });
@@ -532,8 +572,9 @@ class NetworkService extends ChangeNotifier {
   void ingestRoomForTest(RoomInfo room) => _ingestRoom(room);
 
   void _ingestRoom(RoomInfo room) {
-    final idx = foundRooms
-        .indexWhere((r) => r.code.toUpperCase() == room.code.toUpperCase());
+    final idx = foundRooms.indexWhere(
+      (r) => r.code.toUpperCase() == room.code.toUpperCase(),
+    );
     if (idx == -1) {
       foundRooms = [...foundRooms, room];
       notifyListeners();
@@ -582,8 +623,9 @@ class NetworkService extends ChangeNotifier {
   RoomInfo? roomByCode(String code, {List<String> myIps = const []}) {
     final wanted = code.trim().toUpperCase();
     if (wanted.isEmpty) return null;
-    final matches =
-        foundRooms.where((r) => r.code.toUpperCase() == wanted).toList();
+    final matches = foundRooms
+        .where((r) => r.code.toUpperCase() == wanted)
+        .toList();
     if (matches.isEmpty) return null;
     if (matches.length == 1) return matches.first;
     final mySubnets = myIps.map(_subnetBroadcastOf).whereType<String>().toSet();
@@ -596,8 +638,11 @@ class NetworkService extends ChangeNotifier {
   /// Joins a hotspot room by host IP. [resuming] should be true when the
   /// beacon advertised a match in progress (see [RoomInfo.resumable]) — the
   /// lobby then waits for a state snapshot instead of starting a new match.
-  Future<bool> joinHotspot(String host,
-      {required String playerName, bool resuming = false}) async {
+  Future<bool> joinHotspot(
+    String host, {
+    required String playerName,
+    bool resuming = false,
+  }) async {
     if (!_networkAvailable) return false;
     await stop();
     mode = NetMode.hotspot;
@@ -607,8 +652,11 @@ class NetworkService extends ChangeNotifier {
     statusMessage = 'Connecting to $host…';
     notifyListeners();
     try {
-      final socket = await Socket.connect(host, kGamePort,
-          timeout: const Duration(seconds: 5));
+      final socket = await Socket.connect(
+        host,
+        kGamePort,
+        timeout: const Duration(seconds: 5),
+      );
       try {
         socket.setOption(SocketOption.tcpNoDelay, true);
       } catch (_) {}
@@ -628,15 +676,15 @@ class NetworkService extends ChangeNotifier {
   /// loadout rides along with the greeting so the opponent can render our
   /// ships, cannon and battlefield exactly as we chose them.
   Map<String, dynamic> _helloPayload({bool rejoin = false}) => {
-        'type': 'hello',
-        'name': _selfName,
-        'ship': _selfShipSkinId,
-        'shipPicked': _selfShipChosen ? 1 : 0,
-        'cannon': _selfCannonSkinId,
-        'theme': _selfThemeId,
-        'room': roomCode,
-        if (rejoin) 'rejoin': 1,
-      };
+    'type': 'hello',
+    'name': _selfName,
+    'ship': _selfShipSkinId,
+    'shipPicked': _selfShipChosen ? 1 : 0,
+    'cannon': _selfCannonSkinId,
+    'theme': _selfThemeId,
+    'room': roomCode,
+    if (rejoin) 'rejoin': 1,
+  };
 
   /// Convert a raw socket error into a friendly hint.
   String _friendlyError(Object e) {
@@ -651,7 +699,9 @@ class NetworkService extends ChangeNotifier {
     if (s.contains('timed out') || s.contains('errno = 110')) {
       return 'Timed out — are both devices on the same Wi-Fi / hotspot?';
     }
-    if (s.contains('unreachable') || s.contains('errno = 101') || s.contains('errno = 113')) {
+    if (s.contains('unreachable') ||
+        s.contains('errno = 101') ||
+        s.contains('errno = 113')) {
       return 'Network unreachable — connect both devices to the same Wi-Fi / hotspot.';
     }
     return s;
@@ -756,6 +806,17 @@ class NetworkService extends ChangeNotifier {
     return b;
   }
 
+  /// Discards a held peer fleet without returning it.
+  ///
+  /// The deploy screen calls this the moment the opponent DROPS: the
+  /// board they sent before dying is from the fleet that just vanished —
+  /// their rejoin starts a FRESH placement, so starting battle with the
+  /// stale copy would pair our (possibly re-sent) fleet against a layout
+  /// the peer never actually shipped.
+  void clearPeerBoard() {
+    _peerBoardMsg = null;
+  }
+
   /// Feeds a message in as if it had arrived from the opponent.
   ///
   /// Exists so the rules applied to INCOMING data — which is the one
@@ -807,6 +868,24 @@ class NetworkService extends ChangeNotifier {
         _endGrace(gone: false);
         _messageCtrl.add(const {'type': 'resume_request'});
       }
+      if (rejoining && preMatch && !inMatch) {
+        // They came back before the battle started — the vote or deploy
+        // screen is still up. Close the grace period and tell them where
+        // the match stands so they can rebuild the same screen instead of
+        // walking through as a fresh lobby join: `vote` while the mode
+        // vote is still open, `deploy` (with the locked mode) once it
+        // resolved and the fleets are being placed.
+        _endGrace(gone: false);
+        // Re-cast our vote so the returning player's `peerVote` is current:
+        // their fresh join wiped their own copy of it with `stop()`, and
+        // if they were the original HOST nobody is counting backwards
+        // until they can see both vote again. Their reply updates our
+        // `peerVote` in turn, so the two ends re-converge on a lock.
+        if (lockedMode == null && myVote != null) {
+          _send({'type': 'vote', 'm': myVote!.index});
+        }
+        _send(_preMatchSignalPayload());
+      }
       notifyListeners();
     }
     // Retain the fleet regardless of whether anyone is listening yet.
@@ -827,17 +906,40 @@ class NetworkService extends ChangeNotifier {
       joiningResumable = false;
       notifyListeners();
     }
+    if (msg['type'] == 'prematch') {
+      // The survivor of a PRE-BATTLE drop telling us where the match
+      // stands (vote or deploy) — retained for the join/lobby flow to
+      // collect via [takePreMatchSignal]. Never forwarded on `messages`,
+      // which is how the battle-relevant `resume` works; nothing in the
+      // game-engine message loop understands a pre-battle stage. Gated on
+      // `joiningResumable` (this side joined looking for its old match;
+      // our own `preMatch` was just reset by the fresh `stop()`), so a
+      // stray late message can never hijack a brand-new lobby join.
+      final stage = msg['stage'] as String?;
+      if ((stage == 'vote' || stage == 'deploy') && joiningResumable) {
+        _preMatchSignal = {
+          'stage': stage,
+          'host': msg['host'] == true,
+          if (msg['mode'] is int) 'mode': msg['mode'],
+        };
+        joiningResumable = false;
+        notifyListeners();
+      }
+      return;
+    }
     if (msg['type'] == 'chat') {
       // Length is enforced again on arrival, not just at the sender: a
       // peer is not something to take on trust about how long a line is.
       final raw = (msg['m'] as String?)?.trim() ?? '';
       if (raw.isNotEmpty) {
-        _appendChat(ChatLine(
-          mine: false,
-          text: raw.length > kChatMaxChars
-              ? raw.substring(0, kChatMaxChars)
-              : raw,
-        ));
+        _appendChat(
+          ChatLine(
+            mine: false,
+            text: raw.length > kChatMaxChars
+                ? raw.substring(0, kChatMaxChars)
+                : raw,
+          ),
+        );
       }
     }
     if (msg['type'] == 'rematch') {
@@ -905,7 +1007,10 @@ class NetworkService extends ChangeNotifier {
   /// the survivor isn't left staring at nothing, not because 60s is
   /// really the deadline. Only the much longer silent hold is.
   void _openGraceWindow({required bool reopenLan}) {
-    if (!inMatch || peerGone || peerLost) {
+    // `preMatch` (vote/deploy) holds the seat just like `inMatch` (battle)
+    // — since this feature landed, a drop on the mode-vote or deployment
+    // screen is a reconnect, not a failed lobby attempt.
+    if ((!inMatch && !preMatch) || peerGone || peerLost) {
       notifyListeners();
       return;
     }
@@ -1002,6 +1107,32 @@ class NetworkService extends ChangeNotifier {
     peerGone = false;
     peerLeftMatch = false;
     notifyListeners();
+  }
+
+  /// Marks the point where a match is real but still PRE-battle — the
+  /// mode-vote screen or the deploy screen is up. From here a dropped
+  /// connection opens the same reconnect window battle does (see
+  /// `_openGraceWindow`). Called by `LanModeScreen`/`PlacementScreen`
+  /// themselves, so it is also on exactly the right side of a route
+  /// change: whoever is on one of those screens is the survivor.
+  void beginPreMatch() {
+    preMatch = true;
+    notifyListeners();
+  }
+
+  /// What a pre-battle survivor tells a returning opponent about where the
+  /// match stands ([takePreMatchSignal]'s shape). The host role rides
+  /// along so the returner can restore it (`setMatchHost`) — a returning
+  /// player always arrives as the joiner, and if they were originally the
+  /// host nobody would be left running the vote countdown.
+  Map<String, dynamic> _preMatchSignalPayload() {
+    final lock = lockedMode;
+    return {
+      'type': 'prematch',
+      'stage': lock == null ? 'vote' : 'deploy',
+      'host': _isHost,
+      if (lock != null) 'mode': lock.index,
+    };
   }
 
   /// Sends the full mid-match state to a player who just rejoined.
@@ -1270,12 +1401,12 @@ class NetworkService extends ChangeNotifier {
   /// block and `BattleScreen._maybePassTurn`. Echoed back unchanged on
   /// the matching `result` so both ends agree.
   void sendFire(int r, int c, {int? seq, bool hold = false}) => _send({
-        'type': 'fire',
-        'r': r,
-        'c': c,
-        if (seq != null) 'seq': seq,
-        if (hold) 'hold': true,
-      });
+    'type': 'fire',
+    'r': r,
+    'c': c,
+    if (seq != null) 'seq': seq,
+    if (hold) 'hold': true,
+  });
 
   void sendBoard(Board board) => _send({'type': 'board', 'b': board.toJson()});
 
@@ -1287,22 +1418,15 @@ class NetworkService extends ChangeNotifier {
 
   /// MANOEUVRE mode: tells the opponent one of our ships has moved, so
   /// their copy of our fleet stays in step with ours.
-  void sendMove(ShipKind kind, int r, int c, bool horizontal) => _send({
-        'type': 'move',
-        'k': kind.index,
-        'r': r,
-        'c': c,
-        'h': horizontal,
-      });
+  void sendMove(ShipKind kind, int r, int c, bool horizontal) =>
+      _send({'type': 'move', 'k': kind.index, 'r': r, 'c': c, 'h': horizontal});
 
   /// GHOST FLEET: tells the opponent one of our destroyed hulls has sunk
   /// and faded away, so the watermark it used is free again on both sides
   /// (their shots there are now clean misses, our survivors may move back
   /// onto it). See `GameController.clearSunkShip`.
-  void sendShipCleared(ShipKind kind) => _send({
-        'type': 'ship_cleared',
-        'k': kind.index,
-      });
+  void sendShipCleared(ShipKind kind) =>
+      _send({'type': 'ship_cleared', 'k': kind.index});
 
   /// Post-match rematch handshake — the match only restarts when BOTH
   /// sides have asked for it.
@@ -1361,24 +1485,29 @@ class NetworkService extends ChangeNotifier {
   /// [r] / [c] carry the target cell (SONAR's 3×3 anchor, RECON SWEEP's
   /// row); SPOTTER needs neither, since it picks its own reveal.
   void sendPowerUpAsk(PowerUpCard card, {int? r, int? c}) => _send({
-        'type': 'pw_ask',
-        'card': card.index,
-        if (r != null) 'r': r,
-        if (c != null) 'c': c,
-      });
+    'type': 'pw_ask',
+    'card': card.index,
+    if (r != null) 'r': r,
+    if (c != null) 'c': c,
+  });
 
   /// The answer to a [sendPowerUpAsk] — shape depends on the card: SONAR
   /// sends [n] (a ship count), SPOTTER sends [r]/[c] (the cell it found),
   /// RECON SWEEP sends [r] back with [has].
-  void sendPowerUpAnswer(PowerUpCard card, {int? n, int? r, int? c, bool? has}) =>
-      _send({
-        'type': 'pw_answer',
-        'card': card.index,
-        if (n != null) 'n': n,
-        if (r != null) 'r': r,
-        if (c != null) 'c': c,
-        if (has != null) 'has': has,
-      });
+  void sendPowerUpAnswer(
+    PowerUpCard card, {
+    int? n,
+    int? r,
+    int? c,
+    bool? has,
+  }) => _send({
+    'type': 'pw_answer',
+    'card': card.index,
+    if (n != null) 'n': n,
+    if (r != null) 'r': r,
+    if (c != null) 'c': c,
+    if (has != null) 'has': has,
+  });
 
   /// POWER PLAY — JAM / HOT SHOT: a condition armed on the PEER's device,
   /// consulted the next time it matters on their end (their next draw for
@@ -1399,11 +1528,11 @@ class NetworkService extends ChangeNotifier {
   /// a hull. Reveals nothing new: the peer already knows a hull sits at
   /// each of these cells, since they are the one who hit it.
   void sendPowerUpHeal(List<(int, int)> cells) => _send({
-        'type': 'pw_heal',
-        'cells': [
-          for (final (r, c) in cells) [r, c],
-        ],
-      });
+    'type': 'pw_heal',
+    'cells': [
+      for (final (r, c) in cells) [r, c],
+    ],
+  });
 
   void sendSurrender() => _send({'type': 'surrender'});
 
@@ -1422,6 +1551,7 @@ class NetworkService extends ChangeNotifier {
     // mistaken for the opponent walking out mid-match, so shut the match
     // window down first.
     inMatch = false;
+    preMatch = false;
     peerLost = false;
     peerGone = false;
     graceSecondsLeft = 0;
@@ -1430,6 +1560,7 @@ class NetworkService extends ChangeNotifier {
     peerLeftMatch = false;
     joiningResumable = false;
     _resumeMsg = null;
+    _preMatchSignal = null;
     _stopBeacon();
     final scanWasActive = _scanUdp != null;
     try {
@@ -1471,5 +1602,5 @@ class ChatLine {
   final DateTime at;
 
   ChatLine({required this.mine, required this.text, DateTime? at})
-      : at = at ?? DateTime.now();
+    : at = at ?? DateTime.now();
 }
