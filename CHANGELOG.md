@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.10](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.9...battleship_blitz-v1.4.10) (2026-08-29)
+
+
+### Bug Fixes
+
+* Add pre-match reconnect and sound prewarm ([e171567](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/e1715677ad123a68daf0f7bab82b9c316510bb67))
+
 ## [1.4.9](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.8...battleship_blitz-v1.4.9) (2026-08-29)
 
 
