@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.14](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.13...battleship_blitz-v1.4.14) (2026-08-30)
+
+
+### Bug Fixes
+
+* Fix projectile heading & parallelize sound rebuild ([9d92393](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/9d9239338e75d8aff2d71fd5d74ada31248a8e2a))
+* Respect family hull aspect in hero dock ([7c5f5e0](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/7c5f5e0055b1b51fa2efac976afedfc7e8e30389))
+
 ## [1.4.13](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.12...battleship_blitz-v1.4.13) (2026-08-30)
 
 
