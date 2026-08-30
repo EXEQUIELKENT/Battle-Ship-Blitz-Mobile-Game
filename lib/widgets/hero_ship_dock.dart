@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../art/fleet_family.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/sound_service.dart';
@@ -108,7 +109,42 @@ class _HeroShipDockState extends State<HeroShipDock>
 
   double _hullWidth(ShipSpec spec) => widget.shipSize * _hullScale(spec);
 
-  double _hullHeight(ShipSpec spec) => _hullWidth(spec) * 0.55;
+  /// Whether [widget.equippedSkin] is one of the six themed families
+  /// (pirate, naval, steam, arctic, volcanic, sci-fi) rather than one of
+  /// the original nine flat-recolour "legacy" skins.
+  bool get _isFamilySkin =>
+      FleetFamilies.byKey(widget.equippedSkin.familyKey) != null;
+
+  /// The legacy hulls in [ShipPainter] have no shared reference box —
+  /// every silhouette (`_carrier`, `_battleship`, ...) is hand-drawn
+  /// straight from whatever w/h fractions this widget hands it, which is
+  /// exactly why [_hullScale]'s doc says every class MUST share one fixed
+  /// aspect here: varying it per hull would warp those hand-tuned curves.
+  ///
+  /// The themed families are the opposite case. All five of a family's
+  /// hulls are authored once in one shared 300×100 box and non-uniformly
+  /// stretched to fill whatever box `paintFamilyShip`/`FamilyCanvas
+  /// .stretch` is given — so a box with the wrong aspect doesn't just
+  /// look "off-model", it visibly balloons circles/turrets into ellipses
+  /// and reads as a bloated hull instead of a lean one. That's exactly
+  /// what forcing every family hull through the legacy 1.8:1 box below
+  /// caused here: a themed carrier or battleship (long, lean classes)
+  /// got squashed into the same squat box as a themed destroyer.
+  ///
+  /// The Shipyard's own hull-class row already renders every themed hull
+  /// correctly, sizing each one to `(9.5 * spec.size + 10)` wide by a
+  /// fixed 22 tall — so a 5-cell carrier reads meaningfully longer,
+  /// relative to its own beam, than a 2-cell destroyer. Reusing that
+  /// same per-class aspect here keeps a themed hull exactly as long/lean
+  /// on the hero dock as it already is on the Shipyard, instead of
+  /// forcing it through a ratio it was never drawn for.
+  double _familyAspect(ShipSpec spec) => (9.5 * spec.size + 10) / 22;
+
+  double _hullHeight(ShipSpec spec) {
+    final width = _hullWidth(spec);
+    if (_isFamilySkin) return width / _familyAspect(spec);
+    return width * 0.55;
+  }
 
   void _cycleHull() {
     SoundService.instance.click();
