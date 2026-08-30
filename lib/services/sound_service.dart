@@ -485,9 +485,20 @@ class SoundService {
     if (_rebuildingPool) return;
     _rebuildingPool = true;
     try {
-      for (final pool in _pools.values) {
-        await pool.rebuild();
-      }
+      // PERF (brief lag right after returning to the app): this used to
+      // rebuild each pool in turn, fully `await`-ing one before even
+      // starting the next. Every pool's own `dispose()`/`warmUp()` is
+      // already a chain of sequential platform-channel round trips (see
+      // their docs) — with every purchased skin's pool warmed by the time
+      // a match is underway (~29 pooled players isn't unusual, see
+      // `_create()`'s doc), stacking pool after pool serialized the whole
+      // resume into one long queue of platform calls, all landing right
+      // when the player expects the app to just pick back up — exactly
+      // the "lags for a bit, then it's fine" report. The pools are fully
+      // independent of one another, so rebuilding them all at once and
+      // awaiting the batch lets the platform channel pipeline the whole
+      // thing concurrently instead of one pool at a time.
+      await Future.wait(_pools.values.map((pool) => pool.rebuild()));
       if (_menuMusicWanted && enabled) {
         // Coming back from a pause we did ourselves, resume rather than
         // replay: `play()` restarts an AssetSource from position zero, so
@@ -1060,11 +1071,32 @@ class _ManagedPool {
   /// background — never from the gameplay hot path in [play].
   Future<void> warmUp() async {
     if (_idle.isNotEmpty || _busy.isNotEmpty) return; // already built
-    for (var i = 0; i < size; i++) {
-      try {
-        _idle.add(await _create());
-      } catch (_) {/* best effort — a missing slot just means slightly
-                      less overlap headroom for this one effect */}
+    // PERF (resume-from-background lag): this used to create the pool's
+    // players ONE AT A TIME, `await`-ing each `_create()` fully before
+    // starting the next — and `_create()` is itself four sequential
+    // awaited platform-channel round trips (see its own doc). Called for
+    // every pool in turn from `SoundService.onAppResumed`, that serialized
+    // the whole app-resume rebuild into one long chain of platform calls.
+    // None of these creations depend on each other, so firing them all at
+    // once and awaiting the batch lets the platform channel pipeline them
+    // concurrently — the actual fix for the wall-clock stall, rather than
+    // just moving it around.
+    final created = await Future.wait(
+      List.generate(size, (_) => _tryCreate()),
+    );
+    _idle.addAll(created.whereType<AudioPlayer>());
+  }
+
+  /// [_create], but best-effort: a missing slot just means slightly less
+  /// overlap headroom for this one effect, same as the old sequential
+  /// warmUp's per-iteration try/catch — kept as its own method so
+  /// [warmUp] can fire every slot's creation at once via [Future.wait]
+  /// without one failed slot cancelling the whole batch.
+  Future<AudioPlayer?> _tryCreate() async {
+    try {
+      return await _create();
+    } catch (_) {
+      return null;
     }
   }
 
@@ -1302,11 +1334,14 @@ class _ManagedPool {
     for (final cancel in _busy.values) {
       cancel();
     }
-    for (final p in [..._idle, ..._busy.keys]) {
-      try {
-        await p.dispose();
-      } catch (_) {}
-    }
+    // PERF: see the matching note on [warmUp] — disposing every player one
+    // at a time serialized this pool's teardown into as many sequential
+    // platform-channel round trips as it had players, right before
+    // [warmUp]'s own chain runs again via [rebuild]. Firing them together
+    // lets the platform channel handle the batch concurrently instead.
+    await Future.wait([
+      for (final p in [..._idle, ..._busy.keys]) p.dispose().catchError((_) {}),
+    ]);
     _idle.clear();
     _busy.clear();
     _setupDone.clear();

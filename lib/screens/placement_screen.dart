@@ -579,12 +579,29 @@ class _PlacementScreenState extends State<PlacementScreen>
 
     SoundService.instance.cannonFire(cannonSkinId: loadout.cannonSkinId);
     _previewFireCtrl.add(null);
+    // BUGFIX (pointy shells "spinning weird" on a close-range tap): see
+    // the matching note on `battle_screen.dart`'s `_launchBall`. This used
+    // to be a FIXED `cellSize * 2.4` regardless of how close the tapped
+    // cell actually was, so tapping a cell right next to the cannon — a
+    // very common thing to do on this single-board deploy screen — gave
+    // the shell the same tall arc as a shot clear across the grid. That
+    // dwarfs a close tap's real horizontal travel with a disproportionate
+    // vertical one, and right at the arc's apex (where the directional
+    // shell's heading, `angleAt` below, is derived from both) the shell is
+    // barely moving in either direction — so its nose whips through a
+    // huge angle in a single frame instead of easing through the turn.
+    // Scaling the peak to the tap's actual distance keeps it proportionate
+    // — a close tap gets a small hop, a far one still gets the old 2.4-cell
+    // loop.
+    final dx = to.dx - muzzle.dx;
+    final dy = to.dy - muzzle.dy;
+    final dist = math.sqrt(dx * dx + dy * dy) / cellSize; // in cells
     setState(() {
       _previewAimCell = [r, c];
       _previewShotFrom = muzzle;
       _previewShotTo = to;
       _previewShotCell = cellSize;
-      _previewShotArc = cellSize * 2.4;
+      _previewShotArc = cellSize * dist.clamp(1.0, 2.4);
     });
     _previewShotCtrl.forward(from: 0).whenComplete(() {
       if (mounted) {

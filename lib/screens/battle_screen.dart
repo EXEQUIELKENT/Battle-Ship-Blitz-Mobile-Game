@@ -1071,10 +1071,31 @@ class _BattleScreenState extends State<BattleScreen>
     // bottom-to-top shot (~400px) never dips — the linear drop outruns the
     // fixed arc and the pointy shells arrive pointing sideways/left, the
     // "turns left" bug. Desired final vy ≈ 1.2*cell downwards.
+    final dx = to.dx - from.dx;
     final dy = to.dy - from.dy;
     final desiredDown = targetGeom.cell * 1.2;
     final needH = (-dy + desiredDown) / (math.pi * targetGeom.cell);
-    final hFactor = needH.clamp(3.0, 5.5);
+    // BUGFIX (pointy shells "spinning weird" on a close-range shot): the
+    // floor below used to be an UNCONDITIONAL 3.0, so a shot to a NEARBY
+    // cell — e.g. the row right across the divider, with the cannon
+    // already slid out to the middle of its own deck for its owner's
+    // turn — still got handed the same tall arc as a full cross-board
+    // shot. `angleAt` (below) derives a directional shell's heading from
+    // this arc's own instantaneous velocity, and that velocity's vertical
+    // half passes through zero at the arc's apex (`arcRate` there is
+    // `cos(π·0.5) == 0`). For a genuinely short hop the horizontal half
+    // (`vx`, fixed by how far the cell actually is) is tiny too, so right
+    // at the apex BOTH components collapse toward zero at once and the
+    // shell's nose whips through a huge angle in a single frame instead
+    // of easing through the turn — a flat-out visual glitch, not a
+    // deliberate flourish. Round shells never showed it (they just spin
+    // freely and never look at their heading at all), which is exactly
+    // the tell that pointed here. Scaling the floor down with the shot's
+    // actual straight-line distance keeps the peak proportionate to how
+    // far the shell is really travelling, so a close shot gets a small,
+    // gentle hop instead of a loop sized for a full board crossing.
+    final dist = math.sqrt(dx * dx + dy * dy) / targetGeom.cell; // in cells
+    final hFactor = needH.clamp(dist.clamp(1.0, 3.0), 5.5);
     final arcH = targetGeom.cell * hFactor;
     setState(() {
       proj
