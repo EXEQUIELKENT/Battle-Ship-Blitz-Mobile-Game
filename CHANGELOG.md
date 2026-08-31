@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.15](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.14...battleship_blitz-v1.4.15) (2026-08-31)
+
+
+### Bug Fixes
+
+* Update sound_service.dart ([03464d1](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/03464d1114946386ae02c21b9c61565fc9b9340e))
+
 ## [1.4.14](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.13...battleship_blitz-v1.4.14) (2026-08-30)
 
 
