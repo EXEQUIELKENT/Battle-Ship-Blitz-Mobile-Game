@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 /// Real sound effects via the audioplayers plugin.
@@ -498,6 +499,22 @@ class SoundService {
       // independent of one another, so rebuilding them all at once and
       // awaiting the batch lets the platform channel pipeline the whole
       // thing concurrently instead of one pool at a time.
+      //
+      // PERF (that same "lags for a bit, then it's fine" still visible
+      // AFTER the above): pipelining the batch cut its total wall-clock
+      // time a lot, but every one of those ~29 players' worth of platform
+      // calls still lands back on this SAME UI isolate — the one Flutter
+      // also uses to build/layout/paint. Firing the whole batch the
+      // instant `resumed` comes in means all of that reply traffic piles
+      // up in the exact same window as the very first frame the player
+      // sees when the app comes back — so that frame (and the next few)
+      // is what pays for it, i.e. the stutter right on return. `endOfFrame`
+      // guarantees the frame that's already due on resume gets drawn
+      // first — the batch below only starts once THAT frame has safely
+      // landed, so it no longer has to compete with it. The rebuild takes
+      // exactly as long either way; it just no longer steals cycles from
+      // the one frame where stealing them is visible.
+      await SchedulerBinding.instance.endOfFrame;
       await Future.wait(_pools.values.map((pool) => pool.rebuild()));
       if (_menuMusicWanted && enabled) {
         // Coming back from a pause we did ourselves, resume rather than
