@@ -5,6 +5,7 @@ import 'package:battleship_blitz/art/family_cannon_art.dart';
 import 'package:battleship_blitz/art/family_shell_art.dart';
 import 'package:battleship_blitz/art/family_ship_art.dart';
 import 'package:battleship_blitz/art/fleet_family.dart';
+import 'package:battleship_blitz/art/legacy_cannon_art.dart';
 import 'package:battleship_blitz/art/svg_path.dart';
 import 'package:battleship_blitz/models/game_models.dart';
 import 'package:battleship_blitz/services/storage_service.dart';
@@ -297,10 +298,21 @@ void main() {
       expect(Catalog.cannonById('mk1').cooldownFactor, 1.0);
     });
 
-    test('a family cannon reports its own muzzle, legacy ones the default',
-        () {
+    test(
+        'a family cannon reports its own muzzle, a legacy one its own '
+        'illustrated barrel length', () {
+      // REDESIGN: the nine originals used to be one drawing in nine
+      // colourways sharing one fixed `muzzleFraction` — `paintLegacyCannon`
+      // gives each its own turret now, so each reads its own value from
+      // `legacyMuzzleFractionOf` instead (see that function's own doc).
       expect(CannonWidget.muzzleFractionOf(Catalog.cannonById('mk1')),
-          CannonWidget.muzzleFraction);
+          legacyMuzzleFractionOf('mk1'));
+      expect(CannonWidget.muzzleFractionOf(Catalog.cannonById('inferno')),
+          legacyMuzzleFractionOf('inferno'));
+      expect(legacyMuzzleFractionOf('inferno'),
+          isNot(legacyMuzzleFractionOf('mk1')),
+          reason: 'the whole point of the redesign — different guns, '
+              'different barrel lengths');
       expect(CannonWidget.muzzleFractionOf(Catalog.cannonById('f_naval')),
           FleetFamilies.naval.muzzleFrac);
       expect(CannonWidget.muzzleFractionOf(Catalog.cannonById('f_pirate')),
@@ -310,28 +322,32 @@ void main() {
 
   group('ownership scoping', () {
     test('an id shared by two catalogues is two separate purchases', () {
-      // The bug this fixes: `arctic` is BOTH a hull (Arctic Storm, 750 RP)
-      // and a battlefield (Arctic Front, 900 RP), and one flat set made
-      // buying either hand over the other for free.
-      final p = ProfileStore()..owned = {'theme:arctic'};
-      expect(p.ownsTheme('arctic'), isTrue);
-      expect(p.ownsShip('arctic'), isFalse);
+      // The bug this fixes: `f_arctic` is BOTH a hull (Rime Wardens) and a
+      // battlefield (Rime Field) sharing one id, and one flat set made
+      // buying either hand over the other for free. (No LEGACY id is
+      // shared across catalogues any more since the four flat palettes —
+      // one of which used to collide with the `arctic` hull — were
+      // retired in favour of the nine legacy battlefields.)
+      final p = ProfileStore()..owned = {'theme:f_arctic'};
+      expect(p.ownsTheme('f_arctic'), isTrue);
+      expect(p.ownsShip('f_arctic'), isFalse);
     });
 
     test('an old flat save keeps everything it could previously equip', () {
       // Deliberately generous — under the old build this player really
       // could equip both, so scoping must not repossess one of them.
-      final p = ProfileStore()
-        ..owned = {'steel', 'mk1', 'classic', 'arctic'};
+      // `mk1` alone covers the shared-catalogue case here (it is both a
+      // legacy cannon id AND its own matching legacy theme id).
+      final p = ProfileStore()..owned = {'steel', 'mk1', 'f_arctic'};
       p.load; // not called: migration runs inside load()
       // Simulate what load() does.
       final migrated = ProfileStore()..owned = {...p.owned};
       _runMigration(migrated);
-      expect(migrated.ownsShip('arctic'), isTrue);
-      expect(migrated.ownsTheme('arctic'), isTrue);
+      expect(migrated.ownsShip('f_arctic'), isTrue);
+      expect(migrated.ownsTheme('f_arctic'), isTrue);
       expect(migrated.ownsShip('steel'), isTrue);
       expect(migrated.ownsCannon('mk1'), isTrue);
-      expect(migrated.ownsTheme('classic'), isTrue);
+      expect(migrated.ownsTheme('mk1'), isTrue);
       // …but nothing it never had.
       expect(migrated.ownsShip('gold'), isFalse);
       expect(migrated.ownsShip('f_scifi'), isFalse);
@@ -342,7 +358,7 @@ void main() {
       _runMigration(p);
       expect(p.ownsShip('steel'), isTrue);
       expect(p.ownsCannon('mk1'), isTrue);
-      expect(p.ownsTheme('classic'), isTrue);
+      expect(p.ownsTheme('mk1'), isTrue);
     });
 
     test('an already-scoped save is left alone', () {
@@ -356,7 +372,7 @@ void main() {
     test('buying a family hull does not hand over its cannon or board', () {
       final p = ProfileStore()
         ..rp = 9999
-        ..owned = {'ship:steel', 'cannon:mk1', 'theme:classic'};
+        ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
       p.equipShipSkin(Catalog.shipById('f_volcanic'));
       expect(p.ownsShip('f_volcanic'), isTrue);
       expect(p.ownsCannon('f_volcanic'), isFalse);
@@ -373,28 +389,28 @@ void main() {
 
         final byHull = ProfileStore()
           ..rp = 99999
-          ..owned = {'ship:steel', 'cannon:mk1', 'theme:classic'};
+          ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
         byHull.equipShipSkin(Catalog.shipById(key));
         expect(byHull.ownsShip(key), isTrue, reason: '$key hull');
         expect(byHull.ownsCannon(key), isFalse, reason: '$key hull→cannon');
         expect(byHull.ownsTheme(key), isFalse, reason: '$key hull→board');
         // …and what they SAIL is unchanged apart from the hull.
         expect(byHull.cannonSkinId, 'mk1');
-        expect(byHull.gameplayThemeId, 'classic');
+        expect(byHull.gameplayThemeId, 'mk1');
 
         final byGun = ProfileStore()
           ..rp = 99999
-          ..owned = {'ship:steel', 'cannon:mk1', 'theme:classic'};
+          ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
         byGun.equipCannonSkin(Catalog.cannonById(key));
         expect(byGun.ownsCannon(key), isTrue, reason: '$key cannon');
         expect(byGun.ownsShip(key), isFalse, reason: '$key cannon→hull');
         expect(byGun.ownsTheme(key), isFalse, reason: '$key cannon→board');
         expect(byGun.shipSkinId, 'steel');
-        expect(byGun.gameplayThemeId, 'classic');
+        expect(byGun.gameplayThemeId, 'mk1');
 
         final byBoard = ProfileStore()
           ..rp = 99999
-          ..owned = {'ship:steel', 'cannon:mk1', 'theme:classic'};
+          ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
         byBoard.equipGameplayTheme(Catalog.gameplayThemeById(key));
         expect(byBoard.ownsTheme(key), isTrue, reason: '$key board');
         expect(byBoard.ownsShip(key), isFalse, reason: '$key board→hull');
@@ -409,7 +425,7 @@ void main() {
         final key = 'f_${f.key}';
         final p = ProfileStore()
           ..rp = 99999
-          ..owned = {'ship:steel', 'cannon:mk1', 'theme:classic'};
+          ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
 
         final start = p.rp;
         p.equipShipSkin(Catalog.shipById(key));
@@ -429,7 +445,7 @@ void main() {
   group('matched sets', () {
     ProfileStore fresh() => ProfileStore()
       ..rp = 99999
-      ..owned = {'ship:steel', 'cannon:mk1', 'theme:classic'};
+      ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
 
     test('the set costs 80% of its three pieces and equips all of them', () {
       final p = fresh();
@@ -551,7 +567,7 @@ void _runMigration(ProfileStore p) {
     if (Catalog.cannonSkins.any((c) => c.id == id)) scoped.add('cannon:$id');
     if (Catalog.gameplayThemes.any((t) => t.id == id)) scoped.add('theme:$id');
   }
-  scoped.addAll(['ship:steel', 'cannon:mk1', 'theme:classic']);
+  scoped.addAll(['ship:steel', 'cannon:mk1', 'theme:mk1']);
   p.owned = scoped;
 }
 

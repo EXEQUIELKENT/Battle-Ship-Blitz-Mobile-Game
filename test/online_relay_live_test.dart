@@ -106,7 +106,7 @@ void main() {
         'ship': 'arctic',
         'shipChosen': true,
         'cannon': 'phantom',
-        'theme': 'deep',
+        'theme': 'mk1',
       });
       final poll = await alice.call('poll');
       final bobRow = (poll['friends'] as List).first as Map;

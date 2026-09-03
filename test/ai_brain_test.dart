@@ -52,7 +52,7 @@ void main() {
       playerShipSkinId: 'steel',
       playerShipChosen: true,
       playerCannonSkinId: 'mk1',
-      playerThemeId: 'classic',
+      playerThemeId: 'mk1',
       difficulty: difficulty,
       rng: Random(seed),
       clockForTest: clock.now,

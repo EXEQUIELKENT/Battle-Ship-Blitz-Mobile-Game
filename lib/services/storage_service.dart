@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../art/fleet_family.dart';
+import '../art/legacy_identity.dart';
 
 /// A ship hull skin.
 ///
@@ -70,7 +71,37 @@ class GameplayTheme {
   /// is still one cell, drawn differently.
   final String? familyKey;
 
-  const GameplayTheme(this.id, this.name, this.description, this.deck, this.deckAccent, this.grid, this.gridLine, this.miss, this.accent, this.cost, {this.familyKey});
+  /// True for the nine legacy battlefields — one matching illustrated
+  /// deck per legacy cannon skin (`id` is that same cannon's id), ported
+  /// from `uploads/New Design/Deck/dk-*.svg`. Like a family battlefield
+  /// this replaces the flat cells and printed gridlines wholesale (see
+  /// `paintLegacyBoard`), but it is bought and equipped on its own —
+  /// legacy skins are still sold a la carte, never bundled — and it keeps
+  /// the existing legacy hit/miss marks (themed by the shooter's cannon,
+  /// not the board) rather than bringing its own.
+  final bool legacy;
+
+  const GameplayTheme(this.id, this.name, this.description, this.deck, this.deckAccent, this.grid, this.gridLine, this.miss, this.accent, this.cost, {this.familyKey, this.legacy = false});
+}
+
+/// A legacy "gameplay set" — the hull/gun/board trio a legacy identity's
+/// ship skin and matching cannon (also its gameplay theme id, per
+/// `GameplayTheme.legacy`) form together, mirroring what a [FleetFamily]
+/// is for the six thematic families. Unlike a family, this is NOT a
+/// purchasable bundle — every piece is still bought a la carte — it only
+/// exists as a "you already own all three, here's the shortcut" shortcut
+/// in the gear dialog (see `_GearDialogState` in `placement_screen.dart`).
+class LegacySet {
+  /// The shared legacy cannon / gameplay-theme id, e.g. `'mk1'`.
+  final String id;
+
+  /// The matching legacy ship skin id, e.g. `'steel'` — a different id
+  /// namespace from [id], unlike a family where all three share one id.
+  final String shipSkinId;
+  final String name;
+  final Color accent;
+
+  const LegacySet(this.id, this.shipSkinId, this.name, this.accent);
 }
 
 /// Full customization catalog.
@@ -111,15 +142,15 @@ class Catalog {
         'Reliable naval artillery.', 1.0, 0),
     CannonSkin('inferno', 'Inferno Cannon', Color(0xFF7C2D12), Color(0xFFEF4444),
         'Blazing fire shells.', 1.0, 300),
-    CannonSkin('tesla', 'Tesla Coilgun', Color(0xFF0E7490), Color(0xFF22D3EE),
+    CannonSkin('tesla', 'Arctic Coilgun', Color(0xFF0E7490), Color(0xFF22D3EE),
         'Electric plasma bolts.', 1.0, 300),
     CannonSkin('venom', 'Venom Launcher', Color(0xFF365314), Color(0xFF84CC16),
         'Toxic green warheads.', 1.0, 300),
     CannonSkin('royal', 'Royal Broadside', Color(0xFF78350F), Color(0xFFFBBF24),
         'Gold-plated heavy guns.', 1.0, 600),
-    CannonSkin('phantom', 'Phantom Railgun', Color(0xFF312E81), Color(0xFFC084FC),
+    CannonSkin('phantom', 'Abyss Railgun', Color(0xFF312E81), Color(0xFFC084FC),
         'Experimental railgun. 15% faster reload!', 0.85, 1000),
-    CannonSkin('kraken', 'Kraken Cannon', Color(0xFF0F766E), Color(0xFF5EEAD4), 'Deep-sea siege cannon with a crushing pulse.', 0.95, 1200),
+    CannonSkin('kraken', 'Emerald Cannon', Color(0xFF0F766E), Color(0xFF5EEAD4), 'Deep-sea siege cannon with a crushing pulse.', 0.95, 1200),
     CannonSkin('sunfire', 'Sunfire Battery', Color(0xFFB45309), Color(0xFFFDE047), 'High-energy golden shell launcher.', 0.90, 1400),
     CannonSkin('void', 'Void Annihilator', Color(0xFF111827), Color(0xFFEC4899), 'Dark-matter launcher. 10% faster reload!', 0.90, 1800),
     // ---- Thematic families: each gun ships with its own shell ----
@@ -148,16 +179,54 @@ class Catalog {
   ];
 
   static const List<GameplayTheme> gameplayThemes = [
-    GameplayTheme('classic','Classic Deck','Warm cartoon navy battle deck.',Color(0xFFE68A6E),Color(0xFFFDB9A4),Color(0xFF4A789A),Color(0xFF6D9DB8),Color(0xFF7A8A96),Color(0xFFFFB739),0),
-    GameplayTheme('arctic','Arctic Front','Cold ice-water battlefield with bright sonar.',Color(0xFF9ED8E8),Color(0xFFD6F5FF),Color(0xFF3F7FA0),Color(0xFF8CCFE8),Color(0xFF9AB9C7),Color(0xFF7DD3FC),900),
-    GameplayTheme('deep','Deep Sea','Dark ocean tones for a tactical match.',Color(0xFF173A4D),Color(0xFF2A607D),Color(0xFF214E63),Color(0xFF4A879C),Color(0xFF6B8792),Color(0xFF22D3EE),1200),
-    GameplayTheme('sunset','Sunset Siege','Warm orange water and gold targeting effects.',Color(0xFFB8664F),Color(0xFFF5B48F),Color(0xFF4B718A),Color(0xFFD99D68),Color(0xFF8E9EAA),Color(0xFFFFD166),1500),
+    // ---- Legacy battlefields: one illustrated deck per legacy cannon ----
+    // Each of the nine originals now ships a matching battlefield —
+    // gridlines, corner dressing and a scatter of thematic detail replacing
+    // the flat palette swaps above. Still bought and equipped a la carte
+    // like every other legacy piece (no bundling), so priced on the same
+    // ladder as the flat palettes (900–1500) rather than the family tier
+    // (1700+), scaled roughly with the matching cannon's own price.
+    GameplayTheme('mk1', 'Iron Standard',
+        'Plain steel-blue water, riveted corner braces.',
+        Color(0xFF6FA3C4), Color(0xFFEAF2F8), Color(0xFF4A789A),
+        Color(0xFF6FA3C4), Color(0xFFEAF2F8), Color(0xFFEAF2F8), 0, legacy: true),
+    GameplayTheme('inferno', 'Ember Field',
+        'Scorched black water, drifting embers and heat-haze wisps.',
+        Color(0xFF7A2E14), Color(0xFFFF8A4A), Color(0xFF2B0F0A),
+        Color(0xFF7A2E14), Color(0xFFFFD9BF), Color(0xFFFF6A2B), 500, legacy: true),
+    GameplayTheme('tesla', 'Storm Circuit',
+        'Dashed conduit lines and a live current band across the deck.',
+        Color(0xFF16505E), Color(0xFF7FE7FF), Color(0xFF0B2432),
+        Color(0xFF16505E), Color(0xFFE0FBFF), Color(0xFF7FB8D6), 500, legacy: true),
+    GameplayTheme('venom', 'Toxic Marsh',
+        'Sickly green water with sunken toxic-barrel wreckage.',
+        Color(0xFF3A5220), Color(0xFFD4F98A), Color(0xFF1F2E0D),
+        Color(0xFF3A5220), Color(0xFFD4F98A), Color(0xFFA3E635), 500, legacy: true),
+    GameplayTheme('royal', 'Gilded Waters',
+        'Navy and gold parade ground with a compass badge at every corner.',
+        Color(0xFFC98A3E), Color(0xFFFFF3C4), Color(0xFF1A2E4A),
+        Color(0xFFC98A3E), Color(0xFFFFF3C4), Color(0xFFFBBF24), 800, legacy: true),
+    GameplayTheme('phantom', 'Shadow Veil',
+        'Ghostly violet water with slow concentric ripple rings.',
+        Color(0xFF333A66), Color(0xFFF1E3FF), Color(0xFF14162B),
+        Color(0xFF333A66), Color(0xFFF1E3FF), Color(0xFF7C6BC4), 1100, legacy: true),
+    GameplayTheme('kraken', 'Abyssal Depths',
+        'Deep teal trench water with drifting tentacle trails.',
+        Color(0xFF175A52), Color(0xFFB6FFF1), Color(0xFF0A2E2C),
+        Color(0xFF175A52), Color(0xFFB6FFF1), Color(0xFF34D399), 1300, legacy: true),
+    GameplayTheme('sunfire', 'Solar Flats',
+        'Sun-scorched amber sands with radiant corner sigils.',
+        Color(0xFF8A5A20), Color(0xFFFFF8D6), Color(0xFF3A2408),
+        Color(0xFF8A5A20), Color(0xFFFFF8D6), Color(0xFFE0715A), 1500, legacy: true),
+    GameplayTheme('void', 'Event Horizon',
+        'Dark-matter water warped around a hollow gravity well.',
+        Color(0xFF1C2A44), Color(0xFFFBCFE8), Color(0xFF070A14),
+        Color(0xFF1C2A44), Color(0xFFFBCFE8), Color(0xFF4B72A8), 1600, legacy: true),
     // ---- Thematic families: a whole battlefield, not a palette ----
-    // Priced ABOVE every legacy palette (top out at Sunset Siege, 1500):
-    // a family board replaces the tiles, gridlines AND hit/miss markers
-    // wholesale, so it should never be the cheaper pick next to a flat
-    // four-colour palette swap — Pirate Seas used to undercut even
-    // Arctic Front.
+    // Priced ABOVE every legacy battlefield (top out at Event Horizon,
+    // 1600): a family board replaces the tiles, gridlines AND hit/miss
+    // markers wholesale, so it should never be the cheaper pick next to
+    // a legacy board's a la carte price.
     GameplayTheme('f_pirate', 'Pirate Seas',
         'Brine cells, rope grid, drifting swell.', Color(0xFF1F3B3C),
         Color(0xFF2C5A5C), Color(0xFF2C5A5C), Color(0xFF8FAE8A),
@@ -182,6 +251,15 @@ class Catalog {
         'Lattice, corner ticks, travelling scan band.', Color(0xFF0E1428),
         Color(0xFF1B2138), Color(0xFF16223E), Color(0xFF3A5A9E),
         Color(0xFF6FE7FF), Color(0xFF6FE7FF), 3300, familyKey: 'scifi'),
+  ];
+
+  /// The nine legacy identities' own hull+gun+board pairing — see
+  /// [LegacySet]'s own doc. Sourced from `legacy_identity.dart` (the same
+  /// data the recolour pass in `legacy_cannon_art.dart`/
+  /// `legacy_board_art.dart`/`legacy_crosshair_art.dart` reads), not
+  /// duplicated here.
+  static final List<LegacySet> legacySets = [
+    for (final l in legacyIdentities) LegacySet(l.id, l.shipSkinId, l.name, l.accent),
   ];
 
   static ShipSkin shipById(String id) =>
@@ -214,7 +292,7 @@ class Loadout {
   const Loadout({
     this.shipSkinId = 'steel',
     this.cannonSkinId = 'mk1',
-    this.themeId = 'classic',
+    this.themeId = 'mk1',
     this.shipChosen = false,
   });
 
@@ -225,6 +303,28 @@ class Loadout {
         themeId: p.gameplayThemeId,
         shipChosen: p.shipSkinChosen,
       );
+
+  /// A loadout drawn independently at random — one ship skin, one cannon
+  /// skin, one gameplay theme — from everything [p] actually owns. Used
+  /// to give an AI opponent a real, varied appearance instead of always
+  /// sailing the plain starter gear: every catalogue always has at least
+  /// its free starter entry owned, so none of the three pools is ever
+  /// empty. [rng] is injectable for deterministic tests.
+  factory Loadout.randomOwned(ProfileStore p, {Random? rng}) {
+    final r = rng ?? Random();
+    T pick<T>(List<T> owned) => owned[r.nextInt(owned.length)];
+    final ship = pick(Catalog.shipSkins.where((s) => p.ownsShip(s.id)).toList());
+    final cannon =
+        pick(Catalog.cannonSkins.where((c) => p.ownsCannon(c.id)).toList());
+    final theme =
+        pick(Catalog.gameplayThemes.where((t) => p.ownsTheme(t.id)).toList());
+    return Loadout(
+      shipSkinId: ship.id,
+      shipChosen: true,
+      cannonSkinId: cannon.id,
+      themeId: theme.id,
+    );
+  }
 
   ShipSkin get shipSkin => Catalog.shipById(shipSkinId);
   CannonSkin get cannonSkin => Catalog.cannonById(cannonSkinId);
@@ -310,8 +410,8 @@ class ProfileStore extends ChangeNotifier {
   bool shipSkinChosen = false;
 
   String cannonSkinId = 'mk1';
-  String gameplayThemeId = 'classic';
-  Set<String> owned = {'ship:steel', 'cannon:mk1', 'theme:classic'};
+  String gameplayThemeId = 'mk1';
+  Set<String> owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
 
   ShipSkin get shipSkin => Catalog.shipById(shipSkinId);
   CannonSkin get cannonSkin => Catalog.cannonById(cannonSkinId);
@@ -349,8 +449,8 @@ class ProfileStore extends ChangeNotifier {
     shipSkinId = p.getString(_kShipSkin) ?? 'steel';
     shipSkinChosen = p.getBool(_kShipSkinChosen) ?? false;
     cannonSkinId = p.getString(_kCannonSkin) ?? 'mk1';
-    gameplayThemeId = p.getString(_kGameplayTheme) ?? 'classic';
-    owned = (p.getStringList(_kOwned) ?? ['steel', 'mk1', 'classic']).toSet();
+    gameplayThemeId = p.getString(_kGameplayTheme) ?? 'mk1';
+    owned = (p.getStringList(_kOwned) ?? ['steel', 'mk1', 'mk1']).toSet();
     _migrateOwnership();
     notifyListeners();
   }
@@ -456,7 +556,7 @@ class ProfileStore extends ChangeNotifier {
     scoped.addAll([
       _ownKey('ship', 'steel'),
       _ownKey('cannon', 'mk1'),
-      _ownKey('theme', 'classic'),
+      _ownKey('theme', 'mk1'),
     ]);
     owned = scoped;
   }
@@ -559,6 +659,12 @@ class ProfileStore extends ChangeNotifier {
     final key = 'f_${family.key}';
     return ownsShip(key) && ownsCannon(key) && ownsTheme(key);
   }
+
+  /// True once all three pieces of [set] are owned — a legacy set has no
+  /// bundle price to sell (every piece is still a la carte), so this only
+  /// gates whether its gear-dialog shortcut chip appears.
+  bool ownsLegacySet(LegacySet set) =>
+      ownsShip(set.shipSkinId) && ownsCannon(set.id) && ownsTheme(set.id);
 
   bool equipGameplayTheme(GameplayTheme theme) {
     if (!ownsTheme(theme.id)) {

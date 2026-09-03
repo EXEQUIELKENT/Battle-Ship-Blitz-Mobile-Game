@@ -433,7 +433,7 @@ class SoundService {
     required String shipSkinId,
     required String themeId,
   }) {
-    _warmSkinKeys([
+    final keys = <String>{
       'cannon_fire_$cannonSkinId',
       'cannon_ready_$cannonSkinId',
       'hit_$cannonSkinId',
@@ -444,8 +444,31 @@ class SoundService {
       'sunk_$shipSkinId',
       'place_$shipSkinId',
       'move_$shipSkinId',
-    ]);
+    };
+    // Remembered so [onAppResumed] knows which of the accumulated pools
+    // are the ones a player can actually hear right now — see
+    // [_resumePriorityKeys]. Two entries: a battle screen warms BOTH
+    // captains' loadouts back to back, and both stay live for the match.
+    _recentLoadoutKeys.removeWhere((s) => s.length == keys.length && s.containsAll(keys));
+    _recentLoadoutKeys.add(keys);
+    while (_recentLoadoutKeys.length > 2) {
+      _recentLoadoutKeys.removeAt(0);
+    }
+    _warmSkinKeys(keys);
   }
+
+  /// The last two loadouts handed to [warmLoadout] — see its note.
+  final List<Set<String>> _recentLoadoutKeys = [];
+
+  /// The pools [onAppResumed] rebuilds BEFORE handing control back: the
+  /// always-on core effects plus whatever the live loadouts need. Every
+  /// other pool in `_pools` belongs to a skin that was equipped at some
+  /// point this session but isn't in play now, so it can be rebuilt after
+  /// the fact without anyone hearing the difference.
+  Set<String> get _resumePriorityKeys => {
+        ..._corePoolKeys,
+        for (final keys in _recentLoadoutKeys) ...keys,
+      };
 
   void _warmSkinKeys(Iterable<String> keys) {
     for (final key in keys) {
@@ -460,7 +483,7 @@ class SoundService {
           safetyTimeout: _safetyTimeoutFor(key),
         ),
       );
-      unawaited(pool.ensureWarm());
+      unawaited(pool.ensureFresh());
     }
   }
 
@@ -486,36 +509,56 @@ class SoundService {
     if (_rebuildingPool) return;
     _rebuildingPool = true;
     try {
-      // PERF (brief lag right after returning to the app): this used to
-      // rebuild each pool in turn, fully `await`-ing one before even
-      // starting the next. Every pool's own `dispose()`/`warmUp()` is
-      // already a chain of sequential platform-channel round trips (see
-      // their docs) — with every purchased skin's pool warmed by the time
-      // a match is underway (~29 pooled players isn't unusual, see
-      // `_create()`'s doc), stacking pool after pool serialized the whole
-      // resume into one long queue of platform calls, all landing right
-      // when the player expects the app to just pick back up — exactly
-      // the "lags for a bit, then it's fine" report. The pools are fully
-      // independent of one another, so rebuilding them all at once and
-      // awaiting the batch lets the platform channel pipeline the whole
-      // thing concurrently instead of one pool at a time.
+      // PERF + FEEDBACK, in three passes, because the first two fixed the
+      // shape of the problem but not the problem:
       //
-      // PERF (that same "lags for a bit, then it's fine" still visible
-      // AFTER the above): pipelining the batch cut its total wall-clock
-      // time a lot, but every one of those ~29 players' worth of platform
-      // calls still lands back on this SAME UI isolate — the one Flutter
-      // also uses to build/layout/paint. Firing the whole batch the
-      // instant `resumed` comes in means all of that reply traffic piles
-      // up in the exact same window as the very first frame the player
-      // sees when the app comes back — so that frame (and the next few)
-      // is what pays for it, i.e. the stutter right on return. `endOfFrame`
-      // guarantees the frame that's already due on resume gets drawn
-      // first — the batch below only starts once THAT frame has safely
-      // landed, so it no longer has to compete with it. The rebuild takes
-      // exactly as long either way; it just no longer steals cycles from
-      // the one frame where stealing them is visible.
+      //  1. This rebuilt every pool in turn, fully awaiting one before
+      //     starting the next. Each pool's own dispose/warmUp is already
+      //     a chain of sequential platform-channel round trips, and a
+      //     match underway has ~29 pooled players across every skin
+      //     equipped this session, so a resume became one long serialized
+      //     queue of platform calls — "lags for a bit, then it's fine".
+      //     Batching them concurrently cut the wall-clock time a lot.
+      //  2. All those replies still land on this same UI isolate, in the
+      //     same window as the first frame the player sees on return, so
+      //     that frame paid for them. Waiting for `endOfFrame` first kept
+      //     the batch off the one frame where the cost is visible.
+      //  3. Neither helped the other half of the report — audio silent
+      //     for a beat or two after coming back — because `rebuild()`
+      //     disposes before it warms, so EVERY pool was empty for the
+      //     whole length of the batch and anything fired in that window
+      //     had to wait the queue out before it could make a sound.
+      //
+      // Nothing is torn down here at all now. Every pool is only FLAGGED
+      // stale, and [_ManagedPool.ensureFresh] — which every play already
+      // goes through — rebuilds a pool the first time it is actually used
+      // after a resume. The first shot back therefore waits on its own
+      // pool alone (three players, a few ms) rather than on thirty. It is
+      // still safe: the whole reason for rebuilding is that the OS may
+      // have reclaimed a pool's native samples while the app was away,
+      // and that only matters at the moment that pool next plays — which
+      // is exactly when the refresh now happens.
+      //
+      // A background pass then walks the rest, so later effects do not
+      // each pay their own first-use rebuild: priority pools first, one
+      // at a time, yielding a frame between each so its platform traffic
+      // trickles in rather than arriving as a burst. It goes through the
+      // same `ensureFresh`, so it can never race a real play for the same
+      // pool — whichever gets there first, the other joins it. And it
+      // starts only after `endOfFrame`, keeping pass 2's fix intact.
+      for (final pool in _pools.values) {
+        pool.markStale();
+      }
+      final priorityKeys = _resumePriorityKeys;
+      final ordered = [
+        for (final e in _pools.entries)
+          if (priorityKeys.contains(e.key)) e.value,
+        for (final e in _pools.entries)
+          if (!priorityKeys.contains(e.key)) e.value,
+      ];
       await SchedulerBinding.instance.endOfFrame;
-      await Future.wait(_pools.values.map((pool) => pool.rebuild()));
+      _deferredRebuildGeneration++;
+      unawaited(_rebuildDeferred(ordered, _deferredRebuildGeneration));
       if (_menuMusicWanted && enabled) {
         // Coming back from a pause we did ourselves, resume rather than
         // replay: `play()` restarts an AssetSource from position zero, so
@@ -544,6 +587,27 @@ class SoundService {
   }
 
   bool _rebuildingPool = false;
+
+  /// Bumped on every resume so a still-running deferred pass from an
+  /// EARLIER resume stops rather than rebuilding pools the newer resume
+  /// has already dealt with (background/foreground can be cycled far
+  /// faster than the tail takes to drain — a notification shade pulled
+  /// down and flicked back up is enough).
+  int _deferredRebuildGeneration = 0;
+
+  /// The background refresh pass of [onAppResumed] — see its note.
+  /// Sequential on purpose: nothing waits on this, so the only thing that
+  /// matters is that it never bunches its platform traffic into one
+  /// frame. Pools a real play has already refreshed are no longer stale
+  /// and fall straight through.
+  Future<void> _rebuildDeferred(List<_ManagedPool> pools, int generation) async {
+    for (final pool in pools) {
+      if (generation != _deferredRebuildGeneration) return;
+      if (!pool.isStale) continue;
+      await pool.ensureFresh();
+      await SchedulerBinding.instance.endOfFrame;
+    }
+  }
 
   /// Companion to [onAppResumed], called the moment the app stops being
   /// the thing on screen — locked, switched away from, taking a call,
@@ -623,7 +687,7 @@ class SoundService {
     // built before its first play — see the note on `_getPool` for the
     // race this closes. `ensureWarm` caches its future, so concurrent
     // first-plays share one warmup and later plays await nothing.
-    await pool.ensureWarm();
+    await pool.ensureFresh();
     final rate = _hasVariedPitch(key)
         ? 0.94 + _rng.nextDouble() * 0.12 // ~±6% pitch/speed wobble
         : 1.0;
@@ -1136,6 +1200,54 @@ class _ManagedPool {
     return f;
   }
 
+  /// Set by [markStale] when the app comes back from the background, and
+  /// cleared by the [ensureFresh] that acts on it. See
+  /// [SoundService.onAppResumed]: the OS may have reclaimed the native
+  /// samples behind this pool's players while the app was away, and the
+  /// Dart-side objects give no sign of it — they keep reporting a normal
+  /// idle state and keep playing nothing at all. The flag is how a pool
+  /// remembers that it must be rebuilt before it can be trusted again,
+  /// without every pool having to be rebuilt up front.
+  bool _stale = false;
+  Future<void>? _refresh;
+
+  /// Bumped by every [markStale]. A refresh records the value it started
+  /// at and only clears [_stale] if that value is still current — so an
+  /// app backgrounded and resumed AGAIN while a refresh was in flight
+  /// leaves the pool stale, and the next use rebuilds it once more,
+  /// rather than trusting players that may have been created before the
+  /// second trip to the background.
+  int _staleGeneration = 0;
+
+  bool get isStale => _stale;
+
+  void markStale() {
+    _stale = true;
+    _staleGeneration++;
+  }
+
+  /// [ensureWarm], plus the post-resume rebuild if one is owed. This is
+  /// what every play goes through, so a pool is always rebuilt before its
+  /// first use after a resume — but only that one pool, and only if it is
+  /// actually used. Concurrent callers (a play and the background pass,
+  /// or two plays at once) share the single in-flight rebuild.
+  Future<void> ensureFresh() {
+    if (!_stale) return ensureWarm();
+    final existing = _refresh;
+    if (existing != null) return existing;
+    // Published before the first await so a second caller landing in the
+    // same microtask joins `_refresh` instead of starting its own.
+    final claimed = _staleGeneration;
+    final completer = Completer<void>();
+    _refresh = completer.future;
+    rebuild().catchError((Object _) {}).whenComplete(() {
+      if (_staleGeneration == claimed) _stale = false;
+      _refresh = null;
+      if (!completer.isCompleted) completer.complete();
+    });
+    return completer.future;
+  }
+
   Future<AudioPlayer> _create() async {
     final p = AudioPlayer();
     // ROOT-CAUSE FIX (mobile jank + audio dying mid-match) — measured on a
@@ -1305,10 +1417,30 @@ class _ManagedPool {
       // -prepared native player instead of tearing it down and reloading
       // the asset on every single play — this is the low-latency path.
       await player.resume();
-      // Playback rate can only be applied to the underlying native stream
-      // once it has actually started (see SoundPool's per-stream setRate),
-      // so this is set AFTER resume(), not before.
-      if (rate != 1.0) await player.setPlaybackRate(rate);
+      // ROOT-CAUSE FIX (cannon_fire/hit/miss/click — exactly the effects
+      // with pitch variation, see `_hasVariedPitch` — cut off or silent
+      // specifically under load): playback rate can only be applied to the
+      // underlying native stream once it has actually started (see
+      // SoundPool's per-stream setRate), so this is set AFTER resume(),
+      // not before — but that also means `resume()` has, at this point,
+      // ALREADY started the clip playing out loud. This call used to share
+      // the same try/catch as `resume()` above, so on a real device — a
+      // stream not QUITE ready for `setRate` yet, more likely exactly when
+      // effects are firing back-to-back (hit streaks, BLITZ/CHAOS's two
+      // independent guns) — a `setPlaybackRate` failure fell into the
+      // catch-all below and called `release()` on a player that was, at
+      // that exact moment, genuinely mid-clip: `release()` hands it
+      // straight back to `_idle`, so the very next `play()` call for ANY
+      // effect sharing this pool could immediately `stop()` it, cutting the
+      // clip off inches after it started — while the SoundService-level
+      // caller that requested THIS sound saw no error at all. A failure to
+      // apply the cosmetic pitch wobble must never be treated as "the play
+      // failed"; the clip is already audible and stays that way.
+      if (rate != 1.0) {
+        try {
+          await player.setPlaybackRate(rate);
+        } catch (_) {/* cosmetic only — the clip keeps playing at rate 1.0 */}
+      }
     } catch (e) {
       if (kDebugMode) {
         debugPrint('SoundService: play failed for $asset ($e)');
@@ -1344,6 +1476,30 @@ class _ManagedPool {
   /// only effects that happened to be busy at the exact moment of
   /// backgrounding were ever at risk.
   Future<void> dispose() async {
+    // ROOT-CAUSE FIX (a handful of extra native players silently piling up
+    // — worse the more app-resumes happen): if this pool's very first
+    // `ensureWarm()` (from `SoundService.warmLoadout`/`_play`) is STILL
+    // in flight when the app is backgrounded and resumed right on top of
+    // it — the exact window a themed pool warms in, right as a battle
+    // screen mounts — `warmUp()`'s own re-entry guard
+    // (`if (_idle.isNotEmpty || _busy.isNotEmpty) return`) does nothing
+    // here, because at that moment both lists are still genuinely empty.
+    // Without waiting for it, [rebuild] would clear state and start a
+    // SECOND `warmUp()` for the same pool while the first is still
+    // creating its own [size] players; whichever batch's `_create()`
+    // calls land last then appends straight into `_idle` on top of the
+    // other, so the pool ends up holding up to `2×size` players instead
+    // of `size` — never a "silent" bug on its own, but wasted native
+    // objects and platform-channel churn on every such resume. Waiting
+    // for any in-flight warmup to land first turns the two calls back
+    // into a clean sequence: let it finish, THEN tear down everything it
+    // just built, THEN warm up fresh.
+    final inFlightWarm = _warm;
+    if (inFlightWarm != null) {
+      try {
+        await inFlightWarm;
+      } catch (_) {/* only waiting for it to settle, not how */}
+    }
     // Cancel every busy player's own listeners FIRST, so none of them can
     // fire mid- or post-disposal and reinsert a dead player into the pool
     // this method (and the `warmUp()` right after it, via [rebuild]) is
@@ -1373,6 +1529,20 @@ class _ManagedPool {
   /// the app returns from the background.
   Future<void> rebuild() async {
     await dispose();
-    await warmUp();
+    // ROOT-CAUSE FIX (an effect staying silent for a beat after a resume,
+    // and a pool quietly ending up with `2×size` players): this used to
+    // call `warmUp()` directly, which leaves `_warm` null. Between
+    // `dispose()` clearing the pool and this warmup finishing, `_idle`
+    // and `_busy` are both empty and `_warm` is null — so a `play()`
+    // arriving in that window ran `ensureWarm()` → `warmUp()` and sailed
+    // straight past `warmUp`'s own re-entry guard (which only checks
+    // those two empty lists), starting a SECOND, independent build of
+    // the same pool. The shot then waited on that second build rather
+    // than the one already in flight, and both batches appended their
+    // players to `_idle`. `ensureWarm()` publishes the future instead, so
+    // a play landing mid-rebuild joins THIS warmup and fires as soon as
+    // it lands. Same fix, same reasoning as `dispose`'s own in-flight
+    // wait above, just from the other direction.
+    await ensureWarm();
   }
 }

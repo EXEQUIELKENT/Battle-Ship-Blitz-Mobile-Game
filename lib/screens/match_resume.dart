@@ -53,7 +53,7 @@ Future<void> resumeHotspotAsHost(
   network.peerShipSkinId = saved['peerShipSkinId'] as String? ?? 'steel';
   network.peerShipSkinChosen = saved['peerShipSkinChosen'] as bool? ?? false;
   network.peerCannonSkinId = saved['peerCannonSkinId'] as String? ?? 'mk1';
-  network.peerThemeId = saved['peerThemeId'] as String? ?? 'classic';
+  network.peerThemeId = saved['peerThemeId'] as String? ?? 'mk1';
 
   controller.mode = GameMode.hotspot;
   network.setMatchHost(true); // this device is the one that just re-hosted

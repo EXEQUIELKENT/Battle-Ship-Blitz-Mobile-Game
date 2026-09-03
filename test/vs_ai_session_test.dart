@@ -88,7 +88,7 @@ void main() {
       playerShipSkinId: 'steel',
       playerShipChosen: true,
       playerCannonSkinId: 'mk1',
-      playerThemeId: 'classic',
+      playerThemeId: 'mk1',
       rng: Random(seed + 1),
       clockForTest: clock,
     );

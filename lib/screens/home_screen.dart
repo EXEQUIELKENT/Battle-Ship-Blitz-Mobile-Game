@@ -17,9 +17,9 @@ import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'customize_screen.dart';
 import 'friends_screen.dart';
+import 'hotspot_screen.dart';
 import 'match_resume.dart';
 import 'local_mode_screen.dart';
-import 'multiplayer_screen.dart';
 import 'vs_ai_mode_screen.dart';
 
 /// Cartoon main menu: coral deck, navy panels, chunky outlined buttons.
@@ -153,7 +153,7 @@ class _HomeScreenState extends State<HomeScreen>
                 } else {
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => MultiplayerScreen(
+                      builder: (_) => HotspotScreen(
                           initialRoomCode: saved['roomCode'] as String?),
                     ),
                   );
@@ -288,17 +288,22 @@ class _HomeScreenState extends State<HomeScreen>
                               ),
                             ),
                             const SizedBox(width: 12),
+                            // ONLINE is the two-tab online section now — FRIENDS (invites,
+                            // search, match history) and MATCHMAKING (random
+                            // pair-up) side by side in one screen. See
+                            // `FriendsScreen`. The HOTSPOT / LAN button
+                            // below opens its own dedicated page for
+                            // same-Wi-Fi play.
                             Expanded(
                               child: NeonButton(
-                                label: 'MULTIPLAYER',
-                                icon: Icons.wifi_tethering,
-                                color: AppColors.ember,
+                                label: 'ONLINE',
+                                icon: Icons.public,
+                                color: AppColors.seafoam,
                                 compact: true,
                                 onPressed: () {
                                   Navigator.of(context).push(
                                     MaterialPageRoute(
-                                      builder: (_) =>
-                                          const MultiplayerScreen(),
+                                      builder: (_) => const FriendsScreen(),
                                     ),
                                   );
                                 },
@@ -307,16 +312,20 @@ class _HomeScreenState extends State<HomeScreen>
                           ],
                         ),
                         const SizedBox(height: 12),
+                        // Hotspot/LAN is same-Wi-Fi play, so it gets its own dedicated
+                        // page — opening straight into the host/join
+                        // screen (`HotspotScreen`) instead of a tab inside
+                        // a broader multiplayer lobby.
                         SizedBox(
                           width: double.infinity,
                           child: NeonButton(
-                            label: 'FRIENDS — PLAY ONLINE',
-                            icon: Icons.people_alt,
-                            color: AppColors.seafoam,
+                            label: 'HOTSPOT / LAN',
+                            icon: Icons.wifi_tethering,
+                            color: AppColors.ember,
                             onPressed: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute(
-                                  builder: (_) => const FriendsScreen(),
+                                  builder: (_) => const HotspotScreen(),
                                 ),
                               );
                             },

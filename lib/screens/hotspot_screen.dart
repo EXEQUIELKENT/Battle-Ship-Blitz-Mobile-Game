@@ -9,20 +9,26 @@ import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
 import '../services/network_service.dart';
-import '../services/online_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'battle_screen.dart';
-import 'friends_screen.dart';
 import 'lan_mode_screen.dart';
-import 'matchmaking_screen.dart';
 import 'placement_screen.dart';
 
-/// Hotspot (LAN) + Online matchmaking lobby — cartoon style.
-class MultiplayerScreen extends StatefulWidget {
+/// The dedicated HOTSPOT / LAN page.
+///
+/// This is its OWN screen, not a tab inside a broader multiplayer lobby:
+/// the main menu's HOTSPOT / LAN entry lands straight here, and the ONLINE
+/// entry lands on `FriendsScreen` instead — see `HomeScreen`. Everything
+/// this page does is same-Wi-Fi play: host a room, scan for a nearby
+/// captain's room, or join one by room code / IP.
+///
+/// Once two devices are connected the identical match flow takes over —
+/// mode vote, deployment, battle — exactly like an online relay match does.
+class HotspotScreen extends StatefulWidget {
   /// Pre-fills the ROOM CODE field — used when arriving here to resume a
   /// hotspot match `MatchStore` remembers this device as the JOINER of
   /// (see the resume banner on `HomeScreen`). The host has to be
@@ -30,32 +36,26 @@ class MultiplayerScreen extends StatefulWidget {
   /// this only saves retyping it.
   final String? initialRoomCode;
 
-  const MultiplayerScreen({super.key, this.initialRoomCode});
+  const HotspotScreen({super.key, this.initialRoomCode});
 
   @override
-  State<MultiplayerScreen> createState() => _MultiplayerScreenState();
+  State<HotspotScreen> createState() => _HotspotScreenState();
 }
 
-class _MultiplayerScreenState extends State<MultiplayerScreen>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tab;
+class _HotspotScreenState extends State<HotspotScreen> {
   final _ipCtrl = TextEditingController();
-  final _serverCtrl = TextEditingController();
   bool _hosting = false;
   bool _connecting = false;
-  bool _showServerField = false;
 
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 2, vsync: this);
     if (widget.initialRoomCode != null) {
       _ipCtrl.text = widget.initialRoomCode!;
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final net = context.read<NetworkService>();
-      final online = context.read<OnlineService>();
       final profile = context.read<ProfileStore>();
       net.setSelfName(profile.playerName);
       // Announce what we have equipped so the opponent's device can draw
@@ -66,10 +66,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         themeId: profile.gameplayThemeId,
         shipChosen: profile.shipSkinChosen,
       );
-      // Find the game server automatically — remembered address first,
-      // then a sweep of this Wi-Fi — and quietly re-establish the account
-      // so the ONLINE tab is already usable when it succeeds.
-      await online.connectAuto(profile);
     });
   }
 
@@ -81,8 +77,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     // was left, for no listener left to see the result.
     context.read<NetworkService>().stopScan();
     _ipCtrl.dispose();
-    _serverCtrl.dispose();
-    _tab.dispose();
     super.dispose();
   }
 
@@ -97,8 +91,8 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
   }
 
   /// Opens a hotspot room and waits for someone on the same network to
-  /// walk into it. (Internet play is invitation-based instead — see the
-  /// ONLINE tab and `FriendsScreen`.)
+  /// walk into it. (Internet play is invitation-based instead — see
+  /// `FriendsScreen`.)
   Future<void> _host() async {
     final net = context.read<NetworkService>();
     final profile = context.read<ProfileStore>();
@@ -298,59 +292,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     }
   }
 
-  /// Looks for the game server again and signs in. The automatic attempt
-  /// runs on tab entry; this is the manual retry for when it failed (the
-  /// server was off, or the phone was on the wrong Wi-Fi).
-  Future<void> _reconnectOnline() async {
-    final online = context.read<OnlineService>();
-    final profile = context.read<ProfileStore>();
-    final ok = await online.connectAuto(profile);
-    if (!mounted) return;
-    _toast(
-      ok
-          ? 'Connected — your friend code is ${online.myTag}'
-          : (online.lastError ?? 'Could not find the game server.'),
-      type: ok ? AppNoticeType.success : AppNoticeType.error,
-    );
-  }
-
-  /// Manual escape hatch for when automatic discovery can't find anything
-  /// — a server on a different network (a friend's tunnel/host address),
-  /// or a LAN server discovery's sweep missed for some reason. Auto-detect
-  /// still runs first and normally makes this unnecessary.
-  Future<void> _connectManual() async {
-    final online = context.read<OnlineService>();
-    final profile = context.read<ProfileStore>();
-    final addr = _serverCtrl.text.trim();
-    if (addr.isEmpty) {
-      _toast('Enter the server address first', type: AppNoticeType.error);
-      return;
-    }
-    await online.setBaseUrl(addr);
-    final ok = await online.ensureAccount(profile);
-    if (!mounted) return;
-    _toast(
-      ok
-          ? 'Connected — your friend code is ${online.myTag}'
-          : (online.lastError ?? 'Could not reach that address.'),
-      type: ok ? AppNoticeType.success : AppNoticeType.error,
-    );
-    if (ok) setState(() => _showServerField = false);
-  }
-
-  void _openFriends() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const FriendsScreen()));
-  }
-
-  /// Random matchmaking: search queue → loading → both captains accept.
-  void _findMatch() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const MatchmakingScreen()));
-  }
-
   void _toast(String msg, {AppNoticeType type = AppNoticeType.info}) {
     AppNotification.show(context, msg, type: type);
   }
@@ -368,7 +309,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
               Container(
                 width: double.infinity,
                 color: AppColors.navy,
-                padding: const EdgeInsets.fromLTRB(8, 10, 14, 0),
+                padding: const EdgeInsets.fromLTRB(8, 10, 14, 12),
                 child: Row(
                   children: [
                     IconButton(
@@ -384,41 +325,14 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
                     ),
                     Expanded(
                       child: Text(
-                        'MULTIPLAYER LOBBY',
+                        'HOTSPOT / LAN',
                         style: AppText.title(size: 19),
                       ),
                     ),
                   ],
                 ),
               ),
-              Container(
-                color: AppColors.navy,
-                child: TabBar(
-                  controller: _tab,
-                  indicatorColor: AppColors.gold,
-                  indicatorWeight: 4,
-                  labelColor: AppColors.cream,
-                  unselectedLabelColor: AppColors.cream.withValues(alpha: 0.55),
-                  labelStyle: const TextStyle(
-                    fontWeight: FontWeight.w900,
-                    fontSize: 12,
-                    letterSpacing: 1.2,
-                  ),
-                  tabs: const [
-                    Tab(text: 'HOTSPOT / LAN'),
-                    Tab(text: 'ONLINE'),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: TabBarView(
-                  controller: _tab,
-                  children: [
-                    _buildHotspotTab(net),
-                    _buildOnlineTab(context.watch<OnlineService>()),
-                  ],
-                ),
-              ),
+              Expanded(child: _buildBody(net)),
             ],
           ),
         ),
@@ -426,9 +340,7 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
     );
   }
 
-  // ---------------------------------------------------------- HOTSPOT TAB ---
-
-  Widget _buildHotspotTab(NetworkService net) {
+  Widget _buildBody(NetworkService net) {
     if (kIsWeb) {
       return Center(
         child: Padding(
@@ -528,6 +440,11 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              Text(
+                "Scan to find a nearby captain's room, or join by room code / IP.",
+                style: AppText.body(size: 11.5, color: AppColors.inkSoft),
+              ),
+              const SizedBox(height: 12),
               NeonButton(
                 label: net.isSearching ? 'SCANNING…' : 'SCAN FOR GAMES',
                 icon: Icons.search,
@@ -644,318 +561,6 @@ class _MultiplayerScreenState extends State<MultiplayerScreen>
         ),
       ],
     );
-  }
-
-  // ------------------------------------------------------------ ONLINE TAB ---
-
-  Widget _buildOnlineTab(OnlineService online) {
-    final ready = online.signedIn && online.reachable;
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        _card(
-          title: 'PLAY OVER THE INTERNET',
-          icon: Icons.public,
-          color: AppColors.green,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    ready
-                        ? Icons.check_circle
-                        : online.busy
-                        ? Icons.radar
-                        : Icons.warning_amber,
-                    size: 16,
-                    color: ready ? AppColors.green : AppColors.ember,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      ready
-                          ? 'Signed in as ${online.myName} (${online.myTag}).'
-                          : online.busy
-                          ? 'Looking for the game server on this '
-                                'Wi-Fi…'
-                          : (online.lastError ??
-                                'Not connected to a game server yet.'),
-                      style: AppText.body(size: 11, color: AppColors.inkSoft),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              if (!ready && !online.busy) ...[
-                NeonButton(
-                  label: 'TRY AGAIN',
-                  icon: Icons.refresh,
-                  color: AppColors.blue,
-                  onPressed: _reconnectOnline,
-                ),
-                const SizedBox(height: 10),
-                Center(
-                  child: TextButton(
-                    onPressed: () =>
-                        setState(() => _showServerField = !_showServerField),
-                    child: Text(
-                      _showServerField
-                          ? 'HIDE MANUAL ADDRESS'
-                          : "SERVER ON A DIFFERENT NETWORK? ENTER ITS ADDRESS",
-                      style: AppText.label(size: 9.5, color: AppColors.blue),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                ),
-                if (_showServerField) ...[
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: _serverCtrl,
-                    style: AppText.body(size: 11, color: AppColors.ink),
-                    decoration: _inputDeco(
-                      'e.g. https://your-tunnel.example/…/server',
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  NeonButton(
-                    label: 'CONNECT',
-                    icon: Icons.link,
-                    color: AppColors.green,
-                    onPressed: _connectManual,
-                  ),
-                ],
-                const SizedBox(height: 10),
-              ],
-              if (ready) ...[
-                NeonButton(
-                  label: online.searching ? 'SEARCHING…' : 'FIND A MATCH',
-                  icon: Icons.radar,
-                  color: AppColors.ember,
-                  onPressed: online.busy ? null : _findMatch,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Get paired with another searching captain — you both '
-                  'accept, then you sail.',
-                  textAlign: TextAlign.center,
-                  style: AppText.body(size: 10.5, color: AppColors.inkSoft),
-                ),
-                const SizedBox(height: 12),
-                NeonButton(
-                  label: 'FRIENDS',
-                  icon: Icons.people,
-                  color: AppColors.green,
-                  onPressed: _openFriends,
-                ),
-              ],
-            ],
-          ),
-        ),
-        if (ready && online.history.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          _historyCard(online),
-        ],
-        const SizedBox(height: 16),
-        _card(
-          title: 'HOW ONLINE PLAY WORKS',
-          icon: Icons.help_outline,
-          color: AppColors.ember,
-          child: Text(
-            'FIND A MATCH pairs you with another captain who is searching '
-            'at the same moment. The match only starts once BOTH of you '
-            'tap accept — decline and you are back to searching.\n\n'
-            'Or play a friend: add each other by searching your captain '
-            'names in FRIENDS, then invite whoever is online. Whoever '
-            'sends the invitation hosts, commands the red fleet and fires '
-            'first.',
-            style: AppText.body(size: 11.5, color: AppColors.inkSoft),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ---------------------------------------------------------- HISTORY ---
-
-  /// A captain's log of recent internet matches — who was played, who
-  /// won, and how RP moved — with an ADD button on each row so a
-  /// stranger met through FIND A MATCH doesn't have to be tracked down
-  /// again just to send them a friend request.
-  Widget _historyCard(OnlineService online) {
-    return _card(
-      title: 'MATCH HISTORY',
-      icon: Icons.history,
-      color: AppColors.blue,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (final entry in online.history) _historyRow(online, entry),
-        ],
-      ),
-    );
-  }
-
-  Widget _historyRow(OnlineService online, MatchHistoryEntry entry) {
-    final won = entry.won;
-    final resultColor = won ? AppColors.green : AppColors.hit;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: cartoonBox(AppColors.coralLight, radius: 12),
-      child: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: resultColor,
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.outline, width: 2),
-            ),
-            child: Text(
-              won ? 'W' : 'L',
-              style: AppText.label(size: 13, color: AppColors.cream),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  entry.opponentName.toUpperCase(),
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.label(size: 11.5, color: AppColors.navy),
-                ),
-                Text(
-                  '${entry.rpDelta == 0 ? 'NO CHANGE' : '${entry.rpDelta > 0 ? '+' : ''}${entry.rpDelta} RP'}'
-                  ' · ${_timeAgo(entry.when)}',
-                  style: AppText.body(size: 9.5, color: AppColors.inkSoft),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 6),
-          _historyActionButtons(online, entry),
-        ],
-      ),
-    );
-  }
-
-  Widget _historyActionButtons(OnlineService online, MatchHistoryEntry entry) {
-    final isFriend = online.isFriend(entry.opponentId);
-    final hasPending = online.hasOutgoingRequest(entry.opponentId);
-    // Invite is only for existing friends who are online and not already
-    // in a match — same rule as the Friends tab.
-    OnlinePlayer? friend;
-    if (isFriend) {
-      for (final f in online.friends) {
-        if (f.id == entry.opponentId) {
-          friend = f;
-          break;
-        }
-      }
-    }
-    final canInvite = friend != null && friend.online && online.match == null;
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (!isFriend && !hasPending)
-          NeonButton(
-            label: 'ADD',
-            icon: Icons.person_add,
-            color: AppColors.green,
-            compact: true,
-            onPressed: () => _addFromHistory(online, entry),
-          )
-        else if (!isFriend && hasPending)
-          Text(
-            'PENDING',
-            style: AppText.label(size: 8.5, color: AppColors.inkSoft),
-          )
-        else
-          Text(
-            'FRIENDS',
-            style: AppText.label(size: 8.5, color: AppColors.inkSoft),
-          ),
-        if (canInvite) ...[
-          const SizedBox(width: 6),
-          NeonButton(
-            label: 'INVITE',
-            icon: Icons.sports_esports,
-            color: AppColors.ember,
-            compact: true,
-            onPressed: () => _inviteFromHistory(online, entry),
-          ),
-        ],
-      ],
-    );
-  }
-
-  // Kept for reference; history rows now use [_historyActionButtons].
-  // ignore: unused_element
-  Widget _historyAddButton(OnlineService online, MatchHistoryEntry entry) {
-    if (online.isFriend(entry.opponentId)) {
-      return Text(
-        'FRIENDS',
-        style: AppText.label(size: 8.5, color: AppColors.inkSoft),
-      );
-    }
-    if (online.hasOutgoingRequest(entry.opponentId)) {
-      return Text(
-        'PENDING',
-        style: AppText.label(size: 8.5, color: AppColors.inkSoft),
-      );
-    }
-    return NeonButton(
-      label: 'ADD',
-      icon: Icons.person_add,
-      color: AppColors.green,
-      compact: true,
-      onPressed: () => _addFromHistory(online, entry),
-    );
-  }
-
-  Future<void> _addFromHistory(
-    OnlineService online,
-    MatchHistoryEntry entry,
-  ) async {
-    final ok = await online.requestById(entry.opponentId);
-    if (!mounted) return;
-    _toast(
-      ok
-          ? 'Request sent to ${entry.opponentName}.'
-          : (online.lastError ?? 'Could not send that request.'),
-      type: ok ? AppNoticeType.success : AppNoticeType.error,
-    );
-  }
-
-  Future<void> _inviteFromHistory(
-    OnlineService online,
-    MatchHistoryEntry entry,
-  ) async {
-    final ok = await online.invite(entry.opponentId);
-    if (!mounted) return;
-    _toast(
-      ok
-          ? 'Invite sent to ${entry.opponentName}.'
-          : (online.lastError ?? 'Could not send that invite.'),
-      type: ok ? AppNoticeType.success : AppNoticeType.error,
-    );
-  }
-
-  /// "3M AGO" / "5H AGO" / "2D AGO" — same granularity as
-  /// `OnlinePlayer.presenceLabel`, so the whole ONLINE tab reads times
-  /// the same way.
-  String _timeAgo(DateTime when) {
-    final ago = DateTime.now().difference(when);
-    if (ago.inMinutes < 1) return 'JUST NOW';
-    if (ago.inMinutes < 60) return '${ago.inMinutes}M AGO';
-    if (ago.inHours < 24) return '${ago.inHours}H AGO';
-    return '${ago.inDays}D AGO';
   }
 
   Widget _card({

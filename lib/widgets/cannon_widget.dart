@@ -3,8 +3,10 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../art/cannon_fire_profile.dart';
 import '../art/family_cannon_art.dart';
 import '../art/fleet_family.dart';
+import '../art/legacy_cannon_art.dart';
 import '../art/legacy_shell_art.dart';
 import '../core/theme.dart';
 import '../services/storage_service.dart';
@@ -52,8 +54,12 @@ class CannonWidget extends StatefulWidget {
 
   /// Where THIS gun's muzzle sits, as a fraction of [size].
   ///
-  /// The original nine cannons are one drawing in nine colourways, so
-  /// they all share [muzzleFraction]. The thematic families are six
+  /// REDESIGN: the nine originals used to be one drawing in nine
+  /// colourways, so they all shared [muzzleFraction] — but
+  /// `paintLegacyCannon` gives each of them its own turret with its own
+  /// actual barrel length now, so each reads its own value from
+  /// [legacyMuzzleFractionOf] (computed from that same art, so the two
+  /// can never drift apart) instead. The thematic families are six
   /// genuinely different guns with six different barrel lengths, each
   /// measured off its own artwork (see `FleetFamily.muzzleY`). Since this
   /// is the single value `battle_screen`'s `_cannonMouth` uses to spawn
@@ -61,7 +67,8 @@ class CannonWidget extends StatefulWidget {
   /// further out instead of the ball popping out of the middle of the
   /// barrel — or, for the longest gun, out of thin air above it.
   static double muzzleFractionOf(CannonSkin skin) =>
-      FleetFamilies.byKey(skin.familyKey)?.muzzleFrac ?? muzzleFraction;
+      FleetFamilies.byKey(skin.familyKey)?.muzzleFrac ??
+      legacyMuzzleFractionOf(skin.id);
 
   /// How much bigger THIS gun's widget must be drawn on the battle
   /// screen so it reads at the same on-screen size as a legacy gun
@@ -116,12 +123,19 @@ class _CannonWidgetState extends State<CannonWidget>
   /// pattern mid-animation.
   late final List<_SmokePuff> _puffs;
 
+  /// This gun's own recoil "personality" — see `cannon_fire_profile.dart`.
+  /// Kept in sync with `widget.skin` in `didUpdateWidget` (a cannon can be
+  /// swapped without leaving this widget — the deploy screen's GEAR
+  /// dialog does exactly that).
+  late CannonFireProfile _profile;
+
   @override
   void initState() {
     super.initState();
+    _profile = fireProfileFor(widget.skin);
     _recoil = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 260),
+      duration: _profile.recoilDuration,
     );
     _pulse = AnimationController(
       vsync: this,
@@ -129,7 +143,7 @@ class _CannonWidgetState extends State<CannonWidget>
     );
     _smoke = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 850),
+      duration: _profile.muzzleFxDuration,
     );
     _readyKick = AnimationController(
       vsync: this,
@@ -192,6 +206,14 @@ class _CannonWidgetState extends State<CannonWidget>
         oldWidget.enabled != widget.enabled) {
       _maybeSetState();
     }
+    if (oldWidget.skin.id != widget.skin.id) {
+      _profile = fireProfileFor(widget.skin);
+      // Only retimed while at rest — resizing an AnimationController's
+      // duration mid-flight would warp whatever fraction of the old shot
+      // was still playing.
+      if (!_recoil.isAnimating) _recoil.duration = _profile.recoilDuration;
+      if (!_smoke.isAnimating) _smoke.duration = _profile.muzzleFxDuration;
+    }
   }
 
   @override
@@ -235,42 +257,56 @@ class _CannonWidgetState extends State<CannonWidget>
   @override
   Widget build(BuildContext context) {
     final ready = widget.cooldownFraction >= 1 && widget.enabled;
-    // The widget-level squash/nudge reacts to whichever of the two is
-    // actually playing — a real shot (`_recoil`) or the ready-flash
-    // (`_readyKick`) — but only `_recoil` reaches the painter below, so
-    // the muzzle flash/smoke/barrel-retract only ever draw for a real
-    // shot. See the doc on `_readyKick`.
-    final jolt = math.max(_recoil.value, _readyKick.value);
-    final squash = 1 - jolt * 0.14;
+    // The widget-level squash/kick/lateral reacts to whichever of the two
+    // is actually playing — a real shot (`_recoil`, shaped by this gun's
+    // own `_profile.character`) or the plain ready-flash (`_readyKick`,
+    // deliberately left unshaped — it is a neutral turn-handoff cue, not
+    // part of any one gun's firing identity) — but only `_recoil` reaches
+    // the painter below, so the muzzle flash/smoke/barrel-retract only
+    // ever draw for a real shot. See the doc on `_readyKick`.
+    final fireShape = shapeRecoil(_profile.character, _recoil.value);
+    // These never really overlap in practice (a gun that's mid-shot isn't
+    // also flashing ready), so summing rather than `max`-ing preserves a
+    // character like `suck`'s brief negative dip instead of a `max`
+    // against `_readyKick`'s always-non-negative 0 clobbering it back to 0.
+    final vertical = (fireShape.vertical + _readyKick.value)
+        .clamp(-0.5, 1.4);
+    final squash = 1 - vertical * 0.14 * _profile.squashMultiplier;
     final pulseScale = ready ? 1 + _pulse.value * 0.05 : 1.0;
     // Small downward kick synced to the same value that drives the
     // squash, so firing (or the ready cue) reads as a real jolt rather
-    // than just a shrink-and-grow pulse.
-    final kick = jolt * widget.size * 0.05;
+    // than just a shrink-and-grow pulse. `lateral` is 0 for every
+    // character except the two shake-based ones.
+    final kick = vertical * _profile.kickMultiplier * widget.size * 0.05;
+    final lateral = fireShape.lateral * widget.size * 0.035;
     final family = FleetFamilies.byKey(widget.skin.familyKey);
     return GestureDetector(
       onTap: ready ? widget.onFire : null,
-      child: Transform.translate(
-        offset: Offset(0, kick),
-        child: Transform.scale(
-          scale: squash * pulseScale,
-          child: SizedBox(
-            width: widget.size,
-            height: widget.size,
-            child: CustomPaint(
-              painter: CannonPainter(
-                accent: ready
-                    ? (widget.accentOverride ?? widget.skin.projectile)
-                    : AppColors.inkSoft,
-                family: family,
-                // Only meaningful when there's no family gun — see
-                // CannonPainter.legacyCannonId.
-                legacyCannonId: family == null ? widget.skin.id : null,
-                cooldown: widget.cooldownFraction,
-                recoil: _recoil.value,
-                ready: ready,
-                smoke: _smoke.value,
-                smokePuffs: _puffs,
+      child: Opacity(
+        opacity: fireShape.opacity,
+        child: Transform.translate(
+          offset: Offset(lateral, kick),
+          child: Transform.scale(
+            scale: squash * pulseScale,
+            child: SizedBox(
+              width: widget.size,
+              height: widget.size,
+              child: CustomPaint(
+                painter: CannonPainter(
+                  accent: ready
+                      ? (widget.accentOverride ?? widget.skin.projectile)
+                      : AppColors.inkSoft,
+                  family: family,
+                  // Only meaningful when there's no family gun — see
+                  // CannonPainter.legacyCannonId.
+                  legacyCannonId: family == null ? widget.skin.id : null,
+                  cooldown: widget.cooldownFraction,
+                  recoil: _recoil.value,
+                  kickMultiplier: _profile.kickMultiplier,
+                  ready: ready,
+                  smoke: _smoke.value,
+                  smokePuffs: _puffs,
+                ),
               ),
             ),
           ),
@@ -310,6 +346,12 @@ class CannonPainter extends CustomPainter {
   final Color accent;
   final double cooldown;
   final double recoil;
+
+  /// Scales how far the barrel pulls back into the mount on recoil — this
+  /// gun's own `CannonFireProfile.kickMultiplier` (see
+  /// `cannon_fire_profile.dart`), so a heavy-hitting gun like Inferno
+  /// visibly punches back further than a ghostly one like Phantom.
+  final double kickMultiplier;
   final bool ready;
 
   /// 0 = no smoke, 1 = smoke animation finished. Drives the muzzle-smoke
@@ -337,6 +379,7 @@ class CannonPainter extends CustomPainter {
     this.legacyCannonId,
     this.cooldown = 1,
     this.recoil = 0,
+    this.kickMultiplier = 1,
     this.ready = true,
     this.smoke = 0,
     this.smokePuffs = const [],
@@ -358,231 +401,72 @@ class CannonPainter extends CustomPainter {
       return;
     }
 
-    // Soft ground shadow ellipse
-    canvas.drawOval(
-      Rect.fromCenter(
-        center: center + Offset(0, outerR * 0.34),
-        width: outerR * 2.2,
-        height: outerR * 0.9,
-      ),
-      Paint()..color = Colors.black.withValues(alpha: 0.22),
-    );
+    // FEEDBACK (two shadows under every legacy gun): a generic ground
+    // ellipse used to be drawn here, on top of the one each cannon's own
+    // SVG already carries (`<ellipse cx="60" cy="102" rx="38" ry="8"
+    // fill="black" opacity="0.22">` — see `_ringMarkup`). The two are
+    // different shapes in different places: the design's sits low and
+    // wide UNDER the gun, while this one was centred only 0.34×outerR
+    // below the mount, so its top half fell across the gun's own body
+    // and its ends stuck out past the ring on both sides. Removed
+    // entirely rather than reconciled — the art already ships the
+    // shadow it was drawn with, and that is the one to keep.
 
-    // Thick outer ring, beveled: a base fill plus a thin lighter arc along
-    // the upper-left edge so the ring reads as rounded metal, not a flat
-    // disc.
-    canvas.drawCircle(center, outerR, Paint()..color = AppColors.outline);
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: outerR * 0.94),
-      math.pi * 1.05,
-      math.pi * 0.55,
-      false,
-      Paint()
-        ..color = Colors.white.withValues(alpha: 0.10)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = outerR * 0.10
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Colored accent ring — a subtle radial gradient instead of a flat
-    // fill gives it a coated-metal look, catching light toward the top.
-    canvas.drawCircle(
+    // The nine originals' own illustrated ring + turret, replayed
+    // verbatim from the design's own SVG markup — see `paintLegacyCannon`'s
+    // doc for how it's recentred/rescaled onto exactly this [outerR], and
+    // why [recoilPull] only ever moves the turret, never the ring. Its
+    // return is this skin's own actual muzzle tip, already carrying the
+    // recoil pull, so the flash/smoke/cooldown-ring code below (unchanged
+    // from the old generic gun) reads it exactly like it used to read the
+    // old fixed barrel's tip.
+    final id = legacyCannonId ?? 'mk1';
+    final recoilPull =
+        size.width * legacyMuzzleFractionOf(id) * 0.16 * recoil * kickMultiplier;
+    // FEEDBACK (reload ring sliced across the barrel): the cooldown
+    // sweep moved INTO `paintLegacyCannon`, which is the only place that
+    // can order it correctly — ring plate, then the sweep, then the
+    // barrel on top of it. See its own doc; the sweep geometry (design
+    // centre (60,72), radius 20.5) is unchanged, so it still traces each
+    // skin's own accent ring exactly as before.
+    //
+    // FEEDBACK (2): a reloading gun used to be wrapped in a whitening
+    // `ColorFilter` as well — a `Color.lerp(c, inkSoft, 0.6)` per pixel,
+    // the same trick `ShipPainter._sunkFilter` uses for a wrecked hull.
+    // On a wreck that reads as "destroyed"; on a gun that is simply
+    // between shots it just washed every skin out to the same pale grey,
+    // so for the ~55% of a match a cannon spends reloading you could not
+    // tell WHICH gun was bolted on. The sweep alone already says
+    // "reloading", and says it more precisely (it shows how far along),
+    // so the gun now keeps its own colours the whole time.
+    final muzzleCenter = paintLegacyCannon(
+      canvas,
       center,
-      outerR * 0.84,
-      Paint()..shader = uiGradient(center, outerR * 0.84, [
-        Color.lerp(accent, Colors.white, 0.22)!,
-        accent,
-        Color.lerp(accent, Colors.black, 0.28)!,
-      ]),
+      outerR,
+      id,
+      recoilPull: recoilPull,
+      // Only visible while actually reloading. When a shot misses the gun
+      // stays instantly ready (cooldown 1.0) and the circle timer is
+      // hidden entirely, so a miss produces no reload visuals at all.
+      cooldown: cooldown,
     );
 
-    // Rivets studded evenly around the accent ring for mechanical detail.
-    final rivet = Paint()..color = AppColors.outline.withValues(alpha: 0.55);
-    final rivetShine = Paint()..color = Colors.white.withValues(alpha: 0.35);
-    const rivetCount = 10;
-    for (var i = 0; i < rivetCount; i++) {
-      final a = (2 * math.pi / rivetCount) * i;
-      final rp = center +
-          Offset(math.cos(a), math.sin(a)) * (outerR * 0.955);
-      canvas.drawCircle(rp, outerR * 0.035, rivet);
-      canvas.drawCircle(
-          rp - Offset(outerR * 0.01, outerR * 0.01), outerR * 0.014, rivetShine);
-    }
-
-    // Cooldown sweep arc over the accent ring — only visible while
-    // actually reloading. When a shot misses the gun stays instantly
-    // ready (cooldown 1.0) and the circle timer is hidden entirely so
-    // the miss produces no reload visuals at all.
-    if (cooldown < 0.999) {
-      final arcPaint = Paint()
-        ..color = Colors.white.withValues(alpha: 0.55)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = outerR * 0.16
-        ..strokeCap = StrokeCap.round;
-      canvas.drawArc(
-        Rect.fromCircle(center: center, radius: outerR * 0.84),
-        -math.pi / 2,
-        2 * math.pi * cooldown,
-        false,
-        arcPaint,
-      );
-    }
-
-    // ----- Naval cannon barrel -----
-    // REDESIGN: the old cannon was a short, stubby round dome with a
-    // recessed "mouth" sitting almost entirely INSIDE the mount ring — it
-    // read as an icon, not a naval gun. This draws an actual elongated,
-    // tapered barrel (wide rear chamber → narrower muzzle) protruding out
-    // past the ring, with reinforcement bands and trunnion pins for a
-    // heavier, more mechanical silhouette. `recoil` pulls the WHOLE barrel
-    // assembly straight back down into the mount (rather than just
-    // shrinking/fading it), so a shot reads as a real kick and the barrel
-    // never visually detaches from its base. `muzzleCenter` is the single
-    // source of truth for where the muzzle flash, smoke, and (via
-    // `CannonWidget.muzzleFraction`, read externally by
-    // battle_screen.dart's `_cannonMouth`) the cannonball itself spawn
-    // from, so all three always agree on where the barrel tip actually is.
-    final domeR = outerR * 0.58; // kept as the breech/chamber's own radius
-    final barrelLen = size.width * CannonWidget.muzzleFraction;
-    final recoilPull = barrelLen * 0.16 * recoil;
-    final breechCenter = center + Offset(0, domeR * 0.10 + recoilPull * 0.35);
-    final muzzleCenter = center - Offset(0, barrelLen - recoilPull);
-
-    // Rear chamber (breech): a rounded knob where the barrel meets the
-    // mount — heavier than the barrel itself, like a real naval gun's
-    // breech block.
-    final breechPaint = Paint()
-      ..shader = uiGradient(
-        breechCenter,
-        domeR,
-        const [Color(0xFF64717E), Color(0xFF394552), Color(0xFF1B222A)],
-      );
-    canvas.drawCircle(breechCenter, domeR, breechPaint);
-    canvas.drawCircle(
-      breechCenter,
-      domeR,
-      Paint()
-        ..color = AppColors.outline
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3,
-    );
-
-    // Trunnion pins flanking the breech — the pivot mounts a real naval
-    // gun barrel sits on.
-    final trunnion = Paint()..color = AppColors.outline.withValues(alpha: 0.75);
-    canvas.drawCircle(breechCenter + Offset(-domeR * 0.92, domeR * 0.05),
-        domeR * 0.22, trunnion);
-    canvas.drawCircle(breechCenter + Offset(domeR * 0.92, domeR * 0.05),
-        domeR * 0.22, trunnion);
-
-    // Tapered barrel body: wide at the breech, narrower at the muzzle —
-    // the shape that actually reads as an elongated naval cannon rather
-    // than a round dome.
-    final breechHalfW = domeR * 0.60;
-    final muzzleHalfW = domeR * 0.34;
-    final barrelPath = Path()
-      ..moveTo(breechCenter.dx - breechHalfW, breechCenter.dy)
-      ..lineTo(muzzleCenter.dx - muzzleHalfW, muzzleCenter.dy)
-      ..lineTo(muzzleCenter.dx + muzzleHalfW, muzzleCenter.dy)
-      ..lineTo(breechCenter.dx + breechHalfW, breechCenter.dy)
-      ..close();
-    canvas.drawPath(
-      barrelPath,
-      Paint()
-        ..shader = uiGradient(
-          Offset.lerp(breechCenter, muzzleCenter, 0.3)!,
-          barrelLen * 0.6,
-          const [Color(0xFF6E7C8B), Color(0xFF3B4856), Color(0xFF1B222A)],
-        ),
-    );
-    canvas.drawPath(
-      barrelPath,
-      Paint()
-        ..color = AppColors.outline
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.6
-        ..strokeJoin = StrokeJoin.round,
-    );
-
-    // Reinforcement bands around the barrel — small mechanical detail
-    // breaking up the plain taper, like a real gun's cast collars.
-    final bandPaint = Paint()
-      ..color = Colors.black.withValues(alpha: 0.30)
-      ..style = PaintingStyle.stroke;
-    for (final f in const [0.38, 0.70]) {
-      final bp = Offset.lerp(breechCenter, muzzleCenter, f)!;
-      final bw = breechHalfW + (muzzleHalfW - breechHalfW) * f;
-      bandPaint.strokeWidth = bw * 0.38;
-      canvas.drawLine(
-          bp - Offset(bw * 0.82, 0), bp + Offset(bw * 0.82, 0), bandPaint);
-    }
-
-    // Barrel highlight streak — a soft curved gloss along the upper-left
-    // edge of the barrel, closer to a polished-metal specular highlight.
-    canvas.drawLine(
-      Offset.lerp(breechCenter, muzzleCenter, 0.08)! -
-          Offset(breechHalfW * 0.45, 0),
-      Offset.lerp(breechCenter, muzzleCenter, 0.92)! -
-          Offset(muzzleHalfW * 0.45, 0),
-      Paint()
-        ..color = Colors.white.withValues(alpha: ready ? 0.24 : 0.11)
-        ..strokeWidth = domeR * 0.14
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Muzzle opening at the barrel's tip, with a thin metallic highlight
-    // crescent on its upper rim.
+    // `mouthCenter`/`mouthR` anchor the muzzle flash and smoke below —
+    // no bore-hole is drawn here any more. Each turret's own replayed
+    // SVG art already carries its own genuine bore/rim detail (e.g.
+    // MK-I's own `<ellipse cx="60" cy="11" .../>` mouth), so this used to
+    // draw a second, generic dark circle right on top of it — the
+    // "stray dot" every legacy skin showed at its muzzle.
     final mouthCenter = muzzleCenter;
-    final mouthR = muzzleHalfW * 0.92;
-    canvas.drawCircle(mouthCenter, mouthR, Paint()..color = AppColors.outline);
-    canvas.drawArc(
-      Rect.fromCircle(center: mouthCenter, radius: mouthR * 0.92),
-      math.pi * 1.1,
-      math.pi * 0.6,
-      false,
-      Paint()
-        ..color = Colors.white.withValues(alpha: 0.28)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = mouthR * 0.18
-        ..strokeCap = StrokeCap.round,
-    );
-    canvas.drawCircle(
-      mouthCenter - Offset(0, mouthR * 0.12),
-      mouthR * 0.68,
-      Paint()..color = const Color(0xFF0E151C),
-    );
+    final mouthR = outerR * 0.12;
 
-    // Muzzle flash while recoiling: a soft smoke puff behind a bright
-    // starburst, so a shot reads as a fuller "boom" rather than one flat
-    // circle.
+    // Muzzle flash while recoiling — see [_paintLegacyFlash].
     if (recoil > 0.05) {
-      final flashCenter = mouthCenter - Offset(0, mouthR * (1.2 + recoil));
-      final flashR = outerR * (0.34 + recoil * 0.5);
-      canvas.drawCircle(
-        flashCenter - Offset(0, flashR * 0.2),
-        flashR * 1.35,
-        Paint()..color = Colors.white.withValues(alpha: (1 - recoil) * 0.18),
+      _paintLegacyFlash(
+        canvas,
+        mouthCenter - Offset(0, mouthR * (1.2 + recoil)),
+        outerR * (0.34 + recoil * 0.5),
       );
-      canvas.drawCircle(
-        flashCenter,
-        flashR,
-        Paint()..color = AppColors.gold.withValues(alpha: (1 - recoil) * 0.95),
-      );
-      canvas.drawCircle(
-        flashCenter,
-        flashR * 0.55,
-        Paint()..color = Colors.white.withValues(alpha: (1 - recoil)),
-      );
-      final star = Paint()
-        ..color = Colors.white.withValues(alpha: (1 - recoil))
-        ..strokeWidth = 3.6
-        ..strokeCap = StrokeCap.round;
-      for (var i = 0; i < 6; i++) {
-        final a = -math.pi / 2 + (i - 2.5) * 0.42;
-        final l = flashR * 1.25 * recoil;
-        canvas.drawLine(flashCenter,
-            flashCenter + Offset(math.cos(a) * l, math.sin(a) * l), star);
-      }
     }
 
     // Muzzle smoke: soft grey puffs that billow out from the barrel and
@@ -598,6 +482,149 @@ class CannonPainter extends CustomPainter {
     // smoke) and the fallback for an unrecognised id.
     if (smoke > 0.01 && smokePuffs.isNotEmpty) {
       _paintLegacyExhaust(canvas, mouthCenter, outerR);
+    }
+  }
+
+  /// The bang itself, one per legacy gun.
+  ///
+  /// FEEDBACK ("the fire animation is the same on all of the cannons"):
+  /// it genuinely was. [_paintLegacyExhaust] below has given each of the
+  /// nine its own smoke since the shell rework, but the flash in FRONT
+  /// of that smoke — the brightest, first thing a shot shows — stayed
+  /// one hardcoded white-and-gold six-ray starburst for every gun, so
+  /// the difference in the smoke behind it never got a chance to
+  /// register. Colours now come from the same [legacyShellPalette] the
+  /// shell and the exhaust already share, so a gun's muzzle, its smoke
+  /// and its projectile finally all agree; the SHAPE of the burst varies
+  /// too, because nine tints of the same starburst would still read as
+  /// one animation.
+  void _paintLegacyFlash(Canvas canvas, Offset c, double r) {
+    final id = legacyCannonId ?? 'mk1';
+    final p = legacyShellPalette(id);
+    final fade = 1 - recoil;
+
+    void disc(double radius, Color color, double alpha) => canvas.drawCircle(
+        c, radius, Paint()..color = color.withValues(alpha: alpha.clamp(0, 1)));
+
+    void rays(int count, double spread, double len, Color color, double width,
+        {double alpha = 1, double skip = 0}) {
+      final paint = Paint()
+        ..color = color.withValues(alpha: (fade * alpha).clamp(0, 1))
+        ..strokeWidth = width
+        ..strokeCap = StrokeCap.round;
+      for (var i = 0; i < count; i++) {
+        final a = -math.pi / 2 + (i - (count - 1) / 2) * spread;
+        final dir = Offset(math.cos(a), math.sin(a));
+        canvas.drawLine(c + dir * (r * skip), c + dir * len, paint);
+      }
+    }
+
+    // Shared bloom behind every burst, in this gun's own glow.
+    disc(r * 1.35, p.glow, fade * 0.18);
+
+    switch (id) {
+      // Storm Circuit: no fireball at all — a white-hot core throwing
+      // long, thin arcs well past the muzzle.
+      case 'tesla':
+        disc(r * 0.62, p.glow, fade);
+        rays(5, 0.55, r * 2.1 * recoil, p.trim, 2.2, alpha: 0.95);
+        rays(5, 0.55, r * 1.3 * recoil, p.glow, 1.0);
+        break;
+
+      // Ember Field: a big, hot, ragged fireball — the most fire of the
+      // nine, with sparks thrown wide.
+      case 'inferno':
+        disc(r * 1.05, p.hull, fade * 0.8);
+        disc(r * 0.9, p.trim, fade * 0.95);
+        disc(r * 0.45, p.glow, fade);
+        rays(9, 0.36, r * 1.5 * recoil, p.trim, 3.4);
+        rays(5, 0.5, r * 2.0 * recoil, p.glow, 1.6, alpha: 0.8);
+        break;
+
+      // Shadow Veil: barely a flash — a hollow ring pushing outward,
+      // matching the gun that fires rings rather than shells.
+      case 'phantom':
+        for (var i = 0; i < 2; i++) {
+          canvas.drawCircle(
+            c,
+            r * (0.5 + 0.7 * recoil + i * 0.35),
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = r * 0.16 * (1 - i * 0.4)
+              ..color = p.trim.withValues(alpha: fade * (0.8 - i * 0.35)),
+          );
+        }
+        disc(r * 0.32, p.glow, fade * 0.9);
+        break;
+
+      // Gilded Waters: a ceremonial eight-point star, long and short
+      // rays alternating like a decoration.
+      case 'royal':
+        disc(r * 0.85, p.trim, fade * 0.95);
+        disc(r * 0.42, p.glow, fade);
+        rays(4, math.pi / 2, r * 1.8 * recoil, p.glow, 3.0);
+        rays(4, math.pi / 2, r * 1.1 * recoil, p.trim, 2.4)
+            ;
+        break;
+
+      // Toxic Marsh: a low, wide splatter with droplets falling off it
+      // rather than a clean burst.
+      case 'venom':
+        disc(r * 0.85, p.trim, fade * 0.9);
+        disc(r * 0.4, p.glow, fade);
+        rays(4, 0.7, r * 1.35 * recoil, p.trim, 3.8);
+        for (var i = 0; i < 3; i++) {
+          final a = -math.pi / 2 + (i - 1) * 0.9;
+          canvas.drawCircle(
+            c + Offset(math.cos(a), math.sin(a)) * r * 1.5 * recoil,
+            r * 0.16 * (1 - recoil * 0.4),
+            Paint()..color = p.glow.withValues(alpha: fade * 0.8),
+          );
+        }
+        break;
+
+      // Deep-sea siege: a broad, soft pressure bloom — more shove than
+      // spark, so almost no rays and a wide body.
+      case 'kraken':
+        disc(r * 1.25, p.hull, fade * 0.45);
+        disc(r * 0.8, p.trim, fade * 0.85);
+        disc(r * 0.36, p.glow, fade);
+        rays(3, 0.85, r * 1.15 * recoil, p.glow, 2.6, alpha: 0.7);
+        break;
+
+      // High-energy golden shell: an even sunburst, rays all the way
+      // round rather than a forward cone.
+      case 'sunfire':
+        disc(r * 0.8, p.trim, fade * 0.9);
+        disc(r * 0.38, p.glow, fade);
+        rays(8, math.pi / 4, r * 1.6 * recoil, p.trim, 2.8);
+        rays(8, math.pi / 4, r * 0.95 * recoil, p.glow, 1.4);
+        break;
+
+      // Dark-matter launcher: an implosion. A dark core with a bright
+      // rim, and its rays point INWARD.
+      case 'void':
+        disc(r * 0.95, p.ink, fade * 0.9);
+        canvas.drawCircle(
+          c,
+          r * 0.95,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = r * 0.18
+            ..color = p.trim.withValues(alpha: fade),
+        );
+        disc(r * 0.22, p.glow, fade);
+        rays(6, math.pi / 3, r * 1.0, p.trim, 2.2, alpha: 0.75, skip: 2.1);
+        break;
+
+      // MK-I and anything unrecognised: the plain powder flash the gun
+      // has always had, just in its own palette rather than a fixed gold.
+      case 'mk1':
+      default:
+        disc(r, p.trim, fade * 0.95);
+        disc(r * 0.55, p.glow, fade);
+        rays(6, 0.42, r * 1.25 * recoil, p.glow, 3.6);
+        break;
     }
   }
 
@@ -845,7 +872,7 @@ class CannonPainter extends CustomPainter {
   ) {
     final side = size.width;
     final barrelLen = side * fam.muzzleFrac;
-    final recoilPull = barrelLen * 0.16 * recoil;
+    final recoilPull = barrelLen * 0.16 * recoil * kickMultiplier;
 
     // ----- Reload platform -----
     // The standard cannon is a barrel standing on a disc, with the
@@ -1209,6 +1236,7 @@ class CannonPainter extends CustomPainter {
       oldDelegate.accent != accent ||
       oldDelegate.cooldown != cooldown ||
       oldDelegate.recoil != recoil ||
+      oldDelegate.kickMultiplier != kickMultiplier ||
       oldDelegate.ready != ready ||
       oldDelegate.family != family ||
       oldDelegate.legacyCannonId != legacyCannonId ||

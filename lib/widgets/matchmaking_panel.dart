@@ -4,40 +4,39 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
-import '../services/game_controller.dart';
-import '../services/network_service.dart';
 import '../services/online_service.dart';
 import '../services/sound_service.dart';
-import '../services/storage_service.dart';
-import '../widgets/neon_widgets.dart';
-import '../widgets/ocean_background.dart';
-import 'lan_mode_screen.dart';
+import 'neon_widgets.dart';
 
-/// "Find a match", end to end.
+/// The MATCHMAKING page of the ONLINE section — the second tab next to
+/// FRIENDS inside `FriendsScreen`'s two-tab body.
 ///
-/// The captain taps FIND A MATCH in the online lobby and lands here:
+/// Same flow the old standalone matchmaking screen ran:
 ///
 ///   1. SEARCHING — the loading state, radar spinning, until the server
-///      pairs them with another searching player.
+///      pairs this captain with another searching player.
 ///   2. MATCH FOUND — BOTH captains must tap accept before anything
 ///      starts. Saying yes shows how far the other one has got; saying
 ///      no (or letting the prompt time out) releases both players.
 ///   3. Both yeses land within the window — the match turns active and
-///      this screen hands over to the ordinary match flow exactly as the
-///      friends screen does after an invitation.
+///      the owning `FriendsScreen` picks it up from the shared
+///      `OnlineService`, handing it to the ordinary match flow exactly as
+///      it does for an accepted invitation.
 ///
-/// If the other captain declines or vanishes mid-prompt, the pairing is
-/// dissolved server-side; this screen says so briefly and quietly joins
-/// the search queue again rather than dumping the player back out.
-class MatchmakingScreen extends StatefulWidget {
-  const MatchmakingScreen({super.key});
+/// The panel deliberately never launches a match itself: single-owner
+/// rules say the screen that owns the match lifecycle
+/// (`FriendsScreen._onOnline`) does the launch, so an invitation and a
+/// matchmaking pairing can never double-fire from two listeners watching
+/// the same `match`.
+class MatchmakingPanel extends StatefulWidget {
+  const MatchmakingPanel({super.key});
 
   @override
-  State<MatchmakingScreen> createState() => _MatchmakingScreenState();
+  State<MatchmakingPanel> createState() => _MatchmakingPanelState();
 }
 
-class _MatchmakingScreenState extends State<MatchmakingScreen>
-    with SingleTickerProviderStateMixin {
+class _MatchmakingPanelState extends State<MatchmakingPanel>
+    with SingleTickerProviderStateMixin, AutomaticKeepAliveClientMixin {
   late final OnlineService _online;
 
   late final AnimationController _radar;
@@ -45,14 +44,8 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
   Timer? _ticker;
   DateTime? _searchSince;
 
-  /// True from the moment an agreed match starts handing over to
-  /// [NetworkService]. Polls keep landing while navigation is in flight;
-  /// without this guard the same match could be launched twice, and the
-  /// dispose-time clean-up below must not undo a match just begun.
-  bool _launching = false;
-
-  /// Whether the player still wants to be matched. Backing out stops the
-  /// automatic re-queue.
+  /// Whether the player still wants to be matched. Backing out — or the
+  /// match finally sailing — stops the automatic re-queue.
   bool _wantSearch = true;
 
   /// Set when WE declined a pairing ourselves, so the release that our
@@ -69,6 +62,11 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
 
   String _lastPeerName = 'THE OTHER CAPTAIN';
 
+  /// Flipping to the FRIENDS tab must not drop the search — the queue
+  /// stays live whenever the ONLINE section is open.
+  @override
+  bool get wantKeepAlive => true;
+
   @override
   void initState() {
     super.initState();
@@ -80,47 +78,42 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
     )..repeat();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
       // Fast polls while matchmaking, so "they accepted!" lands in a
       // blink rather than on the friends-list tick.
-      _online.startHeartbeat(fast: true);
+      _online.setFastPolling(true);
       await _join();
     });
 
     // Drives the elapsed-seconds line while the radar spins.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _online.searching && !_launching) setState(() {});
+      if (mounted && _online.searching && _wantSearch) setState(() {});
     });
   }
-
   @override
   void dispose() {
+    // Leaving the ONLINE section entirely (back to the main menu) stops
+    // everything: the search, the fast polls, the radar, the clock.
+    _online.removeListener(_onOnline);
     _rejoinTimer?.cancel();
     _ticker?.cancel();
     _radar.dispose();
-    _online.removeListener(_onOnline);
-
-    // Leaving this screen any way other than into a battle means giving
-    // the seat up: stop searching, decline any half-accepted pairing,
-    // and put the heartbeat back on its ordinary friends-list pace.
-    // (After a launch the battle owns the connection; touching nothing
-    // is exactly right.)
-    if (!_launching) {
-      unawaited(_online.leaveQueue());
-      _online.startHeartbeat();
-    }
+    _online.setFastPolling(false);
+    unawaited(_online.leaveQueue());
     super.dispose();
   }
 
   Future<void> _join() async {
-    if (!_wantSearch || _launching || !mounted) return;
+    if (!_wantSearch || !mounted) return;
     setState(() {
       _notice = null;
       _selfDeclined = false;
     });
     final ok = await _online.joinQueue();
-    if (!ok && mounted && _wantSearch && !_launching) {
-      setState(() =>
-          _notice = _online.lastError ?? 'Could not join the search.');
+    if (!ok && mounted && _wantSearch) {
+      setState(
+        () => _notice = _online.lastError ?? 'Could not join the search.',
+      );
       _scheduleRejoin(const Duration(seconds: 3));
     }
   }
@@ -128,14 +121,14 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
   void _scheduleRejoin(Duration delay) {
     _rejoinTimer?.cancel();
     _rejoinTimer = Timer(delay, () {
-      if (mounted && _wantSearch && !_launching) unawaited(_join());
+      if (mounted && _wantSearch) unawaited(_join());
     });
   }
 
   /// The pairing dissolved under us — the other captain declined, or let
   /// the prompt expire. Say so, then quietly re-join the queue.
   void _handleRelease() {
-    if (_launching) return;
+    if (!_wantSearch) return;
     final why = _selfDeclined
         ? 'DECLINED — STILL SEARCHING…'
         : '$_lastPeerName DECLINED OR TIMED OUT.';
@@ -150,21 +143,13 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
 
     if (match != null) _lastPeerName = match.peerName;
 
-    // Both captains accepted — sail.
-    if (match != null &&
-        match.isActive &&
-        match.id != 0 &&
-        !_launching) {
-      _launching = true;
+    // Both captains accepted — the owning `FriendsScreen` launches the
+    // match. Step aside and stop the queue machinery so nothing here
+    // re-joins once the battle is over.
+    if (match != null && match.isActive && match.id != 0) {
+      _wantSearch = false;
+      _inFlow = false;
       _rejoinTimer?.cancel();
-      // The "match found" clunk plays the device owner's own equipped
-      // cannon's reload sound — the gun they're about to sail into the
-      // match with (see `_firePreviewShot` on the deploy screen for the
-      // same rule).
-      SoundService.instance.cannonReady(
-        cannonSkinId: Loadout.of(context.read<ProfileStore>()).cannonSkinId,
-      );
-      unawaited(_enterMatch(match));
       return;
     }
 
@@ -179,53 +164,6 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
     }
   }
 
-  /// Hands the agreed match over to [NetworkService] and walks straight
-  /// into the ordinary flow — mode vote, deployment, battle. Same
-  /// handshake the friends screen uses once an invitation is accepted.
-  Future<void> _enterMatch(OnlineMatch match) async {
-    final net = context.read<NetworkService>();
-    final profile = context.read<ProfileStore>();
-
-    net.setSelfName(profile.playerName);
-    net.setSelfLoadout(
-      shipSkinId: profile.shipSkinId,
-      cannonSkinId: profile.cannonSkinId,
-      themeId: profile.gameplayThemeId,
-      shipChosen: profile.shipSkinChosen,
-    );
-
-    final ok = await net.startRelayMatch(
-      api: _online.api,
-      matchId: match.id,
-      asHost: match.youAreHost,
-      playerName: profile.playerName,
-    );
-    if (!ok || !mounted) {
-      _launching = false;
-      _inFlow = false;
-      setState(() =>
-          _notice = _online.lastError ?? 'Could not open the battle.');
-      _scheduleRejoin(const Duration(seconds: 2));
-      return;
-    }
-    // The opponent's id/name ride along, so a decided result can land in
-    // the ONLINE tab's match history — matchmaking is exactly the case
-    // where a captain has no other record of who they just played.
-    _online.noteMatchStarted(
-      match.id,
-      opponentId: match.peerId,
-      opponentName: match.peerName,
-    );
-    // From here the relay carries everything; polls would only fight it.
-    _online.stopHeartbeat();
-
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) => const LanModeScreen(mode: GameMode.online),
-      ),
-    );
-  }
-
   Future<void> _accept(OnlineMatch match) async {
     await _online.acceptMatch(match.id);
   }
@@ -238,52 +176,38 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
     await _online.leaveQueue();
   }
 
+  /// Stops the search and rests the page (no `Navigator.pop` — this is a
+  /// tab, not a route).
   void _cancel() {
     SoundService.instance.click();
     _wantSearch = false;
-    Navigator.of(context).pop();
+    _rejoinTimer?.cancel();
+    unawaited(_online.leaveQueue());
+    _online.setFastPolling(false);
+    if (mounted) setState(() {});
   }
 
-  /// A short server/connection error, shown as a full-width chunky pill
-  /// instead of bare text — this screen has no card behind it here, and
-  /// gold or cream text directly on the coral deck was unreadable.
-  Widget _errorBanner(String message) {
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: cartoonBox(AppColors.hit, radius: 12),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.warning_amber, color: AppColors.cream, size: 16),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                message,
-                textAlign: TextAlign.center,
-                style: AppText.label(size: 10, color: AppColors.cream),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String get _elapsedLabel {
-    final since = _searchSince;
-    if (since == null) return '';
-    final secs = DateTime.now().difference(since).inSeconds;
-    if (secs < 60) return '$secs SECONDS AT SEA';
-    return '${(secs / 60).floor()}M ${secs % 60}S AT SEA';
+  /// Starts a fresh search from the resting state.
+  Future<void> _startSearch() async {
+    if (!mounted) return;
+    setState(() {
+      _wantSearch = true;
+      _selfDeclined = false;
+      _notice = null;
+    });
+    _online.setFastPolling(true);
+    await _join();
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final online = context.watch<OnlineService>();
     final match = online.match;
     final busy = online.busy;
 
+    // Drives the elapsed-seconds line while the radar spins (a poll may
+    // flip us out of the searching state without a tick in between).
     if (online.searching && _searchSince == null) {
       _searchSince = DateTime.now();
     } else if (!online.searching) {
@@ -291,46 +215,16 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
     }
 
     final body = match != null && match.isFound
-        ? (match.youAccepted ? _waitingOnPeer(match, busy) : _foundCard(match, busy))
+        ? (match.youAccepted
+              ? _waitingOnPeer(match, busy)
+              : _foundCard(match, busy))
         : online.searching
-            ? _searchingBody(online)
-            : _betweenBody(online);
+        ? _searchingBody(online)
+        : _betweenBody(online);
 
-    return Scaffold(
-      body: OceanBackground(
-        showSonar: false,
-        child: SafeArea(
-          child: Column(
-            children: [
-              Container(
-                width: double.infinity,
-                color: AppColors.navy,
-                padding: const EdgeInsets.fromLTRB(8, 8, 14, 12),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back,
-                          color: AppColors.cream),
-                      onPressed: _cancel,
-                    ),
-                    Expanded(
-                      child:
-                          Text('FIND A MATCH', style: AppText.title(size: 19)),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: Padding(padding: const EdgeInsets.all(24), child: body),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    return Padding(padding: const EdgeInsets.all(24), child: body);
   }
-
-  // ------------------------------------------------------------ STATES --
+// ------------------------------------------------------------ STATES --
 
   /// Loading: radar sweep, waiting copy, cancel.
   Widget _searchingBody(OnlineService online) {
@@ -390,7 +284,40 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
     );
   }
 
-  /// Paired; neither of us has answered yet.
+  /// A short server/connection error, shown as a full-width chunky pill
+  /// instead of bare text — this page has no card behind it here, and
+  /// gold or cream text directly on the coral deck was unreadable.
+  Widget _errorBanner(String message) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: cartoonBox(AppColors.hit, radius: 12),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.warning_amber, color: AppColors.cream, size: 16),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                message,
+                textAlign: TextAlign.center,
+                style: AppText.label(size: 10, color: AppColors.cream),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String get _elapsedLabel {
+    final since = _searchSince;
+    if (since == null) return '';
+    final secs = DateTime.now().difference(since).inSeconds;
+    if (secs < 60) return '$secs SECONDS AT SEA';
+    return '${(secs / 60).floor()}M ${secs % 60}S AT SEA';
+  }
+/// Paired; neither of us has answered yet.
   Widget _foundCard(OnlineMatch match, bool busy) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -482,16 +409,20 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
       ],
     );
   }
-
-  /// Between pairings — declined, timed out, or a failed request. Brief
-  /// notice, then the automatic re-join takes over.
+/// Between pairings — declined, timed out, or a failed request. Brief
+  /// notice, then the automatic re-join takes over. When the player has
+  /// stepped OUT (cancelled, or just sailed a match back in the friends
+  /// tab), this rests instead until they tap SEARCH AGAIN.
   Widget _betweenBody(OnlineService online) {
+    final resting = !_wantSearch;
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          _notice ?? 'BACK IN THE SEARCH…',
+          resting
+              ? (_notice ?? 'READY WHEN YOU ARE')
+              : (_notice ?? 'BACK IN THE SEARCH…'),
           textAlign: TextAlign.center,
           style: AppText.body(size: 13, color: AppColors.navy),
         ),
@@ -500,22 +431,24 @@ class _MatchmakingScreenState extends State<MatchmakingScreen>
           _errorBanner(online.lastError!),
         ],
         const SizedBox(height: 24),
-        const Center(
-          child: SizedBox(
-            width: 26,
-            height: 26,
-            child: CircularProgressIndicator(
-              strokeWidth: 3,
-              valueColor: AlwaysStoppedAnimation(AppColors.gold),
+        if (!resting) ...[
+          const Center(
+            child: SizedBox(
+              width: 26,
+              height: 26,
+              child: CircularProgressIndicator(
+                strokeWidth: 3,
+                valueColor: AlwaysStoppedAnimation(AppColors.gold),
+              ),
             ),
           ),
-        ),
+        ],
         const SizedBox(height: 30),
         NeonButton(
-          label: 'CANCEL',
-          icon: Icons.close,
-          color: AppColors.hit,
-          onPressed: _cancel,
+          label: resting ? 'SEARCH AGAIN' : 'CANCEL',
+          icon: resting ? Icons.radar : Icons.close,
+          color: resting ? AppColors.ember : AppColors.hit,
+          onPressed: resting ? _startSearch : _cancel,
         ),
       ],
     );

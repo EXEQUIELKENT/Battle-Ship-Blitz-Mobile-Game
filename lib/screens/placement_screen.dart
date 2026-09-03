@@ -901,7 +901,7 @@ class _PlacementScreenState extends State<PlacementScreen>
               // own dock icon's footprint and grows to full size as it
               // eases onto the board (see `_ShipPullIn`).
               const dockUnit = 11.0;
-              final dockW = dockUnit * ship.spec.size + 14;
+              final dockW = ShipPreviewBox.width(ship.spec, dockUnit);
               final boardW = ship.spec.size * cell - 2;
               _pullInScales[ship.spec.kind] = boardW > 0
                   ? (dockW / boardW).clamp(0.35, 0.75)
@@ -1342,6 +1342,7 @@ class _PlacementScreenState extends State<PlacementScreen>
     // The battlefield this captain is deploying onto.
     final theme = loadout.theme;
     final boardFamily = FleetFamilies.byKey(theme.familyKey);
+    final legacyBoardId = theme.legacy ? theme.id : null;
     final playerLabel = isLocal
         ? (widget.isPlayer2 ? 'PLAYER 2' : 'PLAYER 1')
         : profile.playerName.toUpperCase();
@@ -1735,6 +1736,7 @@ class _PlacementScreenState extends State<PlacementScreen>
                                           glowColor: theme.accent,
                                           gridLineColor: theme.gridLine,
                                           boardFamily: boardFamily,
+                                          legacyBoardId: legacyBoardId,
                                           previewShip: _previewShip,
                                           previewValid: _previewValid,
                                           onTapCell: _randomizing
@@ -1887,12 +1889,17 @@ class _DockShip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Resting dock icon: width scales with the ship's cell-length (same
-    // "unit * spec.size" pattern the battle-screen fleet row uses)
-    // instead of every ship — a 2-cell destroyer and a 5-cell carrier
-    // alike — rendering inside the same fixed 68px box.
+    // FEEDBACK (dock hulls still looked cramped/uneven after the fleet
+    // strip was fixed): this used to size the icon itself — `dockUnit *
+    // spec.size + 14` wide by a flat 30 tall — rather than going through
+    // `ShipPreviewBox`, so it never picked up that fix at all. A 2-cell
+    // destroyer sat in a 36×30 box, near enough square to squash the
+    // hull's authored proportions the same way the fleet strip used to.
+    // `ShipPreviewBox` is exactly the shared metric for this (see its
+    // doc) — using it here instead of a second, independent formula is
+    // what keeps the dock tray and the fleet strip from drifting apart
+    // like this again.
     const dockUnit = 11.0;
-    const dockBeam = 30.0;
     // Cross-faded on the hull skin id: picking a new hull in the GEAR
     // dialog used to swap every dock icon on the very next frame, which
     // read as a glitch next to the grid/deck's own 320ms dissolve. Same
@@ -1914,8 +1921,8 @@ class _DockShip extends StatelessWidget {
         key: ValueKey(skin.id),
         spec: spec,
         skin: skin,
-        width: dockUnit * spec.size + 14,
-        height: dockBeam,
+        width: ShipPreviewBox.width(spec, dockUnit),
+        height: ShipPreviewBox.beam(dockUnit),
       ),
     );
 
@@ -2168,6 +2175,9 @@ class _GearDialogState extends State<_GearDialog> {
     final sets = FleetFamilies.all
         .where((f) => widget.profile.ownsFamilySet(f))
         .toList();
+    final legacySets = Catalog.legacySets
+        .where((s) => widget.profile.ownsLegacySet(s))
+        .toList();
 
     return Dialog(
       backgroundColor: Colors.transparent,
@@ -2260,22 +2270,53 @@ class _GearDialogState extends State<_GearDialog> {
                         ),
                     ],
                   ),
-                  // Only appears once at least one matched set is fully
-                  // owned — this is a shortcut onto gear already unlocked
-                  // above, not a fourth thing to buy, so an empty shelf
-                  // here would just be dead space. Matches the shipyard's
-                  // GAMEPLAY tab: tapping one of these sets HULL, CANNON
-                  // and DECK together in one go, the same trio
-                  // `ProfileStore.buyFamilySet` equips on purchase.
-                  if (sets.isNotEmpty) ...[
+                  // Only appears once at least one matched/legacy set is
+                  // fully owned — this is a shortcut onto gear already
+                  // unlocked above, not a fourth thing to buy, so an empty
+                  // shelf here would just be dead space. Matches the
+                  // shipyard's GAMEPLAY tab: tapping one of these sets
+                  // HULL, CANNON and DECK together in one go — for a
+                  // family, the same trio `ProfileStore.buyFamilySet`
+                  // equips on purchase; a legacy set has no bundle
+                  // purchase (every piece stays a la carte), so this is
+                  // purely a convenience once you happen to own all three.
+                  if (sets.isNotEmpty || legacySets.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     _section('GAMEPLAY'),
                     _ArrowScroller(
                       height: 64,
                       children: [
+                        // FEEDBACK: legacy sets lead, family sets follow
+                        // — the same order the Shipyard's own shelves use
+                        // (the nine originals are the cheap, early gear a
+                        // captain owns first, so they are what this
+                        // shortcut most often has to offer).
+                        //
+                        // A legacy set's ship id and cannon/theme id live
+                        // in different namespaces (`steel` vs `mk1`) —
+                        // unlike a family, there is no one shared id to
+                        // substitute into all three slots.
+                        for (final set in legacySets)
+                          _setChip(
+                            accent: set.accent,
+                            label: set.name.toUpperCase(),
+                            selected:
+                                _lo.shipChosen &&
+                                _lo.shipSkinId == set.shipSkinId &&
+                                _lo.cannonSkinId == set.id &&
+                                _lo.themeId == set.id,
+                            onTap: () => _set(
+                              _lo.copyWith(
+                                shipSkinId: set.shipSkinId,
+                                shipChosen: true,
+                                cannonSkinId: set.id,
+                                themeId: set.id,
+                              ),
+                            ),
+                          ),
                         for (final family in sets)
                           _setChip(
-                            family: family,
+                            accent: family.accent,
                             label: family.fleetName.toUpperCase(),
                             selected:
                                 _lo.shipChosen &&
@@ -2415,10 +2456,11 @@ class _GearDialogState extends State<_GearDialog> {
   /// A matched-set shortcut chip. Unlike [_hullChip] and [_swatchChip],
   /// which each preview one piece of gear, this one stands in for three
   /// at once — so instead of a hull silhouette or a colour swatch it
-  /// just wears the family's own accent and name, the way the shipyard's
-  /// matched-set card does.
+  /// just wears the set's own accent and name, the way the shipyard's
+  /// matched-set card does. Shared by both the six family sets and the
+  /// nine legacy sets — [accent] is the only thing that ever differed.
   Widget _setChip({
-    required FleetFamily family,
+    required Color accent,
     required String label,
     required bool selected,
     required VoidCallback onTap,
@@ -2446,7 +2488,7 @@ class _GearDialogState extends State<_GearDialog> {
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(6),
                 border: Border.all(color: AppColors.outline, width: 1.5),
-                color: family.accent,
+                color: accent,
               ),
               child: const Icon(
                 Icons.workspace_premium,

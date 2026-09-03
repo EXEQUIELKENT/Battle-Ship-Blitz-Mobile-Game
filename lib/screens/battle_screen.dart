@@ -1152,16 +1152,20 @@ class _BattleScreenState extends State<BattleScreen>
     if (context.read<GameController>().mode == GameMode.local) {
       return context.read<GameController>().localLoadouts[halfIsP1 ? 0 : 1];
     }
-    // VS AI. The battlefield is the player's — it is their theme, on both
-    // halves — but the FLEET and the GUN on the far side belong to the
-    // opponent, so the AI sails the plain blue hulls and fires the
-    // standard cannon. Handing the AI the player's own Cinder Hold and
-    // Magma Bombard would make the two sides indistinguishable, which is
-    // the one thing a battle screen cannot afford.
+    // VS AI. The AI's own hull, gun and battlefield are drawn independently
+    // at random from whatever the PLAYER has actually unlocked — rolled
+    // once per match (cached below) rather than every one of the many
+    // per-frame reads of this method, so the AI's look stays put for the
+    // whole battle instead of flickering between skins.
     final mine = Loadout.of(context.read<ProfileStore>());
     if (halfIsP1) return mine;
-    return Loadout(themeId: mine.themeId);
+    return _aiLoadoutCache ??=
+        Loadout.randomOwned(context.read<ProfileStore>());
   }
+
+  /// See the `vsAI` branch of [_loadoutFor] — filled on first read, then
+  /// stable for the rest of the match.
+  Loadout? _aiLoadoutCache;
 
   /// How a half's fleet reads on screen — hull colour, chrome colour and
   /// readable ink — resolved by the shared rule in `fleet_identity.dart`
@@ -1726,7 +1730,7 @@ class _BattleScreenState extends State<BattleScreen>
             // continuous free spin, which reads fine for a round shot
             // (it's a sphere; any face it shows is the right face) but
             // looked wrong for the directional rocket/dart shells —
-            // Phantom Railgun's slug, the naval family's MK-IV sabot
+            // Abyss Railgun's slug, the naval family's MK-IV sabot
             // shell, and Venom's warhead — which have an actual nose and
             // tail drawn into the art. Those are now oriented to the
             // shell's real instantaneous heading along the arc below
@@ -2360,6 +2364,8 @@ class _BattleScreenState extends State<BattleScreen>
                     // seas at once — your ice against their basalt.
                     boardFamily:
                         FleetFamilies.byKey(gameplayTheme.familyKey),
+                    legacyBoardId:
+                        gameplayTheme.legacy ? gameplayTheme.id : null,
                     gridLineColor: gameplayTheme.gridLine,
                     recentEvents: events,
                     aimCell: aimCell,
@@ -2422,6 +2428,10 @@ class _BattleScreenState extends State<BattleScreen>
                   gridLeft: gridLeft,
                   gridTop: gridTop,
                   fleetSkin: fleetSkin,
+                  // These are THIS half owner's own ships going down, so
+                  // the gun that sank them is the other half's — the same
+                  // value the grid's own live ships and impact marks read.
+                  shooterCannonId: _cannonSkinFor(!halfIsP1).id,
                 ),
 
               // Turn-highlight dim: a soft scrim over the ACTIVE player's
@@ -2571,6 +2581,7 @@ class _BattleScreenState extends State<BattleScreen>
     required double gridLeft,
     required double gridTop,
     required ShipSkin fleetSkin,
+    required String shooterCannonId,
   }) {
     final sinking = <Widget>[];
     for (final ship in board.ships) {
@@ -2593,6 +2604,7 @@ class _BattleScreenState extends State<BattleScreen>
               ship: ship,
               skin: fleetSkin,
               cell: cell,
+              shooterCannonId: shooterCannonId,
               onCompleted: () {
                 if (controller.battling) controller.clearSunkShip(ship.spec.kind);
               },
@@ -2764,18 +2776,42 @@ class _BattleScreenState extends State<BattleScreen>
     // already pinned at the OLD cap before the insets even changed. Raised
     // to match the width actually freed up, so trimming the margins now
     // visibly grows the ships instead of just adding empty space around
-    // them. `beam` below is unaffected: it's defined as a fraction of
-    // `maxUnit`, so it lands back on the same ~26px tall icon it always
-    // has whenever `unit` is capped — this only widens each hull.
-    const maxUnit = 13.0;
-    // Total cells across the whole fleet (5+4+3+3+2), plus a little
-    // breathing room so the ships never quite touch.
-    const fleetCells = 17.0;
+    // them.
+    //
+    // FEEDBACK (short hulls in this strip looked cramped and mis-drawn,
+    // the destroyer worst of all): the icons used to be `unit * spec.size`
+    // wide by a FLAT beam, which made a 2-cell destroyer an exact 26×26
+    // SQUARE. Every hull here — legacy and family alike — is authored
+    // once in a shared 300×100 box and non-uniformly stretched to fill
+    // whatever box it is handed (see `legacy_ship_art.dart`'s `_shipBox`
+    // / `FamilyCanvas.stretch`), so a 1:1 box does not just crop the
+    // silhouette, it squeezes the whole drawing to a third of its
+    // authored length: turret circles become tall ellipses, the deck
+    // furniture piles up on itself, and the hull reads as a squat blob
+    // rather than a destroyer. The cruiser and submarine (1.5:1) were
+    // mildly wrong the same way; only the carrier was ever close.
+    //
+    // Fixed by giving every hull a constant length allowance on top of
+    // its cell count and tying the beam to the same unit, which lands the
+    // whole strip between 1.85:1 (destroyer) and 3.3:1 (carrier) — the
+    // near-3:1 end matching the authored box, and the short end matching
+    // the 1.8:1 the hero dock already renders legacy hulls at. A longer
+    // ship still reads as clearly longer than a shorter one, which is the
+    // point of sizing by `spec.size` in the first place.
+    const maxUnit = 11.0;
+    // `ShipPreviewBox` — shared with the deploy screen's dock tray (see
+    // its own doc) so the two rows can't quietly drift back out of sync
+    // the way they did when each carried its own copy of this formula.
+    const fleetCells = ShipPreviewBox.fleetUnits;
     return LayoutBuilder(builder: (context, box) {
       final unit = box.maxWidth.isFinite
           ? math.min(maxUnit, (box.maxWidth * 0.86) / fleetCells)
           : maxUnit;
-      final beam = 26.0 * (unit / maxUnit);
+      final beam = ShipPreviewBox.beam(unit);
+      // Whoever is shooting AT this fleet — see `ShipPainter
+      // .shooterCannonId`. Without it every destroyed hull in the strip
+      // drew the same fallback wound no matter which gun sank it.
+      final shooterCannonId = _cannonSkinFor(!isP1Fleet).id;
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
@@ -2802,10 +2838,11 @@ class _BattleScreenState extends State<BattleScreen>
                 child: AnimatedShip(
                   spec: spec,
                   skin: skin,
-                  width: unit * spec.size,
+                  width: ShipPreviewBox.width(spec, unit),
                   height: beam,
                   sunk: destroyed,
                   hitCount: destroyed ? spec.size : 0,
+                  shooterCannonId: shooterCannonId,
                 ),
               );
             }),
@@ -3494,12 +3531,18 @@ class _GhostSinkingShip extends StatefulWidget {
   final double cell;
   final VoidCallback onCompleted;
 
+  /// See `ShipPainter.shooterCannonId` — the gun that sank this hull, so
+  /// the wound it goes down with matches the one the live ship was
+  /// wearing a frame earlier rather than snapping to a different shape.
+  final String? shooterCannonId;
+
   const _GhostSinkingShip({
     super.key,
     required this.ship,
     required this.skin,
     required this.cell,
     required this.onCompleted,
+    this.shooterCannonId,
   });
 
   @override
@@ -3567,6 +3610,7 @@ class _GhostSinkingShipState extends State<_GhostSinkingShip>
                 sunk: true,
                 hitCount: ship.spec.size,
                 hitIndices: ship.hitIndices,
+                shooterCannonId: widget.shooterCannonId,
               ),
             )
           : RotatedBox(
@@ -3578,6 +3622,7 @@ class _GhostSinkingShipState extends State<_GhostSinkingShip>
                   sunk: true,
                   hitCount: ship.spec.size,
                   hitIndices: ship.hitIndices,
+                  shooterCannonId: widget.shooterCannonId,
                 ),
               ),
             ),

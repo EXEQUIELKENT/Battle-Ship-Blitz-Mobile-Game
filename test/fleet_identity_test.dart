@@ -109,26 +109,26 @@ void main() {
         ..shipSkinId = 'coral'
         ..shipSkinChosen = true
         ..cannonSkinId = 'tesla'
-        ..gameplayThemeId = 'deep';
+        ..gameplayThemeId = 'inferno';
 
       final lo = Loadout.of(profile);
       expect(lo.shipSkinId, 'coral');
       expect(lo.shipChosen, isTrue);
       expect(lo.cannonSkin.id, 'tesla');
-      expect(lo.theme.id, 'deep');
+      expect(lo.theme.id, 'inferno');
     });
 
     test('copyWith changes one field and leaves the rest alone', () {
       const base = Loadout(
         shipSkinId: 'gold',
         cannonSkinId: 'royal',
-        themeId: 'sunset',
+        themeId: 'sunfire',
         shipChosen: true,
       );
       final next = base.copyWith(cannonSkinId: 'venom');
       expect(next.cannonSkinId, 'venom');
       expect(next.shipSkinId, 'gold');
-      expect(next.themeId, 'sunset');
+      expect(next.themeId, 'sunfire');
       expect(next.shipChosen, isTrue);
     });
 
@@ -137,7 +137,7 @@ void main() {
       expect(lo.shipSkinId, 'steel');
       expect(lo.shipChosen, isFalse);
       expect(lo.cannonSkinId, 'mk1');
-      expect(lo.themeId, 'classic');
+      expect(lo.themeId, 'mk1');
     });
   });
 }

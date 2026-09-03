@@ -54,7 +54,7 @@ class OnlinePlayer {
         shipSkinId: (j['ship'] as String?) ?? 'steel',
         shipChosen: j['shipChosen'] == true,
         cannonSkinId: (j['cannon'] as String?) ?? 'mk1',
-        themeId: (j['theme'] as String?) ?? 'classic',
+        themeId: (j['theme'] as String?) ?? 'mk1',
         online: j['online'] == true,
         lastSeenAgo: (j['lastSeenAgo'] as num?)?.toInt(),
       );

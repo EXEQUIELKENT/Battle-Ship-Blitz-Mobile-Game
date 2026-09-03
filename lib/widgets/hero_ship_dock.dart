@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../art/fleet_family.dart';
+import '../art/legacy_ship_art.dart' show hullBounds;
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/sound_service.dart';
@@ -85,13 +86,13 @@ class _HeroShipDockState extends State<HeroShipDock>
     super.dispose();
   }
 
-  /// Every hull silhouette in [ShipPainter] is drawn as fractions of
-  /// whatever width/height it's given, at a fixed ~1.8:1 aspect — so the
-  /// only safe way to make the carrier read as visibly bigger than the
-  /// destroyer is to scale width AND height together. Scaling width alone
-  /// (while holding height constant) changes that aspect ratio per hull
-  /// and warps the smaller ones into a squashed, stubby shape instead of
-  /// a smaller boat.
+  /// Every hull silhouette in [ShipPainter] is stretched to fill whatever
+  /// width/height it's given, at its own class's aspect (see
+  /// [_hullHeight]) — so the only safe way to make the carrier read as
+  /// visibly bigger than the destroyer is to scale width AND height
+  /// together. Scaling width alone (while holding height constant) would
+  /// change that aspect ratio per hull and warp the smaller ones into a
+  /// squashed, stubby shape instead of a smaller boat.
   ///
   /// Scale runs from 0.62x (destroyer, the smallest hull) up to 1.0x
   /// (carrier, the largest) so every class stays clearly readable while
@@ -115,35 +116,55 @@ class _HeroShipDockState extends State<HeroShipDock>
   bool get _isFamilySkin =>
       FleetFamilies.byKey(widget.equippedSkin.familyKey) != null;
 
-  /// The legacy hulls in [ShipPainter] have no shared reference box —
-  /// every silhouette (`_carrier`, `_battleship`, ...) is hand-drawn
-  /// straight from whatever w/h fractions this widget hands it, which is
-  /// exactly why [_hullScale]'s doc says every class MUST share one fixed
-  /// aspect here: varying it per hull would warp those hand-tuned curves.
-  ///
-  /// The themed families are the opposite case. All five of a family's
-  /// hulls are authored once in one shared 300×100 box and non-uniformly
-  /// stretched to fill whatever box `paintFamilyShip`/`FamilyCanvas
-  /// .stretch` is given — so a box with the wrong aspect doesn't just
-  /// look "off-model", it visibly balloons circles/turrets into ellipses
-  /// and reads as a bloated hull instead of a lean one. That's exactly
-  /// what forcing every family hull through the legacy 1.8:1 box below
-  /// caused here: a themed carrier or battleship (long, lean classes)
-  /// got squashed into the same squat box as a themed destroyer.
-  ///
-  /// The Shipyard's own hull-class row already renders every themed hull
-  /// correctly, sizing each one to `(9.5 * spec.size + 10)` wide by a
-  /// fixed 22 tall — so a 5-cell carrier reads meaningfully longer,
-  /// relative to its own beam, than a 2-cell destroyer. Reusing that
-  /// same per-class aspect here keeps a themed hull exactly as long/lean
-  /// on the hero dock as it already is on the Shipyard, instead of
-  /// forcing it through a ratio it was never drawn for.
+  /// A themed family's five hulls are authored once in one shared
+  /// 300×100 box and non-uniformly stretched to fill whatever box
+  /// `paintFamilyShip`/`FamilyCanvas.stretch` is given — so a box with
+  /// the wrong aspect doesn't just look "off-model", it visibly balloons
+  /// circles/turrets into ellipses and reads as a bloated hull instead of
+  /// a lean one. The Shipyard's own hull-class row already renders every
+  /// themed hull correctly, sizing each one to `(9.5 * spec.size + 10)`
+  /// wide by a fixed 22 tall — so a 5-cell carrier reads meaningfully
+  /// longer, relative to its own beam, than a 2-cell destroyer. Reusing
+  /// that same per-class aspect here keeps a themed hull exactly as
+  /// long/lean on the hero dock as it already is on the Shipyard.
   double _familyAspect(ShipSpec spec) => (9.5 * spec.size + 10) / 22;
+
+  /// FEEDBACK ("legacy ships are too big" on the hero dock and the
+  /// Shipyard hull card): this used to hold every legacy hull to one
+  /// flat 1.8:1 box (`width * 0.55`) regardless of class, on the theory
+  /// (see the removed doc here, and [_hullScale]'s) that legacy hulls
+  /// were drawn straight into whatever box they were given with no
+  /// natural aspect of their own to protect. That stopped being true
+  /// once `legacy_ship_art.dart` started mapping each hull's own
+  /// MEASURED bounds — via [hullBounds] — onto its box instead of a
+  /// fixed shared one: a legacy hull now fills whatever box it is handed
+  /// exactly as completely as a family hull always has, so it is
+  /// exposed to the exact same distortion `_familyAspect`'s own doc
+  /// describes. A destroyer's real silhouette runs 3–4:1 even at its
+  /// small board footprint (nothing like a themed destroyer's stubby
+  /// hull), so a flat 1.8:1 box no longer just "under-fills" it the way
+  /// it used to — post-[hullBounds] that same box stretches the hull
+  /// noticeably taller/bulkier than it is actually drawn, which is
+  /// exactly the "too big" a player sees.
+  ///
+  /// [_familyAspect] cannot substitute here — it is tuned against family
+  /// hulls' own compact, boxy silhouettes (a themed destroyer really is
+  /// short and stubby by design) and is nothing like a legacy hull's
+  /// aspect at the same class. The correct box for a legacy hull is
+  /// whatever [hullBounds] already measured for it: reading it back
+  /// gives an EXACT aspect with zero guesswork and zero stretch, for
+  /// every class of every one of the nine skins individually — which is
+  /// strictly more accurate than a class-only constant like
+  /// [_familyAspect] could ever be.
+  double _legacyAspect(ShipSpec spec) {
+    final b = hullBounds(widget.equippedSkin, spec.kind);
+    return b.width / b.height;
+  }
 
   double _hullHeight(ShipSpec spec) {
     final width = _hullWidth(spec);
-    if (_isFamilySkin) return width / _familyAspect(spec);
-    return width * 0.55;
+    final aspect = _isFamilySkin ? _familyAspect(spec) : _legacyAspect(spec);
+    return width / aspect;
   }
 
   void _cycleHull() {

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../art/family_ship_art.dart';
 import '../art/fleet_family.dart';
+import '../art/legacy_ship_art.dart';
+import '../art/ship_damage_art.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/storage_service.dart';
@@ -14,6 +16,20 @@ import '../services/storage_service.dart';
 /// equipped ship skin.
 const ShipSkin wreckSkin =
     ShipSkin('wreck', 'Wreck', Color(0xFF3A4148), Color(0xFF262C32), 0);
+
+/// Per-pixel equivalent of `Color.lerp(c, 0xFF14181C, 0.72)` for every
+/// colour a legacy hull is drawn from, applied via `Canvas.saveLayer`
+/// rather than by touching any of [paintLegacyShip]'s own hand-authored
+/// hex values — the sunk state needs to darken all nine hulls, and this
+/// reaches every one of them without a 45-block colour parametrisation.
+/// `0xFF14181C` is R=20 G=24 B=28; a matrix row of the form
+/// `[1-t, 0, 0, 0, t*target]` reproduces the lerp exactly per channel.
+const ColorFilter _sunkFilter = ColorFilter.matrix(<double>[
+  0.28, 0, 0, 0, 14.4,
+  0, 0.28, 0, 0, 17.28,
+  0, 0, 0.28, 0, 20.16,
+  0, 0, 0, 1, 0,
+]);
 
 /// Flat cartoon top-down ship painter with bold outlines,
 /// matching the playful reference UI style.
@@ -38,6 +54,15 @@ class ShipPainter extends CustomPainter {
   /// `PlacedShip.hitIndices`) should always pass [hitIndices] explicitly.
   final Set<int> hitIndices;
 
+  /// The attacker's own equipped `CannonSkin.id` — a hit's flourish reads
+  /// as "what gun fired this", not "whose hull got hit" (see
+  /// `damageStyleForShooter`). Null falls back to the OLD, struck-skin
+  /// -keyed resolution (`damageStyleForShipSkin`/`damageStyleForFamily`),
+  /// which every non-battle call site — placement previews, dock icons,
+  /// drag ghosts, the sunk-wreck reveal — has no shooter for and doesn't
+  /// need to change.
+  final String? shooterCannonId;
+
   ShipPainter({
     required this.spec,
     required this.skin,
@@ -45,6 +70,7 @@ class ShipPainter extends CustomPainter {
     this.sunk = false,
     this.hitCount = 0,
     Set<int>? hitIndices,
+    this.shooterCannonId,
   }) : hitIndices = hitIndices ?? (hitCount > 0
             ? Set<int>.from(List.generate(hitCount, (i) => i))
             : const <int>{});
@@ -80,7 +106,7 @@ class ShipPainter extends CustomPainter {
       paintFamilyShip(canvas, size, family, spec.kind,
           paletteOverride: palette);
       canvas.restore();
-      if (hitIndices.isNotEmpty) _familyDamage(canvas, w, h);
+      if (hitIndices.isNotEmpty) _familyDamage(canvas, w, h, family);
       if (sunk) {
         final smokeRng = math.Random(spec.kind.index * 97 + 11);
         final smoke = Paint()..color = Colors.white.withValues(alpha: 0.30);
@@ -94,71 +120,49 @@ class ShipPainter extends CustomPainter {
       return;
     }
 
-    // Destroyed version: charred toward near-black instead of just faded,
-    // so a sunk ship reads clearly as "wrecked" rather than a ghostly
-    // washed-out copy of the live one.
-    final hullColor = sunk
-        ? Color.lerp(skin.hull, const Color(0xFF14181C), 0.72)!
-        : skin.hull;
-    final trimColor = sunk
-        ? Color.lerp(skin.trim, const Color(0xFF14181C), 0.72)!
-        : skin.trim;
-    final outlinePaint = Paint()
-      ..color = AppColors.outline.withValues(alpha: sunk ? 0.85 : 1)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3
-      ..strokeJoin = StrokeJoin.round;
-    final fillPaint = Paint()..color = hullColor;
-    final detailPaint = Paint()
-      ..color = trimColor
-      ..style = PaintingStyle.fill;
-    final detailStroke = Paint()
-      ..color = AppColors.outline.withValues(alpha: sunk ? 0.85 : 1)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-
     // Gentle bob (tiny, keeps the flat look clean)
     final bob = sunk ? 0.0 : (wavePhase - 0.5) * h * 0.06;
     canvas.save();
     canvas.translate(0, bob);
 
-    switch (spec.kind) {
-      case ShipKind.carrier:
-        _carrier(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
-        break;
-      case ShipKind.battleship:
-        _battleship(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
-        break;
-      case ShipKind.cruiser:
-        _cruiser(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
-        break;
-      case ShipKind.submarine:
-        _submarine(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
-        break;
-      case ShipKind.destroyer:
-        _destroyer(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
-        break;
+    if (skin.id == wreckSkin.id) {
+      // `wreckSkin` (see its own doc) is the enemy-board wreck reveal —
+      // it deliberately never knows or cares which skin the defender had
+      // equipped, so it keeps the original flat, skin-agnostic hull shape
+      // rather than going through [paintLegacyShip], which draws a real,
+      // specific skin's illustration.
+      _paintGenericWreck(canvas, w, h);
+    } else {
+      // Destroyed version: charred toward near-black instead of just
+      // faded, so a sunk ship reads clearly as "wrecked" rather than a
+      // ghostly washed-out copy of the live one — the SAME per-pixel
+      // darken the family branch above applies, via a colour filter
+      // rather than touching any of the hull's own hand-authored colours,
+      // so a wrecked Crimson ship still reads as a wrecked Crimson ship
+      // rather than collapsing to a generic silhouette.
+      if (sunk) {
+        canvas.saveLayer(Rect.fromLTWH(0, 0, w, h), Paint()..colorFilter = _sunkFilter);
+      }
+      paintLegacyShip(canvas, Size(w, h), skin, spec.kind);
+      if (sunk) canvas.restore();
     }
 
-    // Hit damage: a scorched crater with radiating cracks and a
-    // smouldering ember, one per actually-hit cell, positioned at THAT
-    // cell's spot along the hull rather than counted in from the bow.
-    // REDESIGN: this used to be a thin crossed-line "X" stamped on top of
-    // the hull — legible, but it read as a UI tag rather than an actual
-    // wound. A crater with jagged cracks running out into the surrounding
-    // plating reads as "the hull is broken here" instead.
+    // Hit damage: the design's own authored wound for whichever GUN
+    // actually hit this hull (see [shooterCannonId]), replayed whole —
+    // halo, crater, flourish and core all come from the one SVG, so
+    // there is no separate generic crater underneath any more. See
+    // `paintShipDamage`.
     if (hitIndices.isNotEmpty) {
       final cellSize = math.min(h, w / spec.size);
+      final shooter = shooterCannonId;
+      final style = shooter != null
+          ? damageStyleForShooter(Catalog.cannonById(shooter))
+          : damageStyleForShipSkin(skin.id);
       for (final i in hitIndices) {
         if (i < 0 || i >= spec.size) continue;
         final cx = w * (0.18 + 0.64 * (i / math.max(1, spec.size - 1)));
         final cy = h * 0.5 + (i.isOdd ? h * 0.12 : -h * 0.12);
-        _drawDamageMark(
-          canvas,
-          Offset(cx, cy),
-          cellSize,
-          spec.kind.index * 31 + i,
-        );
+        paintShipDamage(canvas, Offset(cx, cy), cellSize * 0.30, style);
       }
     }
 
@@ -177,118 +181,63 @@ class ShipPainter extends CustomPainter {
     canvas.restore();
   }
 
-  /// The same scorched-crater damage the flat skins get — see
-  /// [_drawDamageMark]. Kept in step with `paint`'s copy above.
-  ///
-  /// Damage is deliberately NOT themed: a player has to read "this hull
-  /// has been hit" at a glance on an opponent's board, and making that
-  /// signal depend on which fleet they happen to have bought would put a
-  /// gameplay read behind a cosmetic. The ships change; the wounds don't.
-  void _familyDamage(Canvas canvas, double w, double h) {
+  /// The same authored wound the legacy hulls get — see `paintShipDamage`
+  /// and the note in `paint` above, which this is kept in step with.
+  void _familyDamage(Canvas canvas, double w, double h, FleetFamily family) {
     final cellSize = math.min(h, w / spec.size);
+    final shooter = shooterCannonId;
+    final style = shooter != null
+        ? damageStyleForShooter(Catalog.cannonById(shooter))
+        : damageStyleForFamily(family.id);
     for (final i in hitIndices) {
       if (i < 0 || i >= spec.size) continue;
       final cx = w * (0.18 + 0.64 * (i / math.max(1, spec.size - 1)));
       final cy = h * 0.5 + (i.isOdd ? h * 0.12 : -h * 0.12);
-      _drawDamageMark(
-        canvas,
-        Offset(cx, cy),
-        cellSize,
-        spec.kind.index * 31 + i,
-      );
+      paintShipDamage(canvas, Offset(cx, cy), cellSize * 0.30, style);
     }
   }
 
-  /// One hit cell's damage: a jittered, dark scorch crater with a couple
-  /// of cracks running out past its own edge into the surrounding hull,
-  /// plus a small smouldering ember at the centre — the one bit of colour
-  /// in an otherwise dark mark.
-  ///
-  /// [seed] is derived from the ship kind and cell index (not the hit's
-  /// wall-clock time), so a given cell's crater keeps exactly the same
-  /// jitter across repaints instead of reshuffling every time the ship
-  /// widget rebuilds (e.g. on the next shot landing elsewhere on the same
-  /// hull).
-  static void _drawDamageMark(
-    Canvas canvas,
-    Offset center,
-    double cellSize,
-    int seed,
-  ) {
-    final rng = math.Random(seed);
-    final r = cellSize * 0.30;
-    const char = Color(0xFF14181C);
-
-    // Soft dark halo so the mark reads as a scorched dent rather than a
-    // flat sticker sitting on top of the hull.
-    canvas.drawCircle(
-      center,
-      r * 1.4,
-      Paint()..color = Colors.black.withValues(alpha: 0.16),
-    );
-
-    // Irregular crater — a jittered polygon rather than a perfect circle,
-    // so it reads as an actual burst rather than a UI icon.
-    const sides = 8;
-    final points = <Offset>[
-      for (var i = 0; i < sides; i++)
-        center +
-            Offset(
-              math.cos(2 * math.pi / sides * i),
-              math.sin(2 * math.pi / sides * i),
-            ) *
-                r *
-                (0.72 + rng.nextDouble() * 0.4),
-    ];
-    final crater = Path()..addPolygon(points, true);
-    canvas.drawPath(crater, Paint()..color = char.withValues(alpha: 0.72));
-    canvas.drawPath(
-      crater,
-      Paint()
-        ..color = char
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.6
-        ..strokeJoin = StrokeJoin.round,
-    );
-
-    // Cracks running past the crater's own rim into the surrounding
-    // plating — this is what actually sells "the hull is broken here"
-    // rather than "something was stamped on top of it".
-    final crackPaint = Paint()
-      ..color = char.withValues(alpha: 0.6)
-      ..strokeWidth = 1.4
-      ..strokeCap = StrokeCap.round;
-    final crackCount = 3 + rng.nextInt(2);
-    for (var i = 0; i < crackCount; i++) {
-      final a = rng.nextDouble() * 2 * math.pi;
-      final len = r * (1.1 + rng.nextDouble() * 0.6);
-      final dir = Offset(math.cos(a), math.sin(a));
-      final perp = Offset(-dir.dy, dir.dx) *
-          r *
-          0.18 *
-          (rng.nextBool() ? 1 : -1);
-      final mid = center + dir * len * 0.55 + perp;
-      final end = center + dir * len;
-      canvas.drawPath(
-        Path()
-          ..moveTo(center.dx, center.dy)
-          ..lineTo(mid.dx, mid.dy)
-          ..lineTo(end.dx, end.dy),
-        crackPaint,
-      );
+  /// The original flat, hand-drawn hull-per-[ShipKind] shapes, tinted
+  /// only by [skin]'s two colours — kept alive for exactly one caller:
+  /// [wreckSkin]'s enemy-board reveal (see the branch in [paint] that
+  /// reaches here), which deliberately wants a skin-agnostic wreck rather
+  /// than any specific skin's illustration. Every real, catalogued skin
+  /// id goes through [paintLegacyShip] instead.
+  void _paintGenericWreck(Canvas canvas, double w, double h) {
+    final hullColor =
+        sunk ? Color.lerp(skin.hull, const Color(0xFF14181C), 0.72)! : skin.hull;
+    final trimColor =
+        sunk ? Color.lerp(skin.trim, const Color(0xFF14181C), 0.72)! : skin.trim;
+    final outlinePaint = Paint()
+      ..color = AppColors.outline.withValues(alpha: sunk ? 0.85 : 1)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeJoin = StrokeJoin.round;
+    final fillPaint = Paint()..color = hullColor;
+    final detailPaint = Paint()
+      ..color = trimColor
+      ..style = PaintingStyle.fill;
+    final detailStroke = Paint()
+      ..color = AppColors.outline.withValues(alpha: sunk ? 0.85 : 1)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    switch (spec.kind) {
+      case ShipKind.carrier:
+        _carrier(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
+        break;
+      case ShipKind.battleship:
+        _battleship(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
+        break;
+      case ShipKind.cruiser:
+        _cruiser(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
+        break;
+      case ShipKind.submarine:
+        _submarine(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
+        break;
+      case ShipKind.destroyer:
+        _destroyer(canvas, w, h, fillPaint, detailPaint, outlinePaint, detailStroke);
+        break;
     }
-
-    // A small ember still glowing at the centre of the crater.
-    canvas.drawCircle(
-      center,
-      r * 0.32,
-      Paint()..color = const Color(0xFFE86A2C).withValues(alpha: 0.55),
-    );
-    canvas.drawCircle(
-      center,
-      r * 0.15,
-      Paint()..color = const Color(0xFFFFC24C).withValues(alpha: 0.65),
-    );
   }
 
   void _drawHull(Canvas canvas, double w, double h, Paint fill, Paint outline) {
@@ -436,6 +385,10 @@ class ShipPainter extends CustomPainter {
       // actual set, not just its size, or a repaint gets skipped and the
       // crater stays stuck on the old cell.
       !_setEquals(oldDelegate.hitIndices, hitIndices) ||
+      // Picks the damage flourish's SHAPE (see [shooterCannonId]) — a
+      // painter reused across a loadout change would otherwise keep
+      // drawing the previous gun's wound.
+      oldDelegate.shooterCannonId != shooterCannonId ||
       oldDelegate.skin.hull != skin.hull;
 
   static bool _setEquals(Set<int> a, Set<int> b) {
@@ -443,6 +396,49 @@ class ShipPainter extends CustomPainter {
     if (a.length != b.length) return false;
     return a.containsAll(b);
   }
+}
+
+/// The box one hull gets in a fleet PREVIEW row — the deploy screen's dock
+/// tray and the battle screen's remaining-fleet strip, which sit at
+/// opposite ends of the same match and should not disagree about how a
+/// destroyer compares to a carrier.
+///
+/// FEEDBACK (hulls looked cramped in both rows): a preview row's natural
+/// first instinct is `unit * spec.size` wide by a flat beam, and both
+/// rows had exactly that. It puts a 2-cell destroyer in a box barely
+/// wider than it is tall — 26×26, an exact square, in the battle strip —
+/// and every hull here is authored in a wide box and stretched to fill
+/// whatever it is handed (see `legacy_ship_art.dart`), so a near-square
+/// box squeezes the drawing to a fraction of its authored length rather
+/// than just cropping it: turret circles turn into tall ellipses and the
+/// deck furniture piles up on itself.
+///
+/// [lengthPad] is a constant length allowance every hull gets on top of
+/// its cell count, which is what keeps the SHORTEST hull out of a
+/// near-square box; [beamUnits] ties the beam to the same unit so the
+/// whole row scales together. The result runs from 1.85:1 (destroyer) to
+/// 3.3:1 (carrier) — the long end close to the 3:1 the art is authored
+/// at, the short end matching the 1.8:1 the hero dock already renders
+/// legacy hulls at. A longer ship still reads as clearly longer, which is
+/// the whole point of sizing by [ShipSpec.size].
+class ShipPreviewBox {
+  const ShipPreviewBox._();
+
+  /// Extra length, in units, every hull gets regardless of class.
+  static const double lengthPad = 1.6;
+
+  /// Beam (height), in the same units.
+  static const double beamUnits = 1.95;
+
+  /// Total width of a whole five-ship fleet, in units — 5+4+3+3+2 cells
+  /// plus each hull's [lengthPad]. What a row divides its available width
+  /// by to pick its unit.
+  static const double fleetUnits = 17.0 + 5 * lengthPad;
+
+  static double width(ShipSpec spec, double unit) =>
+      unit * (spec.size + lengthPad);
+
+  static double beam(double unit) => unit * beamUnits;
 }
 
 /// Standalone flat ship widget (dock tray, customization previews, hero
@@ -475,6 +471,15 @@ class AnimatedShip extends StatelessWidget {
   /// or on a still-live ship that's been partially hit).
   final int hitCount;
 
+  /// See [ShipPainter.shooterCannonId]. FEEDBACK ("the ship damage is all
+  /// the same on the cannons"): the battle screen's remaining-fleet strip
+  /// renders its destroyed hulls through here, and left this null — so
+  /// every wreck in the strip drew the defender-keyed flourish no matter
+  /// which gun had actually been sinking them. A caller that knows who
+  /// was shooting passes it; the pure-preview callers (shipyard, dock,
+  /// drag ghost) legitimately have no shooter and still leave it null.
+  final String? shooterCannonId;
+
   const AnimatedShip({
     super.key,
     required this.spec,
@@ -485,6 +490,7 @@ class AnimatedShip extends StatelessWidget {
     this.height,
     this.sunk = false,
     this.hitCount = 0,
+    this.shooterCannonId,
   });
 
   @override
@@ -496,6 +502,7 @@ class AnimatedShip extends StatelessWidget {
       wavePhase: 0.5,
       sunk: sunk,
       hitCount: hitCount,
+      shooterCannonId: shooterCannonId,
     );
     final child = CustomPaint(
       painter: painter,

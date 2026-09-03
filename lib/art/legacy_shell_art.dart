@@ -101,7 +101,7 @@ ShellPalette legacyShellPalette(String cannonId) =>
 /// Whether a legacy cannon's shell is a directional "rocket" shape rather
 /// than a round one — see `familyShellIsDirectional` in
 /// `family_shell_art.dart`, which this mirrors for the nine originals.
-/// Phantom Railgun's slug is an ogive dart with tail fins; Venom
+/// Abyss Railgun's slug is an ogive dart with tail fins; Venom
 /// Launcher's warhead is a capped drum with a domed nose and spikes —
 /// both have a real front and back. The rest (iron shot, fireball, plasma
 /// orb, gilt shot, kraken shell, sunfire's rays, void's rings) are round
@@ -182,7 +182,7 @@ void _fireball(FamilyCanvas c, ShellPalette p) {
   c.circle(60, 122, 3.5, fillColor: p.trim, fillOpacity: 0.6);
 }
 
-// Tesla Coilgun — a charged orb, dashed field ring, jagged arcs crossing
+// Arctic Coilgun — a charged orb, dashed field ring, jagged arcs crossing
 // the surface and forked bolts kicking off it.
 void _plasmaOrb(FamilyCanvas c, ShellPalette p) {
   c.circle(60, 62, 38, fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
@@ -244,7 +244,7 @@ void _giltShot(FamilyCanvas c, ShellPalette p) {
   });
 }
 
-// Phantom Railgun — a slender energy-wrapped slug: an ogive dart with
+// Abyss Railgun — a slender energy-wrapped slug: an ogive dart with
 // glowing field rings racing up the shaft instead of mechanical drive
 // bands, and thin angular tail fins.
 void _railSlug(FamilyCanvas c, ShellPalette p) {
@@ -263,7 +263,7 @@ void _railSlug(FamilyCanvas c, ShellPalette p) {
   c.circle(60, 16, 5, fillColor: p.glow);
 }
 
-// Kraken Cannon — a barnacle-studded shot trailing curling tendrils,
+// Emerald Cannon — a barnacle-studded shot trailing curling tendrils,
 // each tipped with a bioluminescent glow.
 void _krakenShell(FamilyCanvas c, ShellPalette p) {
   c.circle(60, 64, 36, fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);

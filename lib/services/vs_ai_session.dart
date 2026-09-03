@@ -92,11 +92,16 @@ class VsAiSession {
       themeId: playerThemeId,
       shipChosen: playerShipChosen,
     );
+    // The AI's own hull/gun/board — drawn at random from whatever the
+    // real human (`player.profile`) has actually unlocked, so a rematch
+    // doesn't always face the same plain starter loadout. `aiProfile`
+    // above is a fresh, unloaded store and has nothing worth sampling.
+    final aiLoadout = Loadout.randomOwned(player.profile, rng: rand);
     aiNetwork.announceLoadout(
-      shipSkinId: 'steel',
-      cannonSkinId: 'mk1',
-      themeId: 'classic',
-      shipChosen: true,
+      shipSkinId: aiLoadout.shipSkinId,
+      cannonSkinId: aiLoadout.cannonSkinId,
+      themeId: aiLoadout.themeId,
+      shipChosen: aiLoadout.shipChosen,
     );
 
     player.mode = GameMode.vsAiLan;

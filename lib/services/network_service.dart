@@ -160,7 +160,7 @@ class NetworkService extends ChangeNotifier {
   /// there is nothing else to send.
   String peerShipSkinId = 'steel';
   String peerCannonSkinId = 'mk1';
-  String peerThemeId = 'classic';
+  String peerThemeId = 'mk1';
 
   /// Whether the opponent actually picked their hull or is still on the
   /// starter one — the difference between showing their skin and showing
@@ -831,7 +831,7 @@ class NetworkService extends ChangeNotifier {
       peerShipSkinId = (msg['ship'] as String?) ?? 'steel';
       peerShipSkinChosen = msg['shipPicked'] == 1;
       peerCannonSkinId = (msg['cannon'] as String?) ?? 'mk1';
-      peerThemeId = (msg['theme'] as String?) ?? 'classic';
+      peerThemeId = (msg['theme'] as String?) ?? 'mk1';
       connected = true;
       statusMessage = 'Connected to $peerName!';
       // Whoever is currently listening answers the greeting. During a
@@ -1281,7 +1281,7 @@ class NetworkService extends ChangeNotifier {
   String _selfShipSkinId = 'steel';
   bool _selfShipChosen = false;
   String _selfCannonSkinId = 'mk1';
-  String _selfThemeId = 'classic';
+  String _selfThemeId = 'mk1';
 
   void setSelfName(String name) => _selfName = name;
 
@@ -1582,7 +1582,7 @@ class NetworkService extends ChangeNotifier {
     peerShipSkinId = 'steel';
     peerShipSkinChosen = false;
     peerCannonSkinId = 'mk1';
-    peerThemeId = 'classic';
+    peerThemeId = 'mk1';
     _peerBoardMsg = null; // never carry a fleet into the next match
     chat.clear(); // nor a conversation with someone you are no longer playing
     unreadChat = 0;

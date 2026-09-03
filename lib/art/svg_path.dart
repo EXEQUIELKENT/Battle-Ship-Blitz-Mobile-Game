@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -209,7 +210,48 @@ class FamilyCanvas {
   static double _inkScaleFor(double scale) =>
       scale >= 1 ? 1 : scale.clamp(0.0, 1.0);
 
-  FamilyCanvas._(this.canvas, this._m, this.scale, this.inkScale);
+  FamilyCanvas._(this.canvas, this._m, this.scale, this.inkScale,
+      {bool measuring = false})
+      : _measuring = measuring;
+
+  /// A canvas that draws nothing and instead records the design-space
+  /// bounding box of everything drawn through it — see [measuredBounds].
+  ///
+  /// Exists because a hull's art does not necessarily fill the box it is
+  /// authored in: `legacy_ship_art.dart`'s destroyers, for instance, start
+  /// about a fifth of the way in from the stern edge of the shared 300×100
+  /// box. Mapping that whole box onto a widget then leaves that fifth as
+  /// dead space on screen — a ship that does not reach its own footprint
+  /// on the grid, and a preview that looks small and off-centre in its
+  /// slot. Measuring what a hull ACTUALLY draws lets the caller map that
+  /// instead, with no need to renumber a single hand-transcribed
+  /// coordinate.
+  ///
+  /// The identity transform means the recorded bounds come back in the
+  /// design's own units.
+  factory FamilyCanvas.measuring(Rect viewBox) => FamilyCanvas._(
+        Canvas(ui.PictureRecorder()),
+        (Matrix4.identity()..translateByDouble(-viewBox.left, -viewBox.top, 0, 1))
+            .storage,
+        1,
+        1,
+        measuring: true,
+      );
+
+  final bool _measuring;
+  Rect? _measured;
+
+  /// The union of every path drawn through this canvas, in design units,
+  /// or null if nothing was drawn. Only populated by [FamilyCanvas.measuring].
+  ///
+  /// Outsets by [_inkAllowance] so a shape's own outline — half of which
+  /// falls outside the path itself — is not clipped at the edge of
+  /// whatever box the result is mapped onto.
+  Rect? get measuredBounds => _measured?.inflate(_inkAllowance);
+
+  /// Half of the heaviest ink weight the ship art uses (3 design units),
+  /// which is how far a stroke can sit outside its own path's bounds.
+  static const double _inkAllowance = 1.5;
 
   /// Maps [viewBox] onto [size], stretching if their aspect ratios differ.
   factory FamilyCanvas.stretch(Canvas canvas, Size size, Rect viewBox) {
@@ -240,7 +282,18 @@ class FamilyCanvas {
     return FamilyCanvas._(canvas, m.storage, s, _inkScaleFor(s));
   }
 
-  Path _mapped(Path p) => p.transform(_m);
+  Path _mapped(Path p) {
+    final out = p.transform(_m);
+    if (_measuring) {
+      final b = out.getBounds();
+      // An empty path (a zero-length line, say) reports a degenerate rect
+      // that would drag the union out to the origin.
+      if (b.isFinite && !b.isEmpty) {
+        _measured = _measured == null ? b : _measured!.expandToInclude(b);
+      }
+    }
+    return out;
+  }
 
   /// Design-space stroke width → the width to actually paint with.
   double ink(double designWidth) {

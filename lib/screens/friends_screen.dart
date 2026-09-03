@@ -18,16 +18,28 @@ import '../widgets/ocean_background.dart';
 import 'battle_screen.dart';
 import 'lan_mode_screen.dart';
 import 'placement_screen.dart';
+import '../widgets/matchmaking_panel.dart';
 
-/// The online lobby: your captain name, your friends and their stats,
-/// who's online right now, and the invitations that start a match.
+/// The ONLINE section — THIS screen is what the main menu's ONLINE button
+/// opens (see `HomeScreen`). It is a two-tab page, exactly like the old
+/// multiplayer lobby was two tabs, but scoped to internet play:
+///
+///   1. FRIENDS — your captain name, your friends and their stats, who's
+///      online right now, add/search, invitations, and match history.
+///   2. MATCHMAKING — random pair-up with another searching captain
+///      (`MatchmakingPanel`), the find-a-match half of online play.
+///
+/// Hotspot / LAN has its own dedicated single-purpose page
+/// (`HotspotScreen`) and is NOT part of this screen.
 ///
 /// Friends are added by searching each player's unique captain name (the
 /// friend code still works for anyone who has one handy). This screen
 /// owns everything up to "we've agreed to play"; the moment the server
 /// marks a match active, [NetworkService.startRelayMatch] takes over and
 /// the game runs the identical flow a hotspot match does — mode vote,
-/// deployment, battle. Random matchmaking lives in [MatchmakingScreen].
+/// deployment, battle. An invitation and a matchmaking pairing BOTH
+/// launch through this screen's own [_FriendsScreenState._onOnline] — the
+/// single owner, so the two halves can never double-fire.
 class FriendsScreen extends StatefulWidget {
   const FriendsScreen({super.key});
 
@@ -35,10 +47,20 @@ class FriendsScreen extends StatefulWidget {
   State<FriendsScreen> createState() => _FriendsScreenState();
 }
 
-class _FriendsScreenState extends State<FriendsScreen> {
+class _FriendsScreenState extends State<FriendsScreen>
+    with SingleTickerProviderStateMixin {
   late final OnlineService _online;
   late final NetworkService _net;
   final _searchCtrl = TextEditingController();
+
+  /// Two-tab ONLINE section: 0 = FRIENDS, 1 = MATCHMAKING.
+  late final TabController _tab;
+
+  /// Manual game-server address escape hatch (see [_setupCard]):
+  /// auto-discovery usually finds the server; this covers a server on a
+  /// different network or one a Wi-Fi sweep missed.
+  final _serverCtrl = TextEditingController();
+  bool _showServerField = false;
 
   /// Captains the last name search turned up, shown under the search box
   /// with an ADD button each.
@@ -69,6 +91,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     super.initState();
     _online = context.read<OnlineService>();
     _net = context.read<NetworkService>();
+    _tab = TabController(length: 2, vsync: this);
     _online.addListener(_onOnline);
     _net.addListener(_onNet);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -95,6 +118,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
     _net.removeListener(_onNet);
     _online.stopHeartbeat();
     _searchCtrl.dispose();
+    _serverCtrl.dispose();
+    _tab.dispose();
     super.dispose();
   }
 
@@ -249,7 +274,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
   /// VOTE or the DEPLOY screen (there is no battle snapshot yet), and
   /// their `prematch` signal says which. Restores the fixed host role and
   /// routes to that same screen — mirror of
-  /// `MultiplayerScreen._enterPreMatch` for the online transport.
+  /// `HotspotScreen._enterPreMatch` for the online transport.
   void _enterPreMatchOnline(Map<String, dynamic> signal) {
     final net = context.read<NetworkService>();
     final controller = context.read<GameController>();
@@ -366,7 +391,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
               Container(
                 width: double.infinity,
                 color: AppColors.navy,
-                padding: const EdgeInsets.fromLTRB(8, 8, 14, 12),
+                padding: const EdgeInsets.fromLTRB(8, 8, 14, 0),
                 child: Row(
                   children: [
                     IconButton(
@@ -380,7 +405,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
                       },
                     ),
                     Expanded(
-                      child: Text('FRIENDS', style: AppText.title(size: 19)),
+                      child: Text('ONLINE', style: AppText.title(size: 19)),
                     ),
                     if (online.busy)
                       const SizedBox(
@@ -394,7 +419,42 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   ],
                 ),
               ),
-              Expanded(child: _body(online)),
+              // No server connection yet — the whole ONLINE section needs
+              // an account, so the setup card replaces both tabs instead
+              // of showing a dead tab bar.
+              if (online.signedIn)
+                Container(
+                  color: AppColors.navy,
+                  child: TabBar(
+                    controller: _tab,
+                    indicatorColor: AppColors.gold,
+                    indicatorWeight: 4,
+                    labelColor: AppColors.cream,
+                    unselectedLabelColor: AppColors.cream.withValues(
+                      alpha: 0.55,
+                    ),
+                    labelStyle: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 12,
+                      letterSpacing: 1.2,
+                    ),
+                    tabs: const [
+                      Tab(text: 'FRIENDS'),
+                      Tab(text: 'MATCHMAKING'),
+                    ],
+                  ),
+                ),
+              Expanded(
+                child: online.signedIn
+                    ? TabBarView(
+                        controller: _tab,
+                        children: [
+                          _body(online),
+                          const MatchmakingPanel(),
+                        ],
+                      )
+                    : _setupCard(online),
+              ),
             ],
           ),
         ),
@@ -403,11 +463,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
   }
 
   Widget _body(OnlineService online) {
-    // Self-contained setup: this is the online hub, so the address of the
-    // server it needs is asked for here rather than sending the player off
-    // to another screen to find it.
-    if (!online.signedIn) return _setupCard(online);
-
     final match = online.match;
 
     return ListView(
@@ -427,6 +482,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
         ],
         _myCodeCard(online),
         const SizedBox(height: 14),
+        // Random matchmaking is the MATCHMAKING tab now, not a card here.
         _searchCard(online),
         if (_searchResults.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -458,6 +514,13 @@ class _FriendsScreenState extends State<FriendsScreen> {
           _sectionTitle('WAITING ON THEM'),
           for (final p in online.outgoingRequests) _pendingTile(p),
         ],
+        // A captain's log of recent internet matches — with an ADD button
+        // on each row so a stranger met through FIND A MATCH doesn't have
+        // to be tracked down again just to send them a friend request.
+        if (online.history.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          _historyCard(online),
+        ],
         if (online.lastError != null) ...[
           const SizedBox(height: 18),
           Text(
@@ -477,6 +540,162 @@ class _FriendsScreenState extends State<FriendsScreen> {
     padding: const EdgeInsets.only(bottom: 8),
     child: Text(text, style: AppText.label(size: 10, color: AppColors.navy)),
   );
+
+  Widget _historyCard(OnlineService online) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: cartoonBox(AppColors.cream, radius: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'MATCH HISTORY',
+            style: AppText.label(size: 10, color: AppColors.inkSoft),
+          ),
+          const SizedBox(height: 10),
+          for (final entry in online.history) _historyRow(online, entry),
+        ],
+      ),
+    );
+  }
+
+  Widget _historyRow(OnlineService online, MatchHistoryEntry entry) {
+    final won = entry.won;
+    final resultColor = won ? AppColors.green : AppColors.hit;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: cartoonBox(AppColors.coralLight, radius: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: resultColor,
+              shape: BoxShape.circle,
+              border: Border.all(color: AppColors.outline, width: 2),
+            ),
+            child: Text(
+              won ? 'W' : 'L',
+              style: AppText.label(size: 13, color: AppColors.cream),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.opponentName.toUpperCase(),
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.label(size: 11.5, color: AppColors.navy),
+                ),
+                Text(
+                  '${entry.rpDelta == 0 ? 'NO CHANGE' : '${entry.rpDelta > 0 ? '+' : ''}${entry.rpDelta} RP'}'
+                  ' · ${_timeAgo(entry.when)}',
+                  style: AppText.body(size: 9.5, color: AppColors.inkSoft),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          _historyActionButtons(online, entry),
+        ],
+      ),
+    );
+  }
+
+  Widget _historyActionButtons(OnlineService online, MatchHistoryEntry entry) {
+    final isFriend = online.isFriend(entry.opponentId);
+    final hasPending = online.hasOutgoingRequest(entry.opponentId);
+    // Invite is only for existing friends who are online and not already
+    // in a match — same rule as the friends list.
+    OnlinePlayer? friend;
+    if (isFriend) {
+      for (final f in online.friends) {
+        if (f.id == entry.opponentId) {
+          friend = f;
+          break;
+        }
+      }
+    }
+    final canInvite = friend != null && friend.online && online.match == null;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (!isFriend && !hasPending)
+          NeonButton(
+            label: 'ADD',
+            icon: Icons.person_add,
+            color: AppColors.green,
+            compact: true,
+            onPressed: () => _addFromHistory(online, entry),
+          )
+        else if (!isFriend && hasPending)
+          Text(
+            'PENDING',
+            style: AppText.label(size: 8.5, color: AppColors.inkSoft),
+          )
+        else
+          Text(
+            'FRIENDS',
+            style: AppText.label(size: 8.5, color: AppColors.inkSoft),
+          ),
+        if (canInvite) ...[
+          const SizedBox(width: 6),
+          NeonButton(
+            label: 'INVITE',
+            icon: Icons.sports_esports,
+            color: AppColors.ember,
+            compact: true,
+            onPressed: () => _inviteFromHistory(online, entry),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _addFromHistory(
+    OnlineService online,
+    MatchHistoryEntry entry,
+  ) async {
+    final ok = await online.requestById(entry.opponentId);
+    if (!mounted) return;
+    _toast(
+      ok
+          ? 'Request sent to ${entry.opponentName}.'
+          : (online.lastError ?? 'Could not send that request.'),
+      type: ok ? AppNoticeType.success : AppNoticeType.error,
+    );
+  }
+
+  Future<void> _inviteFromHistory(
+    OnlineService online,
+    MatchHistoryEntry entry,
+  ) async {
+    final ok = await online.invite(entry.opponentId);
+    if (!mounted) return;
+    _toast(
+      ok
+          ? 'Invite sent to ${entry.opponentName}.'
+          : (online.lastError ?? 'Could not send that invite.'),
+      type: ok ? AppNoticeType.success : AppNoticeType.error,
+    );
+  }
+
+  /// "3M AGO" / "5H AGO" / "2D AGO" — same granularity as
+  /// `OnlinePlayer.presenceLabel`, so the whole online section reads times
+  /// the same way.
+  String _timeAgo(DateTime when) {
+    final ago = DateTime.now().difference(when);
+    if (ago.inMinutes < 1) return 'JUST NOW';
+    if (ago.inMinutes < 60) return '${ago.inMinutes}M AGO';
+    if (ago.inHours < 24) return '${ago.inHours}H AGO';
+    return '${ago.inDays}D AGO';
+  }
 
   Widget _setupCard(OnlineService online) {
     final busy = online.busy;
@@ -519,6 +738,66 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   color: AppColors.green,
                   onPressed: _retryConnect,
                 ),
+                // Manual escape hatch for when automatic discovery can't
+                // find anything — a server on a different network (a
+                // friend's tunnel/host address), or one a Wi-Fi sweep
+                // missed for some reason.
+                const SizedBox(height: 10),
+                Center(
+                  child: TextButton(
+                    onPressed: () =>
+                        setState(() => _showServerField = !_showServerField),
+                    child: Text(
+                      _showServerField
+                          ? 'HIDE MANUAL ADDRESS'
+                          : "SERVER ON A DIFFERENT NETWORK? ENTER ITS ADDRESS",
+                      style: AppText.label(size: 9.5, color: AppColors.blue),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+                if (_showServerField) ...[
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: _serverCtrl,
+                    style: AppText.body(size: 11, color: AppColors.ink),
+                    decoration: InputDecoration(
+                      hintText: 'e.g. https://your-tunnel.example/server',
+                      hintStyle: AppText.body(
+                        size: 11,
+                        color: AppColors.inkSoft,
+                      ),
+                      counterText: '',
+                      filled: true,
+                      fillColor: AppColors.coralLight,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(
+                          color: AppColors.outline,
+                          width: 2.5,
+                        ),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(
+                          color: AppColors.blue,
+                          width: 2.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  NeonButton(
+                    label: 'CONNECT TO SERVER',
+                    icon: Icons.link,
+                    color: AppColors.green,
+                    onPressed: _connectManual,
+                  ),
+                ],
               ],
             ],
           ),
@@ -543,6 +822,32 @@ class _FriendsScreenState extends State<FriendsScreen> {
         type: AppNoticeType.error,
       );
     }
+  }
+
+  /// Manual escape hatch for when automatic discovery can't find anything
+  /// — a server on a different network (a friend's tunnel/host address),
+  /// or one a LAN server sweep missed for some reason. Auto-detect still
+  /// runs first and normally makes this unnecessary.
+  Future<void> _connectManual() async {
+    final profile = context.read<ProfileStore>();
+    final addr = _serverCtrl.text.trim();
+    if (addr.isEmpty) {
+      _toast('Enter the server address first', type: AppNoticeType.error);
+      return;
+    }
+    await _online.setBaseUrl(addr);
+    final ok = await _online.ensureAccount(profile);
+    if (!mounted) return;
+    _toast(
+      ok
+          ? 'Connected — your friend code is ${_online.myTag}'
+          : (_online.lastError ?? 'Could not reach that address.'),
+      type: ok ? AppNoticeType.success : AppNoticeType.error,
+    );
+    if (ok && mounted && _showServerField) {
+      setState(() => _showServerField = false);
+    }
+    if (ok) _online.startHeartbeat();
   }
 
   // ------------------------------------------------------------- BANNERS

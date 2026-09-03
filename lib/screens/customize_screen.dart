@@ -6,7 +6,10 @@ import 'package:provider/provider.dart';
 import '../art/family_board_art.dart';
 import '../art/family_shell_art.dart';
 import '../art/fleet_family.dart';
+import '../art/legacy_board_art.dart';
+import '../art/legacy_cannon_art.dart';
 import '../art/legacy_shell_art.dart';
+import '../art/legacy_ship_art.dart' show hullBounds;
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/sound_service.dart';
@@ -399,7 +402,13 @@ class _LegacyShelfState extends State<_LegacyShelf> {
               crossAxisCount: 2,
               mainAxisSpacing: 12,
               crossAxisSpacing: 12,
-              childAspectRatio: 0.82,
+              // FEEDBACK: matches `_FamilyHullCard`'s own grid aspect —
+              // `_LegacyHullCard` now carries the same "other four
+              // classes" strip under its main preview that the family
+              // card does, so it needs the same extra height to hold it
+              // rather than squeezing the strip into the old, shorter
+              // 0.82 card.
+              childAspectRatio: 0.70,
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               children: widget.children,
@@ -669,16 +678,129 @@ class _LegacyHullCard extends StatelessWidget {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(10),
-                  child: Center(
-                    child: AnimatedShip(
-                      spec: kFleet[1], // battleship preview
-                      skin: skin,
-                      size: 130,
+                  // FEEDBACK ("legacy ships are too big" in the
+                  // Shipyard): `size: 130` used `AnimatedShip`'s own
+                  // default height (`size * 0.55`, a flat 1.8:1 box)
+                  // regardless of skin or class. That was a reasonable
+                  // stand-in while `paintLegacyShip` mapped every hull
+                  // onto one shared 300×100 box (see `hullBounds`'s doc)
+                  // — most of a 1.8:1 box stayed empty either way. Once
+                  // legacy hulls started filling their own MEASURED
+                  // bounds instead, the same fixed box started
+                  // stretching every skin's battleship to whatever its
+                  // real proportions happen to be relative to 1.8:1 — up
+                  // near 3.8:1 for some — which reads as a hull far
+                  // bulkier/taller than it is actually drawn.
+                  //
+                  // `FittedBox` fixes this the way it fixes any
+                  // arbitrary-aspect content: give the ship a box at its
+                  // OWN real aspect (from this skin's own `hullBounds` —
+                  // zero guesswork, zero stretch) and let `FittedBox`
+                  // scale that box up to fill however much of this card
+                  // its shape allows, exactly like `BoxFit.contain` on an
+                  // image. A fixed pixel box (matching the old `size:
+                  // 130`, or copying the family card's own hardcoded
+                  // preview box) would only happen to fill this card
+                  // correctly at whatever device width it was tuned
+                  // against; this fills it correctly at any width.
+                  // FEEDBACK (ship ran edge-to-edge, touching the water
+                  // box's own left/right border): `BoxFit.contain` alone
+                  // scales up until ONE axis exactly touches its box —
+                  // for a hull this long and slender that axis is always
+                  // width, so the ship filled 100% of the available
+                  // width with no breathing room at all. `_FamilyHullCard`
+                  // never hits this because its own preview is a FIXED
+                  // 132px box inside a wider container, which is what
+                  // gives it a side margin "for free" — reusing that same
+                  // horizontal inset here (rather than one more magic
+                  // number) is what actually makes the two card styles
+                  // read as one consistent set.
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Center(
+                      child: Builder(builder: (context) {
+                        final b = hullBounds(skin, kFleet[1].kind);
+                        return FittedBox(
+                          fit: BoxFit.contain,
+                          child: AnimatedShip(
+                            spec: kFleet[1], // battleship preview
+                            skin: skin,
+                            width: b.width,
+                            height: b.height,
+                          ),
+                        );
+                      }),
                     ),
                   ),
                 ),
               ),
             ),
+            // FEEDBACK ("add the rest of the ship variants on the bottom,
+            // like the family cards"): mirrors `_FamilyHullCard`'s own
+            // "five classes, five different shapes" strip — battleship
+            // is this card's own main preview above, so the strip shows
+            // the other four in their original `kFleet` order, split
+            // 2-and-2 the same way the family strip splits around ITS
+            // own main class (carrier).
+            //
+            // Can't reuse `_FamilyHullCard`'s literal `9.5 * spec.size +
+            // 10` width formula, though — that's tuned against FAMILY
+            // hulls' own compact, boxy silhouettes (a themed destroyer
+            // really is short and stubby by design). Legacy hulls are
+            // long and slender across every class, closer to 3:1-4:1
+            // even at a destroyer's small footprint, so forcing them
+            // through the family formula would squash them exactly the
+            // way the old flat-1.8:1 box did on the main preview above.
+            // Each icon here is sized from its own `hullBounds` aspect at
+            // a fixed 16px height instead — the same zero-guesswork
+            // approach as the main preview, just smaller. Each PAIR (not
+            // each icon) is wrapped in one `FittedBox(scaleDown)` as a
+            // safety net: a legacy hull's aspect varies more than a
+            // family hull's does, and a couple of skins pair up to
+            // 180px+ wide at this height, wide enough to risk
+            // overflowing a narrow phone's card without it. Scaling the
+            // whole pair together (rather than each icon separately)
+            // keeps the tight, centered grouping family's own strip has
+            // — the safety net only ever engages on the rare skin/device
+            // combination that actually needs it, at full natural size
+            // otherwise.
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Builder(builder: (context) {
+                final others =
+                    kFleet.where((s) => s.kind != ShipKind.battleship).toList();
+                Widget miniHull(ShipSpec spec) {
+                  final b = hullBounds(skin, spec.kind);
+                  return AnimatedShip(
+                    spec: spec,
+                    skin: skin,
+                    width: 16 * (b.width / b.height),
+                    height: 16,
+                  );
+                }
+
+                Widget row(List<ShipSpec> pair) => FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          miniHull(pair[0]),
+                          const SizedBox(width: 14),
+                          miniHull(pair[1]),
+                        ],
+                      ),
+                    );
+
+                return Column(
+                  children: [
+                    row(others.sublist(0, 2)),
+                    const SizedBox(height: 8),
+                    row(others.sublist(2, 4)),
+                  ],
+                );
+              }),
+            ),
+            const SizedBox(height: 8),
             Text(
               skin.name,
               maxLines: 1,
@@ -1003,15 +1125,15 @@ class _DeckTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Legacy leads now: the four original palettes are the cheap,
-        // simple recolours, so they're what a new captain sees — and can
+        // Legacy leads now: the nine legacy battlefields are the cheaper,
+        // a la carte boards, so they're what a new captain sees — and can
         // actually afford — first. The bespoke family battlefields,
         // which now cost more to match how much more they carry, sit
         // below.
         _LegacyShelf(
-          summary: 'Classic Deck · Arctic Front · Deep Sea · Sunset Siege',
+          summary: 'One illustrated deck per legacy cannon — nine in all.',
           note:
-              'The four original palettes, kept as one shelf. '
+              'Matches the cannon it ships with. '
               'Owned ones stay owned.',
           ownedCount: legacy.where((t) => profile.ownsTheme(t.id)).length,
           total: legacy.length,
@@ -1440,6 +1562,15 @@ class _BoardPreviewPainter extends CustomPainter {
       paintFamilyMiss(canvas, Offset(cell * 2.5, cell * 3.5), cell, family);
       paintFamilyMiss(canvas, Offset(cell * 7.5, cell * 6.5), cell, family);
       paintFamilyHit(canvas, Offset(cell * 5.5, cell * 4.5), cell, family);
+      return;
+    }
+    if (theme?.legacy == true) {
+      final id = theme!.id;
+      paintLegacyBoard(canvas, size, id);
+      final cell = size.width / 10;
+      paintLegacyMiss(canvas, Offset(cell * 2.5, cell * 3.5), cell, id);
+      paintLegacyMiss(canvas, Offset(cell * 7.5, cell * 6.5), cell, id);
+      paintLegacyHit(canvas, Offset(cell * 5.5, cell * 4.5), cell, id);
       return;
     }
     final t = theme!;

@@ -123,8 +123,8 @@ Future<void> main() async {
   // Dev/testing convenience (debug builds only): launching with
   // BBZ_AUTOONLINE=1 connects to the game server right away — discovery,
   // registration, heartbeat — instead of waiting for somebody to open the
-  // MULTIPLAYER tab. This is what lets automated desktop tests run two
-  // instances headlessly and watch them meet on the server.
+  // ONLINE (friends) screen. This is what lets automated desktop tests run
+  // two instances headlessly and watch them meet on the server.
   if (!kIsWeb && kDebugMode && Platform.environment['BBZ_AUTOONLINE'] == '1') {
     unawaited(online.connectAuto(profile).then((ok) {
       if (ok) online.startHeartbeat();
