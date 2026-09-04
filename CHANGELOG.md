@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.17](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.16...battleship_blitz-v1.4.17) (2026-09-04)
+
+
+### Bug Fixes
+
+* Add legacy sound packs and performance polish ([bad3945](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/bad3945fec305c54a5b815832a11061c09d0eb04))
+* New skins and Gameplay adustments ([c94fe84](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/c94fe843b3324f3b4d6366bba3329e9db324c828))
+
 ## [1.4.16](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.15...battleship_blitz-v1.4.16) (2026-09-03)
 
 
