@@ -101,7 +101,20 @@ jobs:
             fi
             clean="$(echo "$subject" | sed -E 's/ *\(#[0-9]+\)$//')"
             echo "No Conventional Commit prefix on ${sha:0:7} — adding: fix: ${clean}"
-            git commit --allow-empty -m "fix: ${clean}"
+            # Carry the original commit's DESCRIPTION across too, not just
+            # its subject line. The stand-in used to be subject-only, so
+            # for any commit written without a Conventional Commit prefix
+            # — which is most of them here — the description was dropped on
+            # the floor at this point and nothing downstream could ever
+            # show it. It also means the body's own footers (a
+            # `BREAKING CHANGE:` line, say) reach release-please's parser,
+            # which reads them off the body rather than the subject.
+            body="$(git log -1 --pretty=%b "$sha")"
+            if [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+              git commit --allow-empty -m "fix: ${clean}" -m "$body"
+            else
+              git commit --allow-empty -m "fix: ${clean}"
+            fi
             added=$((added + 1))
           done < <(git rev-list --reverse --no-merges "$range")
 
@@ -118,6 +131,127 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # FEEDBACK ("on each release pull request, include the DESCRIPTION of
+      # each commit, not just the title").
+      #
+      # release-please writes its PR body straight from Conventional Commit
+      # SUBJECT lines — that is what its changelog is, one bullet per
+      # commit subject — and there is no setting that folds a commit's body
+      # into those bullets. So the descriptions are added alongside it, as
+      # a comment on the same PR.
+      #
+      # It has to happen here rather than in `pr-update.yml`: that workflow
+      # listens for `pull_request`, and GitHub will not raise those events
+      # for a PR opened by the built-in GITHUB_TOKEN, so it can never see a
+      # release PR. This step runs in the very push-to-main run that
+      # creates or updates the PR, so it needs no event of its own.
+      #
+      # The range is "since the last release tag", NOT the PR's own diff:
+      # the release PR only ever contains the version bump and the
+      # changelog, while the commits the release is MADE of are everything
+      # landed on main since the previous tag.
+      - name: Collect the descriptions of every commit in this release
+        id: notes
+        if: ${{ steps.release.outputs.pr }}
+        run: |
+          set -euo pipefail
+
+          # The new tag doesn't exist until the release PR is merged, so
+          # the newest tag right now is still the PREVIOUS release — which
+          # is exactly the start of the range being released.
+          latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -n "$latest_tag" ]; then
+            mapfile -t shas < <(git rev-list --reverse --no-merges "${latest_tag}..HEAD")
+          else
+            # First release: the range is the whole history, so cap it —
+            # a GitHub comment is limited to 65536 characters.
+            mapfile -t shas < <(git rev-list --no-merges -n 50 HEAD | tac)
+          fi
+
+          # A description is arbitrary text from a person and can contain a
+          # line reading exactly "EOF", which would close the heredoc early
+          # — hence a per-run random delimiter.
+          delim="RELNOTES_${RANDOM}${RANDOM}"
+
+          {
+            echo "body<<${delim}"
+            echo "### 📝 What's in this release"
+            echo ""
+            echo "Full commit descriptions, since the changelog above lists"
+            echo "only the subject lines."
+            echo ""
+
+            for sha in ${shas[@]+"${shas[@]}"}; do
+              # Skip the empty Conventional-Commit stand-ins added by the
+              # step above: each one duplicates a real commit's message, so
+              # listing them too would print every description twice. They
+              # are the only commits here that change no files.
+              if [ -z "$(git diff-tree --no-commit-id --name-only -r "$sha")" ]; then
+                continue
+              fi
+              subject="$(git log -1 --pretty=%s "$sha" | sed -E 's/ *\(#[0-9]+\)$//')"
+              # Release-please's own version-bump commits describe the
+              # release machinery, not the work in it.
+              if echo "$subject" | grep -Eq '^chore(\([^)]*\))?: release '; then
+                continue
+              fi
+              body="$(git log -1 --pretty=%b "$sha")"
+
+              echo "- **${subject}** (\`${sha:0:7}\`)"
+              # Only when there is a real description — a body of nothing
+              # but whitespace counts as none.
+              if [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+                echo ""
+                # Indented so it nests under its bullet in Markdown.
+                printf '%s\n' "$body" | sed 's/^/  /'
+              fi
+              echo ""
+            done
+
+            echo "${delim}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Kept as a comment rather than appended to the PR body: release-please
+      # rewrites that body from scratch on every push to main, and it parses
+      # it back to work out what it has already proposed. A separate comment,
+      # updated in place by its marker, cannot interfere with either.
+      - name: Post the descriptions on the release PR
+        if: ${{ steps.release.outputs.pr }}
+        uses: actions/github-script@v7
+        env:
+          NOTES_BODY: ${{ steps.notes.outputs.body }}
+          PR_JSON: ${{ steps.release.outputs.pr }}
+        with:
+          script: |
+            const marker = '<!-- RELEASE_COMMIT_DESCRIPTIONS -->';
+            const body = marker + '\n' + process.env.NOTES_BODY;
+            const number = JSON.parse(process.env.PR_JSON).number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+            });
+
+            const ours = comments.find((c) => c.body && c.body.includes(marker));
+            if (ours) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: ours.id,
+                body,
+              });
+              console.log(`Updated descriptions comment #${ours.id} on PR #${number}`);
+            } else {
+              const { data: created } = await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                body,
+              });
+              console.log(`Created descriptions comment #${created.id} on PR #${number}`);
+            }
 
   build:
     needs: release-please

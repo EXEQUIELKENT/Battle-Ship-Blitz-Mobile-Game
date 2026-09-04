@@ -5,6 +5,17 @@ name: PR Update Summary
 # that lists the PR's title and every commit's title + full description, so
 # reviewers see the complete change context without having to click through
 # to the commits tab.
+#
+# NOT the release PRs. GitHub deliberately refuses to start a workflow from
+# an event raised by the built-in GITHUB_TOKEN, so the "chore: release X.Y.Z"
+# pull request that release-please opens as github-actions[bot] never fires
+# `pull_request` here — which is why those PRs listed bare commit titles and
+# nothing else. They are handled inside `release-please.yml` instead, on the
+# push-to-main run that creates them; see the comment-posting step there.
+#
+# A release PR would want a different commit range anyway: its own diff is
+# just the version bump and the changelog, while the commits the release is
+# actually made of are everything since the previous tag.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -35,40 +46,54 @@ jobs:
         run: |
           set -euo pipefail
 
+          # A commit description is arbitrary text from a person, so it can
+          # contain a line reading exactly "EOF" — which would close this
+          # heredoc early and corrupt (or let someone inject into) the step
+          # output. A per-run random delimiter cannot be guessed or typed
+          # into a commit message by accident.
+          delim="PRSUMMARY_${RANDOM}${RANDOM}"
+
           {
-            echo "body<<EOF"
+            echo "body<<${delim}"
             echo "### 🚀 New Update — ${PR_TITLE}"
             echo ""
             echo "---"
             echo ""
 
             # List each commit in the PR, oldest first, with its full
-            # description (commit body) preserved. %x00 separates commits,
-            # %x01 separates the subject from the body within a commit.
-            git log \
-              --reverse \
-              --format='%s%x01%b%x00' \
-              "${BASE_SHA}..${HEAD_SHA}" \
-            | while IFS= read -r -d '' commit; do
-                subject="${commit%%$'\x01'*}"
-                body="${commit#*$'\x01'}"
+            # description (commit body) preserved.
+            #
+            # BUGFIX: this used to ask git for one NUL-delimited record per
+            # commit (`--format='%s%x01%b%x00'`) and split it in the shell.
+            # git still writes a newline BETWEEN entries, so every record
+            # after the first arrived with a leading newline glued to the
+            # subject — which came out as `- **` on one line and the
+            # subject on the next, breaking the bullet for every commit but
+            # the first. Reading a plain list of SHAs and asking for each
+            # message separately sidesteps the parsing entirely, and
+            # `$(...)` strips the trailing newlines git puts after a body
+            # for free.
+            while IFS= read -r sha; do
+              subject="$(git log -1 --pretty=%s "$sha")"
+              body="$(git log -1 --pretty=%b "$sha")"
 
-                echo "- **${subject}**"
-                # Print the description only when one exists, so clean
-                # single-line commits don't leave a blank line behind.
-                if [ -n "$body" ]; then
-                  echo ""
-                  # Indent the body so it nests under the bullet in
-                  # Markdown — reads like a quote of the commit message.
-                  echo "$body" | sed 's/^/  /'
-                fi
+              echo "- **${subject}**"
+              # Print the description only when there is a real one, so a
+              # clean single-line commit doesn't leave a blank quote behind
+              # (a body of nothing but whitespace counts as none).
+              if [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
                 echo ""
-              done
+                # Indent the body so it nests under the bullet in
+                # Markdown — reads like a quote of the commit message.
+                printf '%s\n' "$body" | sed 's/^/  /'
+              fi
+              echo ""
+            done < <(git rev-list --reverse "${BASE_SHA}..${HEAD_SHA}")
 
             echo "---"
             echo ""
             echo "_Posted by PR Update Summary workflow_"
-            echo "EOF"
+            echo "${delim}"
           } >> "$GITHUB_OUTPUT"
 
       # Post the summary as a comment, or update the one we already left if a
