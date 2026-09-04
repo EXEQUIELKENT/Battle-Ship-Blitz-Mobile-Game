@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'fleet_family.dart';
+
 /// The nine legacy identities' own short name + accent colour, ported
 /// verbatim from `uploads/New Design/Adjustments/*.dart` (a naming/colour
 /// manifest, not new geometry — every file there is a `skin`/`accent`
@@ -44,3 +46,28 @@ LegacyIdentity legacyIdentityFor(String cannonId) => legacyIdentities.firstWhere
       (l) => l.id == cannonId,
       orElse: () => legacyIdentities.first,
     );
+
+/// Where an identity sits in the GAMEPLAY row: the nine legacy identities
+/// in [legacyIdentities] order, then the six families in
+/// [FleetFamilies.all] order. [id] is an identity's own id (a cannon or a
+/// deck) or its ship skin's — one lookup serves all three catalogues.
+///
+/// FEEDBACK ("make the cannon, deck and ship rows follow the gameplay
+/// row's sequence"): each catalogue had grown its own order and none of
+/// them fully agreed. Hulls happened to match the sets row, but cannons
+/// and decks ran `…tesla, venom, royal, phantom, kraken…` against the
+/// sets' `…kraken, royal, phantom, tesla…`, and the family tails
+/// disagreed too (hulls put Rime before Brass, the others the reverse).
+/// So one identity sat in a different place in every row, and assembling a
+/// matching set by hand meant re-finding it three times. Sorting the rows
+/// through this lines them up without disturbing the catalogues, which are
+/// also the shop's own order.
+int gearRank(String? familyKey, String? id) {
+  if (familyKey != null) {
+    final family = FleetFamilies.byKey(familyKey);
+    final i = family == null ? -1 : FleetFamilies.all.indexOf(family);
+    return legacyIdentities.length + (i < 0 ? FleetFamilies.all.length : i);
+  }
+  final i = legacyIdentities.indexWhere((l) => l.id == id || l.shipSkinId == id);
+  return i < 0 ? legacyIdentities.length : i;
+}

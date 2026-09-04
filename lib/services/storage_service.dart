@@ -151,7 +151,19 @@ class Catalog {
     CannonSkin('phantom', 'Abyss Railgun', Color(0xFF312E81), Color(0xFFC084FC),
         'Experimental railgun. 15% faster reload!', 0.85, 1000),
     CannonSkin('kraken', 'Emerald Cannon', Color(0xFF0F766E), Color(0xFF5EEAD4), 'Deep-sea siege cannon with a crushing pulse.', 0.95, 1200),
-    CannonSkin('sunfire', 'Sunfire Battery', Color(0xFFB45309), Color(0xFFFDE047), 'High-energy golden shell launcher.', 0.90, 1400),
+    // FEEDBACK ("rename the Sunfire Battery to a coral name and match its
+    // projectile to the gun"): this gun's ART was re-imported as the design's
+    // CORAL identity (`uploads/New Design/New Cannons/coral-fire-reload…`) —
+    // a terracotta body with salmon highlights — but its CATALOGUE entry was
+    // never brought along, so the name still said Sunfire and both colours
+    // here were still the old amber/yellow. `projectile` is the gun's pop
+    // colour everywhere it is read (the painter's ready accent, the gear
+    // dialog's cannon chip), which is why a coral cannon was firing a
+    // canary-yellow shell. Both now come straight off the cannon's own
+    // markup: body `#C1543F`, highlight `#FF9E7A`. The id stays `sunfire` —
+    // it is a save-file key, and every owned copy would be forgotten by
+    // renaming it (see `legacyIdentities`, which pairs it with `coral`).
+    CannonSkin('sunfire', 'Coral Battery', Color(0xFFC1543F), Color(0xFFFF9E7A), 'High-energy coral shell launcher.', 0.90, 1400),
     CannonSkin('void', 'Void Annihilator', Color(0xFF111827), Color(0xFFEC4899), 'Dark-matter launcher. 10% faster reload!', 0.90, 1800),
     // ---- Thematic families: each gun ships with its own shell ----
     // Priced ABOVE every legacy cannon (top out at Void Annihilator,

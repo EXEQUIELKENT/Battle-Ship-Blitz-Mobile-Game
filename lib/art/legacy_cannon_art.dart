@@ -41,6 +41,10 @@ String _hex(Color c) {
 ///
 /// [cooldown] is the reload sweep: 1 = loaded (nothing drawn), <1 draws
 /// that fraction of the ring filled in, clockwise from the barrel.
+///
+/// [recoil] is the raw 0-1 shot animation ([recoilPull] is the same value
+/// already turned into a pixel offset). Only the Abyss Railgun reads it —
+/// see [_paintAbyssSlug] — so every other skin ignores it entirely.
 Offset paintLegacyCannon(
   Canvas canvas,
   Offset center,
@@ -48,6 +52,7 @@ Offset paintLegacyCannon(
   String cannonId, {
   double recoilPull = 0,
   double cooldown = 1,
+  double recoil = 0,
 }) {
   final scale = outerR / 34;
   canvas.save();
@@ -88,6 +93,11 @@ Offset paintLegacyCannon(
   // above, nets out to exactly recoilPull pixels of on-screen shift.
   canvas.translate(0, recoilPull / scale);
   paintSvgFragmentCached(canvas, _turretMarkup(cannonId));
+  // Drawn here, inside the recoil translate, so the round rides the barrel
+  // exactly as it would if it were still part of the markup above.
+  if (cannonId == 'phantom') {
+    _paintAbyssSlug(canvas, cooldown, recoil);
+  }
   canvas.restore();
 
   canvas.restore();
@@ -196,7 +206,105 @@ const _turretInferno = '<path d="M52 72 L44 42 L76 42 L68 72 Z" fill="#7C2D12" s
 
 const _turretKraken = '<rect x="48" y="30" width="24" height="48" rx="8" fill="#0F766E" stroke="#1E2A36" stroke-width="3"></rect><path d="M48 72 H72" stroke="#1E2A36" stroke-width="2"></path><rect x="46" y="54" width="28" height="4" rx="1.5" fill="#5EEAD4" stroke="#1E2A36" stroke-width="1.6" opacity="0.9"></rect><circle cx="52" cy="60" r="1.5" fill="#1E2A36"></circle><circle cx="68" cy="60" r="1.5" fill="#1E2A36"></circle><circle cx="52" cy="40" r="5" fill="#5EEAD4" stroke="#1E2A36" stroke-width="1.8"></circle><circle cx="68" cy="44" r="4" fill="#5EEAD4" stroke="#1E2A36" stroke-width="1.8"></circle><circle cx="54" cy="62" r="3.5" fill="#5EEAD4" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="68" cy="66" r="4.5" fill="#5EEAD4" stroke="#1E2A36" stroke-width="1.8"></circle><path d="M42 46 C30 40 22 52 30 62" stroke="#5EEAD4" stroke-width="3" stroke-linecap="round" fill="none"></path><path d="M78 46 C90 40 98 52 90 62" stroke="#5EEAD4" stroke-width="3" stroke-linecap="round" fill="none"></path><circle cx="30" cy="62" r="3" fill="#B6FFF1" stroke="#1E2A36" stroke-width="1.4"></circle><circle cx="90" cy="62" r="3" fill="#B6FFF1" stroke="#1E2A36" stroke-width="1.4"></circle><rect x="44" y="18" width="32" height="16" rx="6" fill="#5EEAD4" stroke="#1E2A36" stroke-width="3"></rect><ellipse cx="60" cy="18" rx="14" ry="4" fill="#1E2A36"></ellipse><ellipse cx="60" cy="17" rx="8" ry="1.8" fill="#072E2A"></ellipse>';
 
-const _turretPhantom = '<path d="M56 72 L52 28 L68 28 L64 72 Z" fill="#1A2138" stroke="#1E2A36" stroke-width="3" stroke-linejoin="round"></path><path d="M56 72 H64" stroke="#1E2A36" stroke-width="2"></path><rect x="52" y="52" width="16" height="4" rx="1.5" fill="#7C6BC4" stroke="#1E2A36" stroke-width="1.6"></rect><circle cx="54" cy="58" r="1.5" fill="#1E2A36"></circle><circle cx="66" cy="58" r="1.5" fill="#1E2A36"></circle><ellipse cx="60" cy="44" rx="14" ry="4" fill="none" stroke="#7C6BC4" stroke-width="1.8"></ellipse><ellipse cx="60" cy="56" rx="16" ry="5" fill="none" stroke="#7C6BC4" stroke-width="1.4" opacity="0.7"></ellipse><path d="M54 28 L60 12 L66 28 Z" fill="#7C6BC4" stroke="#1E2A36" stroke-width="2.2" stroke-linejoin="round"></path><circle cx="60" cy="16" r="2.5" fill="#F1E3FF"></circle><path d="M54 72 L44 88 L54 84 Z" fill="#7C6BC4" stroke="#1E2A36" stroke-width="2" stroke-linejoin="round"></path><path d="M66 72 L76 88 L66 84 Z" fill="#7C6BC4" stroke="#1E2A36" stroke-width="2" stroke-linejoin="round"></path>';
+// The round itself — `<path d="M54 28 L60 12 L66 28 Z">` and the
+// `<circle cx="60" cy="16" r="2.5">` spark at its tip — is deliberately
+// NOT in here. It is the one piece of ammunition any of the nine guns
+// carries in the open, so it is drawn per-frame by [_paintAbyssSlug]
+// instead, which can show it leave on the shot and rebuild over the
+// reload. Everything else about the gun is verbatim, and the round sits
+// clear above the fins below, so lifting it out of this string does not
+// disturb the drawing order.
+const _turretPhantom = '<path d="M56 72 L52 28 L68 28 L64 72 Z" fill="#1A2138" stroke="#1E2A36" stroke-width="3" stroke-linejoin="round"></path><path d="M56 72 H64" stroke="#1E2A36" stroke-width="2"></path><rect x="52" y="52" width="16" height="4" rx="1.5" fill="#7C6BC4" stroke="#1E2A36" stroke-width="1.6"></rect><circle cx="54" cy="58" r="1.5" fill="#1E2A36"></circle><circle cx="66" cy="58" r="1.5" fill="#1E2A36"></circle><ellipse cx="60" cy="44" rx="14" ry="4" fill="none" stroke="#7C6BC4" stroke-width="1.8"></ellipse><ellipse cx="60" cy="56" rx="16" ry="5" fill="none" stroke="#7C6BC4" stroke-width="1.4" opacity="0.7"></ellipse><path d="M54 72 L44 88 L54 84 Z" fill="#7C6BC4" stroke="#1E2A36" stroke-width="2" stroke-linejoin="round"></path><path d="M66 72 L76 88 L66 84 Z" fill="#7C6BC4" stroke="#1E2A36" stroke-width="2" stroke-linejoin="round"></path>';
+
+/// Geometry and paints for [_paintAbyssSlug], hoisted to the top level
+/// because that runs on a painter which repaints for every frame of a
+/// recoil and every tick of a reload — allocating a `Path` and four
+/// `Paint`s each time would be the only per-frame garbage in this file.
+/// The paints' colours are assigned at the point of use (the alphas are
+/// what animate); nothing else about them ever changes.
+final Path _abyssSlugPath = Path()
+  ..moveTo(54, 28)
+  ..lineTo(60, 12)
+  ..lineTo(66, 28)
+  ..close();
+final Paint _abyssSlugFill = Paint();
+final Paint _abyssSlugSpark = Paint();
+final Paint _abyssSlugInk = Paint()
+  ..style = PaintingStyle.stroke
+  ..strokeWidth = 2.2
+  ..strokeJoin = StrokeJoin.round;
+final Paint _abyssRailPaint = Paint()..style = PaintingStyle.stroke;
+
+/// Abyss Railgun's loaded round: the dart standing in the rails, and the
+/// spark at its tip.
+///
+/// FEEDBACK ("the abyss cannon has that projectile visible on it — make it
+/// go off when it fires, and build back up while it reloads"). Every other
+/// legacy gun keeps its ammunition inside a barrel, so there is nothing on
+/// them to show; this one carries the round in the open between two
+/// accelerator rails, and drawing it as part of the fixed art meant the
+/// gun looked fully loaded at every moment — including the several seconds
+/// it very much was not.
+///
+/// [charge] is the reload fraction (0 just fired, 1 loaded). [discharge]
+/// is the recoil, which does two things a cooldown alone cannot: it clears
+/// the round the *instant* the shot goes off, rather than at whichever of
+/// the game's 100ms cooldown ticks lands next, and it lights the rails for
+/// the shot itself.
+///
+/// PERF: at [charge] 1 with no [discharge] — a loaded gun, which is most
+/// of what is ever on screen — this draws exactly the two shapes the SVG
+/// did, at the same size, in the same colours, so nothing about a waiting
+/// cannon changed or costs more. Mid-reload it adds at most four more
+/// plain fills and strokes to a painter already repainting for the
+/// cooldown ring beside it: no `saveLayer`, no blur, nothing that can
+/// force an offscreen pass.
+void _paintAbyssSlug(Canvas canvas, double charge, double discharge) {
+  final fired = discharge.clamp(0.0, 1.0);
+  final t = charge.clamp(0.0, 1.0) * (1 - fired);
+
+  // The rails carry the charge: dark at the moment of the shot, brightest
+  // halfway through the reload, and back to the art's own plain violet by
+  // the time the round is seated — so a fully loaded gun is the drawing
+  // the design authored, untouched.
+  final rails = math.max(math.sin(math.pi * t) * 0.45, fired * 0.9);
+  if (rails > 0.01) {
+    _abyssRailPaint.color = const Color(0xFFF1E3FF).withValues(alpha: rails);
+    _abyssRailPaint.strokeWidth = 1.8;
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(60, 44), width: 28, height: 8),
+      _abyssRailPaint,
+    );
+    _abyssRailPaint.strokeWidth = 1.4;
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(60, 56), width: 32, height: 10),
+      _abyssRailPaint,
+    );
+  }
+
+  if (t <= 0.01) return;
+
+  // Grown from the base of the rails upward rather than faded in on the
+  // spot, so it reads as the round being assembled between them.
+  canvas.save();
+  canvas.translate(60, 28);
+  canvas.scale(0.55 + 0.45 * t, 0.35 + 0.65 * t);
+  canvas.translate(-60, -28);
+  _abyssSlugFill.color = const Color(0xFF7C6BC4).withValues(alpha: t);
+  _abyssSlugInk.color = const Color(0xFF1E2A36).withValues(alpha: t);
+  canvas.drawPath(_abyssSlugPath, _abyssSlugFill);
+  canvas.drawPath(_abyssSlugPath, _abyssSlugInk);
+  // The tip lights only at the end of the reload. That spark is the gun's
+  // "loaded" tell, so it must not be showing while the round is still
+  // forming — that is the whole cue this animation exists to give.
+  final spark = ((t - 0.55) / 0.45).clamp(0.0, 1.0);
+  if (spark > 0) {
+    _abyssSlugSpark.color =
+        const Color(0xFFF1E3FF).withValues(alpha: spark);
+    canvas.drawCircle(const Offset(60, 16), 2.5 * spark, _abyssSlugSpark);
+  }
+  canvas.restore();
+}
 
 const _turretRoyal = '<path d="M50 72 L44 30 L76 30 L70 72 Z" fill="#92400E" stroke="#1E2A36" stroke-width="3" stroke-linejoin="round"></path><path d="M50 72 H70" stroke="#1E2A36" stroke-width="2"></path><rect x="42" y="46" width="36" height="10" rx="5" fill="#FBBF24" stroke="#1E2A36" stroke-width="2"></rect><circle cx="50" cy="51" r="2" fill="#1E2A36"></circle><circle cx="60" cy="51" r="2" fill="#FFF3C4"></circle><circle cx="70" cy="51" r="2" fill="#1E2A36"></circle><circle cx="52" cy="60" r="1.5" fill="#1E2A36"></circle><circle cx="68" cy="60" r="1.5" fill="#1E2A36"></circle><path d="M44 30 L42 13 L52 20.5 L60 9 L68 20.5 L78 13 L76 30 Z" fill="#FBBF24" stroke="#1E2A36" stroke-width="2.5" stroke-linejoin="round"></path><circle cx="42" cy="12" r="2.4" fill="#FBBF24" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="60" cy="8" r="2.8" fill="#FFF3C4" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="78" cy="12" r="2.4" fill="#FBBF24" stroke="#1E2A36" stroke-width="1.6"></circle><rect x="43" y="25" width="34" height="8" rx="2" fill="#FBBF24" stroke="#1E2A36" stroke-width="2"></rect><circle cx="52" cy="29" r="1.7" fill="#FFF3C4" stroke="#1E2A36" stroke-width="1.2"></circle><circle cx="60" cy="29" r="1.9" fill="#FFF3C4" stroke="#1E2A36" stroke-width="1.2"></circle><circle cx="68" cy="29" r="1.7" fill="#FFF3C4" stroke="#1E2A36" stroke-width="1.2"></circle><path d="M44 52 Q38 50 40 60" stroke="#FBBF24" stroke-width="1.8" stroke-linecap="round" fill="none"></path><path d="M76 52 Q82 50 80 60" stroke="#FBBF24" stroke-width="1.8" stroke-linecap="round" fill="none"></path>';
 
@@ -407,47 +515,47 @@ void paintLegacyMiss(Canvas canvas, Offset center, double cell, String cannonId)
 
   switch (cannonId) {
     case 'inferno':
-      canvas.drawCircle(p(20, 20), s(10), strokeP(const Color(0xFF8A7A70), 2.6, opacity: 0.62));
-      canvas.drawCircle(p(20, 20), s(4.5), fill(const Color(0xFF3A2A22), opacity: 0.45));
+      canvas.drawCircle(p(20, 20), s(10), strokeP(const Color(0xFFC7B4A8), 2.6, opacity: 0.95));
+      canvas.drawCircle(p(20, 20), s(4.5), fill(const Color(0xFF6E5348), opacity: 0.85));
       break;
     case 'kraken':
-      canvas.drawCircle(p(20, 24), s(6.2), fill(const Color(0xFF1B4A42), opacity: 0.52));
-      canvas.drawCircle(p(20, 24), s(2.3), fill(const Color(0xFFB6FFF1), opacity: 0.42));
-      canvas.drawCircle(p(16, 15.5), s(2), strokeP(const Color(0xFF34D399), 1.3, opacity: 0.52));
+      canvas.drawCircle(p(20, 24), s(6.2), fill(const Color(0xFF5FB5A4), opacity: 0.60));
+      canvas.drawCircle(p(20, 24), s(2.3), fill(const Color(0xFFB6FFF1), opacity: 0.90));
+      canvas.drawCircle(p(16, 15.5), s(2), strokeP(const Color(0xFF34D399), 1.3, opacity: 0.95));
       break;
     case 'phantom':
       canvas.save();
       canvas.translate(p(20, 20).dx, p(20, 20).dy);
       canvas.rotate(math.pi / 4);
       canvas.drawRect(Rect.fromCenter(center: Offset.zero, width: s(20), height: s(20)),
-          strokeP(const Color(0xFF7C6BC4), 2.5, opacity: 0.6));
+          strokeP(const Color(0xFFB3A6E8), 2.5, opacity: 0.95));
       canvas.restore();
       break;
     case 'royal':
       canvas.drawCircle(p(20, 20), s(9),
-          strokeP(const Color(0xFFFBBF24), 1.7, opacity: 0.72)..strokeCap = StrokeCap.round);
+          strokeP(const Color(0xFFFBBF24), 1.7, opacity: 0.90)..strokeCap = StrokeCap.round);
       canvas.drawCircle(p(20, 20), s(3), fill(const Color(0xFFFBBF24)));
       break;
     case 'sunfire':
-      canvas.drawCircle(p(20, 20), s(8), fill(const Color(0xFFE0715A), opacity: 0.25));
-      canvas.drawCircle(p(20, 20), s(8), strokeP(const Color(0xFFE0715A), 1.6, opacity: 0.5));
+      canvas.drawCircle(p(20, 20), s(8), fill(const Color(0xFFE0715A), opacity: 0.45));
+      canvas.drawCircle(p(20, 20), s(8), strokeP(const Color(0xFFFFA98F), 1.6, opacity: 0.95));
       break;
     case 'tesla':
-      canvas.drawCircle(p(20, 20), s(11), strokeP(const Color(0xFF7FB8D6), 2, opacity: 0.5));
+      canvas.drawCircle(p(20, 20), s(11), strokeP(const Color(0xFFBEE6F7), 2, opacity: 0.95));
       break;
     case 'venom':
-      canvas.drawCircle(p(20, 20), s(8), fill(const Color(0xFFA3E635), opacity: 0.3));
-      canvas.drawCircle(p(26, 14), s(3), fill(const Color(0xFFA3E635), opacity: 0.4));
+      canvas.drawCircle(p(20, 20), s(8), fill(const Color(0xFFA3E635), opacity: 0.50));
+      canvas.drawCircle(p(26, 14), s(3), fill(const Color(0xFFD4F98A), opacity: 0.95));
       break;
     case 'void':
       canvas.drawOval(Rect.fromCenter(center: p(20, 20), width: s(17), height: s(8.4)),
-          strokeP(const Color(0xFF6B3A8A), 1.7, opacity: 0.58));
-      canvas.drawCircle(p(20, 20), s(1.9), fill(const Color(0xFFFBCFE8), opacity: 0.55));
+          strokeP(const Color(0xFFB78FD6), 1.7, opacity: 0.90));
+      canvas.drawCircle(p(20, 20), s(1.9), fill(const Color(0xFFFBCFE8), opacity: 0.95));
       break;
     case 'mk1':
     default:
-      canvas.drawCircle(p(20, 20), s(10), strokeP(const Color(0xFFEAF2F8), 3, opacity: 0.8));
-      canvas.drawCircle(p(20, 20), s(3), fill(const Color(0xFFEAF2F8), opacity: 0.6));
+      canvas.drawCircle(p(20, 20), s(10), strokeP(const Color(0xFFEAF2F8), 3, opacity: 0.95));
+      canvas.drawCircle(p(20, 20), s(3), fill(const Color(0xFFEAF2F8), opacity: 0.80));
       break;
   }
 }

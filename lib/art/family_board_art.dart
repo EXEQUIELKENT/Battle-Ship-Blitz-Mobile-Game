@@ -232,39 +232,43 @@ void paintFamilyMiss(
   final c = _markerCanvas(canvas, center, cellSize);
   const o = _cellUnits / 2; // marker origin inside the cell
   switch (family.id) {
+    // Opacities here are deliberately high: a miss is drawn straight onto
+    // whichever deck the shot landed on, and since a mark is themed by the
+    // SHOOTER's gun, that can be any of the fifteen. See the note on the
+    // scrim these sit on in `_StaticGridPainter.paint`.
     case FleetFamilyId.pirate:
       // Foam ring.
       c.circle(o, o, 13,
-          inkColor: const Color(0xFFBEE3D8), inkWidth: 3, inkOpacity: 0.8);
+          inkColor: const Color(0xFFBEE3D8), inkWidth: 3, inkOpacity: 0.95);
       c.circle(o, o, 6,
-          fillColor: const Color(0xFFBEE3D8), fillOpacity: 0.35);
+          fillColor: const Color(0xFFBEE3D8), fillOpacity: 0.50);
       break;
     case FleetFamilyId.naval:
       // Hollow square.
       c.rect(o - 13, o - 13, 26, 26,
-          inkColor: const Color(0xFF9FB6C4), inkWidth: 3);
+          inkColor: const Color(0xFFC3D6E2), inkWidth: 3);
       break;
     case FleetFamilyId.steam:
       // Brass valve.
-      c.circle(o, o, 12, inkColor: const Color(0xFFC99A3F), inkWidth: 4);
-      c.line(o - 7, o, o + 7, o, const Color(0xFFC99A3F), 4);
+      c.circle(o, o, 12, inkColor: const Color(0xFFE8BC63), inkWidth: 4);
+      c.line(o - 7, o, o + 7, o, const Color(0xFFE8BC63), 4);
       break;
     case FleetFamilyId.arctic:
       // Frost star.
       const ice = Color(0xFFEAFBFF);
       c.line(o - 12, o, o + 12, o, ice, 3.4,
-          opacity: 0.85, cap: StrokeCap.round);
+          opacity: 0.95, cap: StrokeCap.round);
       c.line(o - 6, o - 10, o + 6, o + 10, ice, 3.4,
-          opacity: 0.85, cap: StrokeCap.round);
+          opacity: 0.95, cap: StrokeCap.round);
       c.line(o + 6, o - 10, o - 6, o + 10, ice, 3.4,
-          opacity: 0.85, cap: StrokeCap.round);
+          opacity: 0.95, cap: StrokeCap.round);
       break;
     case FleetFamilyId.volcanic:
       // Ash puff cluster.
-      const ash = Color(0xFF8A8079);
-      c.circle(o - 4, o + 2, 9, fillColor: ash, fillOpacity: 0.55);
-      c.circle(o + 6, o - 4, 7, fillColor: ash, fillOpacity: 0.4);
-      c.circle(o + 2, o + 8, 5, fillColor: ash, fillOpacity: 0.3);
+      const ash = Color(0xFFBDB2A8);
+      c.circle(o - 4, o + 2, 9, fillColor: ash, fillOpacity: 0.90);
+      c.circle(o + 6, o - 4, 7, fillColor: ash, fillOpacity: 0.75);
+      c.circle(o + 2, o + 8, 5, fillColor: ash, fillOpacity: 0.60);
       break;
     case FleetFamilyId.scifi:
       // Hollow hex.
@@ -273,7 +277,7 @@ void paintFamilyMiss(
         'L$o,${o + 14} L${o - 11},${o + 7} L${o - 11},${o - 6} Z',
         const Color(0xFF6FE7FF),
         2.6,
-        opacity: 0.75,
+        opacity: 0.95,
       );
       break;
   }

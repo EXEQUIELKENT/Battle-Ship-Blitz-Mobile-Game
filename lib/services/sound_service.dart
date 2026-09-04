@@ -97,7 +97,6 @@ class SoundService {
     }
   }
 
-  final _rng = math.Random();
 
   static const _files = {
     'cannon_fire': 'sfx/cannon_fire.wav',
@@ -197,6 +196,8 @@ class SoundService {
     'miss_f_volcanic': 'sfx/miss_f_volcanic.wav',
     'miss_scifi': 'sfx/miss_scifi.wav',
     'miss_f_scifi': 'sfx/miss_f_scifi.wav',
+    'miss_mk1': 'sfx/miss_mk1.wav',
+    'miss_royal': 'sfx/miss_royal.wav',
     'miss_inferno': 'sfx/miss_inferno.wav',
     'miss_tesla': 'sfx/miss_tesla.wav',
     'miss_venom': 'sfx/miss_venom.wav',
@@ -204,6 +205,19 @@ class SoundService {
     'miss_sunfire': 'sfx/miss_sunfire.wav',
     'miss_void': 'sfx/miss_void.wav',
     // Turn Pass variants:
+    // One per legacy battlefield. Before these, the only non-family
+    // handoff cues belonged to the four flat themes that were deleted when
+    // the illustrated legacy decks replaced them, so all nine legacy
+    // boards — the default included — fell back to the generic chime.
+    'turn_pass_mk1': 'sfx/turn_pass_mk1.wav',
+    'turn_pass_inferno': 'sfx/turn_pass_inferno.wav',
+    'turn_pass_tesla': 'sfx/turn_pass_tesla.wav',
+    'turn_pass_venom': 'sfx/turn_pass_venom.wav',
+    'turn_pass_royal': 'sfx/turn_pass_royal.wav',
+    'turn_pass_phantom': 'sfx/turn_pass_phantom.wav',
+    'turn_pass_kraken': 'sfx/turn_pass_kraken.wav',
+    'turn_pass_sunfire': 'sfx/turn_pass_sunfire.wav',
+    'turn_pass_void': 'sfx/turn_pass_void.wav',
     'turn_pass_classic': 'sfx/turn_pass_classic.wav',
     'turn_pass_arctic': 'sfx/turn_pass_arctic.wav',
     'turn_pass_f_arctic': 'sfx/turn_pass_f_arctic.wav',
@@ -293,34 +307,33 @@ class SoundService {
     'count_go',
   ];
 
+  /// How many players an effect keeps, i.e. how many copies of it can
+  /// overlap before one has to be cut short.
+  ///
+  /// PERF: these were 3 and 2. Every player is a live native `MediaPlayer`
+  /// with its own decoder, and a match had ~62 of them alive at once — the
+  /// weight behind the frame stalls that appear only while sound is
+  /// playing. Two things let the counts come down without costing overlap.
+  /// A shot's two clips are DIFFERENT effects (`cannon_fire` then `hit`),
+  /// so they never contend for the same pool; and on `mediaPlayer` a
+  /// completion event actually arrives, so a player is free again the
+  /// moment its clip ends rather than when a timeout says so — a 420ms hit
+  /// frees in 420ms, where the old backend held it for 770ms and needed
+  /// the third player to cover the gap.
+  ///
+  /// Two is what genuinely overlapping cases need: both guns firing on
+  /// their own reload clocks in BLITZ/CHAOS, a sinking landing on top of a
+  /// turn-pass cue.
   static int _poolSizeFor(String key) {
     if (key.startsWith('cannon_fire') ||
         key.startsWith('hit') ||
-        key.startsWith('miss')) {
-      return 3;
-    }
-    // Reload / sunk / place variants can genuinely overlap: in BLITZ and
-    // CHAOS both guns finish reloading on their own clocks (often the
-    // same instant), and a sinking or a set-down can coincide with the
-    // turn-pass cue. A single fixed player used to cut one of them.
-    if (key.startsWith('sunk') ||
-        key.startsWith('place') ||
+        key.startsWith('miss') ||
         key.startsWith('cannon_ready') ||
-        key.startsWith('turn_pass') ||
-        key == 'click') {
+        key.startsWith('sunk')) {
       return 2;
     }
     return 1;
   }
-
-  /// Effects that get a tiny random pitch/rate wobble each play so rapid
-  /// repeats (several misses in a row, etc.) don't sound like a stuck
-  /// robot repeating the exact same clip.
-  static bool _hasVariedPitch(String key) =>
-      key.startsWith('cannon_fire') ||
-      key.startsWith('hit') ||
-      key.startsWith('miss') ||
-      key == 'click';
 
   /// Measured length, in milliseconds, of each effect's `.wav` asset.
   static const Map<String, int> _clipMs = {
@@ -338,6 +351,9 @@ class SoundService {
     'cannon_ready': 300,
     'count_beep': 130,
     'count_go': 300,
+    // No shared `move.wav` plays on its own, but every `move_<skin>` needs
+    // this to resolve a window through [_baseEffectOf].
+    'move': 150,
   };
 
   /// Padding added on top of a clip's measured length.
@@ -345,8 +361,52 @@ class SoundService {
   static const _minSafetyMs = 500;
   static const _fallbackSafetyMs = 2200;
 
+  /// The effect a themed key belongs to — `hit_mk1` → `hit`,
+  /// `cannon_fire_f_scifi` → `cannon_fire`, `turn_pass_classic` →
+  /// `turn_pass`. Longest match wins, since the base names are not all
+  /// one word (`cannon_fire` and `cannon_ready` share a prefix).
+  static String? _baseEffectOf(String key) {
+    String? best;
+    for (final base in _clipMs.keys) {
+      if (key != base && !key.startsWith('${base}_')) continue;
+      if (best == null || base.length > best.length) best = base;
+    }
+    return best;
+  }
+
+  /// ROOT-CAUSE FIX (fire/hit/miss dropping out during a real match, while
+  /// the menu was fine): [_clipMs] is keyed by the BASE effect names only,
+  /// and every sound a battle actually plays is a THEMED variant —
+  /// `cannon_fire_mk1`, `hit_inferno`, `miss_phantom`. None of those were
+  /// in the map, so every one of them fell through to the 2200ms
+  /// worst-case fallback instead of its own ~400-800ms clip length.
+  ///
+  /// That timeout was not cosmetic: under the SoundPool backend this file
+  /// used at the time, it was the ONLY thing that ever returned a player
+  /// to its pool (see [_ManagedPool.safetyTimeout], where it is now a
+  /// backstop). Holding a 720ms cannon shot "busy" for 2.2 seconds means a
+  /// 3-player pool sustains barely 1.4 shots a second before it has to
+  /// start stealing players from clips that are still audible — and a
+  /// steal cuts that clip off. Two guns firing on their own reload timers
+  /// in CHAOS/BLITZ, or a hit streak granting extra shots, clears that bar
+  /// easily. Traced on a real match: a `cannon_fire_mk1` player was still
+  /// marked busy 2.1 seconds after its 720ms clip had finished.
+  ///
+  /// So the per-effect sizing the timeout was introduced for only ever
+  /// applied to the 14 core pools, which are the ones a match barely
+  /// touches. Resolving through the base effect gives every variant the
+  /// right window; the variants measure within ~15% of their base (`hit`
+  /// 420ms vs `hit_inferno` 449ms), comfortably inside the existing
+  /// [_safetyMarginMs].
+  /// Baked into the pool at creation instead of set per play. Only the
+  /// UI click is quieter than full, and a volume that never changes has
+  /// no business costing a platform round trip on every shot — see the
+  /// note on [_ManagedPool.play].
+  static double _volumeFor(String key) => key == 'click' ? 0.9 : 1.0;
+
   static Duration _safetyTimeoutFor(String key) {
-    final clip = _clipMs[key];
+    final base = _baseEffectOf(key);
+    final clip = base == null ? null : _clipMs[base];
     if (clip == null) return const Duration(milliseconds: _fallbackSafetyMs);
     return Duration(milliseconds: math.max(_minSafetyMs, clip + _safetyMarginMs));
   }
@@ -364,6 +424,55 @@ class SoundService {
   );
 
   final Map<String, _ManagedPool> _pools = {};
+
+  /// How a pool builds a player. Only ever swapped by tests, which stand a
+  /// fake in for the real thing: `AudioPlayer`'s actual playback needs a
+  /// platform plugin, and this service's hardest bugs have all been in the
+  /// BOOKKEEPING around players (which one is idle, whose it is, whether a
+  /// rebuild has retired it) rather than in playback itself — see
+  /// [_ManagedPool._owner]. A fake makes exactly that testable.
+  @visibleForTesting
+  static AudioPlayer Function() playerFactory = AudioPlayer.new;
+
+  /// Every player a pool is currently accounting for, idle or busy.
+  /// Tests assert on this: a healthy pool holds exactly its own `size`,
+  /// all of them live. Anything else means a checkout filed a player it
+  /// should not have.
+  @visibleForTesting
+  List<AudioPlayer> poolPlayers(String key) => _pools[key]?.players ?? const [];
+
+  /// Drops all pooled state so one test can't inherit another's players.
+  /// The click bookkeeping goes with it: [click]'s retrigger guard is wall
+  /// -clock based, so without this a test that clicks would silently
+  /// suppress the click in whichever test ran within the next 100ms of
+  /// real time — which is every one of them.
+  @visibleForTesting
+  void resetForTesting() {
+    _pools.clear();
+    _leftForeground = false;
+    _rebuildingPool = false;
+    _lastClickAt = -1000;
+    _clickPending = false;
+  }
+
+  /// [_play], awaitable. The effect methods are all fire-and-forget, which
+  /// is right for callers and useless for a test that needs to know when
+  /// the play has actually finished dispatching.
+  @visibleForTesting
+  Future<void> playForTesting(String key) => _play(key);
+
+  /// Whether an effect file is registered under exactly [key] — no
+  /// fallback. Tests use it to assert that every catalogue id brings its
+  /// OWN sound rather than quietly landing on the generic one.
+  @visibleForTesting
+  static bool hasVariantForTesting(String key) => _files.containsKey(key);
+
+  /// How long a play of [key] holds its player. See [_safetyTimeoutFor] —
+  /// on Android this is the only thing that ever frees one, so getting it
+  /// wrong for the keys a match actually plays starves those pools.
+  @visibleForTesting
+  static Duration safetyTimeoutForTesting(String key) =>
+      _safetyTimeoutFor(key);
 
   static const _menuMusicAsset = 'sfx/menu_music.wav';
   AudioPlayer? _menuMusicPlayer;
@@ -388,6 +497,7 @@ class SoundService {
           size: _poolSizeFor(key),
           audioContext: _sfxAudioContext,
           safetyTimeout: _safetyTimeoutFor(key),
+          volume: _volumeFor(key),
         ),
       );
       await pool.warmUp();
@@ -404,6 +514,7 @@ class SoundService {
       size: _poolSizeFor(key),
       audioContext: _sfxAudioContext,
       safetyTimeout: _safetyTimeoutFor(key),
+      volume: _volumeFor(key),
     );
     _pools[key] = pool;
     // NOTE: deliberately NOT `unawaited(pool.warmUp())` here any more —
@@ -445,30 +556,8 @@ class SoundService {
       'place_$shipSkinId',
       'move_$shipSkinId',
     };
-    // Remembered so [onAppResumed] knows which of the accumulated pools
-    // are the ones a player can actually hear right now — see
-    // [_resumePriorityKeys]. Two entries: a battle screen warms BOTH
-    // captains' loadouts back to back, and both stay live for the match.
-    _recentLoadoutKeys.removeWhere((s) => s.length == keys.length && s.containsAll(keys));
-    _recentLoadoutKeys.add(keys);
-    while (_recentLoadoutKeys.length > 2) {
-      _recentLoadoutKeys.removeAt(0);
-    }
     _warmSkinKeys(keys);
   }
-
-  /// The last two loadouts handed to [warmLoadout] — see its note.
-  final List<Set<String>> _recentLoadoutKeys = [];
-
-  /// The pools [onAppResumed] rebuilds BEFORE handing control back: the
-  /// always-on core effects plus whatever the live loadouts need. Every
-  /// other pool in `_pools` belongs to a skin that was equipped at some
-  /// point this session but isn't in play now, so it can be rebuilt after
-  /// the fact without anyone hearing the difference.
-  Set<String> get _resumePriorityKeys => {
-        ..._corePoolKeys,
-        for (final keys in _recentLoadoutKeys) ...keys,
-      };
 
   void _warmSkinKeys(Iterable<String> keys) {
     for (final key in keys) {
@@ -481,6 +570,7 @@ class SoundService {
           size: _poolSizeFor(key),
           audioContext: _sfxAudioContext,
           safetyTimeout: _safetyTimeoutFor(key),
+          volume: _volumeFor(key),
         ),
       );
       unawaited(pool.ensureFresh());
@@ -492,8 +582,8 @@ class SoundService {
   /// never knew when it left or returned to the foreground. On Android,
   /// backgrounding the app (locking the screen, taking a call, swiping to
   /// another app, even just pulling down the notification shade) can make
-  /// the OS reclaim the native SoundPool session backing the low-latency
-  /// pooled players to free resources; iOS deactivates the shared
+  /// the OS reclaim the native media session behind the pooled players to
+  /// free resources; iOS deactivates the shared
   /// AVAudioSession in the same situations. Either way the Dart-side
   /// `AudioPlayer` objects survive and still report a normal idle/
   /// completed state, so a pool happily keeps handing them out — but their
@@ -539,26 +629,54 @@ class SoundService {
       // and that only matters at the moment that pool next plays — which
       // is exactly when the refresh now happens.
       //
-      // A background pass then walks the rest, so later effects do not
-      // each pay their own first-use rebuild: priority pools first, one
-      // at a time, yielding a frame between each so its platform traffic
-      // trickles in rather than arriving as a burst. It goes through the
-      // same `ensureFresh`, so it can never race a real play for the same
-      // pool — whichever gets there first, the other joins it. And it
-      // starts only after `endOfFrame`, keeping pass 2's fix intact.
-      for (final pool in _pools.values) {
-        pool.markStale();
+      //  4. A background pass was then added to walk the REST of the pools
+      //     anyway, so later effects wouldn't each pay their own first-use
+      //     rebuild — one pool per frame, `endOfFrame` between each. That
+      //     quietly undid pass 3. A match has ~30 pools holding ~70
+      //     players, and a rebuild is 5 platform round trips per player
+      //     (one dispose, four to build its replacement), so every resume
+      //     still queued ~350 of them; spreading that over 30-odd frames
+      //     makes it a third of a second of dribbling channel traffic
+      //     instead of one stall, but it is the same work, and it lands
+      //     exactly while the player is looking at the screen again. That
+      //     is the resume lag, back in a shape that is harder to see.
+      //
+      // The background pass is gone. Nothing is rebuilt on resume at all;
+      // pools are only FLAGGED, and [_ManagedPool.ensureFresh] — which
+      // every play already goes through — rebuilds a pool the first time
+      // it is actually used. A resume now costs nothing, and the first
+      // shot back waits on its own pool alone: three players, a handful of
+      // platform calls, off the frame-critical path because it is a sound
+      // being dispatched rather than a frame being built. Most pools are
+      // never touched again on the screen the player returns to, so most
+      // of that ~350-call bill is simply never incurred.
+      //
+      // It stays safe for the same reason as before: the point of a
+      // rebuild is that the OS may have reclaimed a pool's native samples
+      // while the app was away, and that only matters at the moment that
+      // pool next plays — which is exactly when the refresh happens.
+      //
+      // FEEDBACK ("effects sometimes play and sometimes disappear"): the
+      // deferred pass was also making that far worse, and dropping it is
+      // half of that fix too. Every pool it walked was a pool being torn
+      // down underneath whatever the player happened to be doing, and a
+      // teardown that lands on a live checkout used to poison the rebuilt
+      // pool with a stale player — see [_ManagedPool._owner], which is the
+      // other half.
+      //
+      // Nothing invalidates on a transient `inactive` any more either (a
+      // permission dialog, a peek at the notification shade, the start of
+      // a recents gesture): the app never left, so its audio is fine, and
+      // treating those as a backgrounding meant rebuilding every pool in
+      // the app for an interruption the player may not even have noticed.
+      // See [onAppPaused].
+      if (_leftForeground) {
+        _leftForeground = false;
+        for (final pool in _pools.values) {
+          pool.markStale();
+        }
       }
-      final priorityKeys = _resumePriorityKeys;
-      final ordered = [
-        for (final e in _pools.entries)
-          if (priorityKeys.contains(e.key)) e.value,
-        for (final e in _pools.entries)
-          if (!priorityKeys.contains(e.key)) e.value,
-      ];
       await SchedulerBinding.instance.endOfFrame;
-      _deferredRebuildGeneration++;
-      unawaited(_rebuildDeferred(ordered, _deferredRebuildGeneration));
       if (_menuMusicWanted && enabled) {
         // Coming back from a pause we did ourselves, resume rather than
         // replay: `play()` restarts an AssetSource from position zero, so
@@ -588,26 +706,10 @@ class SoundService {
 
   bool _rebuildingPool = false;
 
-  /// Bumped on every resume so a still-running deferred pass from an
-  /// EARLIER resume stops rather than rebuilding pools the newer resume
-  /// has already dealt with (background/foreground can be cycled far
-  /// faster than the tail takes to drain — a notification shade pulled
-  /// down and flicked back up is enough).
-  int _deferredRebuildGeneration = 0;
-
-  /// The background refresh pass of [onAppResumed] — see its note.
-  /// Sequential on purpose: nothing waits on this, so the only thing that
-  /// matters is that it never bunches its platform traffic into one
-  /// frame. Pools a real play has already refreshed are no longer stale
-  /// and fall straight through.
-  Future<void> _rebuildDeferred(List<_ManagedPool> pools, int generation) async {
-    for (final pool in pools) {
-      if (generation != _deferredRebuildGeneration) return;
-      if (!pool.isStale) continue;
-      await pool.ensureFresh();
-      await SchedulerBinding.instance.endOfFrame;
-    }
-  }
+  /// Whether the app genuinely left the foreground since the last resume —
+  /// set only by a `paused`/`hidden`/`detached` transition, never by a
+  /// bare `inactive`. See [onAppPaused] and [onAppResumed].
+  bool _leftForeground = false;
 
   /// Companion to [onAppResumed], called the moment the app stops being
   /// the thing on screen — locked, switched away from, taking a call,
@@ -629,7 +731,19 @@ class SoundService {
   ///
   /// Sound EFFECTS need no equivalent — they're one-shots, and the
   /// longest of them rings out in well under a second.
-  void onAppPaused() {
+  ///
+  /// [leftForeground] separates the two very different things this one
+  /// method is called for. `paused`/`hidden`/`detached` mean the app
+  /// really is gone, which is what puts its pooled players at risk and so
+  /// arms the invalidation in [onAppResumed]. A bare `inactive` does not:
+  /// it fires for a permission dialog, a peek at the notification shade,
+  /// the beginning of a recents swipe — the app is still there, its audio
+  /// is still fine, and it is usually `resumed` again a moment later.
+  /// Treating those as a backgrounding meant every such blip invalidated
+  /// every pool in the app. Music still pauses either way, since that is
+  /// about what the player can hear, not about what the OS reclaimed.
+  void onAppPaused({bool leftForeground = true}) {
+    if (leftForeground) _leftForeground = true;
     _menuMusicRetryTimer?.cancel();
     final player = _menuMusicPlayer;
     if (player != null && player.state == PlayerState.playing) {
@@ -679,7 +793,16 @@ class SoundService {
     _scheduleMenuMusicAutoRetry();
   }
 
-  Future<void> _play(String key, {double volume = 1.0}) async {
+  /// [key] is an effect name from [_files]. Volume is NOT a parameter: it
+  /// belongs to the effect, not the call, and is baked into the pool's
+  /// players when they are built (see [_ManagedPool.volume]) so an
+  /// ordinary play costs one platform call instead of two.
+  Future<void> _play(String key) async {
+    // A specific cue supersedes the generic UI click raised by the same
+    // gesture — see [click]. Must stay the first thing this method does:
+    // it has to run synchronously, before the first `await` below hands
+    // control back and lets the click's microtask through.
+    if (key != 'click') _clickPending = false;
     if (!enabled) return;
     final pool = _getPool(key);
     if (pool == null) return;
@@ -688,10 +811,7 @@ class SoundService {
     // race this closes. `ensureWarm` caches its future, so concurrent
     // first-plays share one warmup and later plays await nothing.
     await pool.ensureFresh();
-    final rate = _hasVariedPitch(key)
-        ? 0.94 + _rng.nextDouble() * 0.12 // ~±6% pitch/speed wobble
-        : 1.0;
-    await pool.play(volume: volume, rate: rate);
+    await pool.play();
   }
 
   Timer? _menuMusicRetryTimer;
@@ -871,36 +991,44 @@ class SoundService {
     _play('hit');
   }
 
+  /// FEEDBACK ("I use an MK-I cannon but the miss still registers as the
+  /// opponent's lava theme"): the shooter's gun is asked FIRST now, and the
+  /// target's board only as a fallback. This used to be the other way
+  /// round, so a shot landing on any themed battlefield took that board's
+  /// splash no matter what fired it — the audible half of the same bug the
+  /// hit/miss MARKS had (see `_StaticGridPainter.paint`), and inconsistent
+  /// with [hit] and [cannonFire], which have always been keyed to the gun.
+  ///
+  /// No sound becomes unreachable by the swap: a legacy board's id IS its
+  /// matching legacy cannon's id, and a family board's id is its family
+  /// cannon's, so the same fifteen files are still in play — they now
+  /// follow the shell rather than the water it lands in.
   void miss({String? themeId, String? cannonSkinId}) {
     HapticFeedback.lightImpact();
-    if (themeId != null) {
-      final k1 = 'miss_$themeId';
-      if (_hasSound(k1)) {
-        _play(k1);
-        return;
-      }
-      final clean = themeId.replaceFirst('f_', '');
-      final k2 = 'miss_$clean';
-      if (_hasSound(k2)) {
-        _play(k2);
-        return;
-      }
-    }
-    if (cannonSkinId != null) {
-      final k1 = 'miss_$cannonSkinId';
-      if (_hasSound(k1)) {
-        _play(k1);
-        return;
-      }
-      final clean = cannonSkinId.replaceFirst('f_', '');
-      final k2 = 'miss_$clean';
-      if (_hasSound(k2)) {
-        _play(k2);
-        return;
-      }
-    }
-    _play('miss');
+    _play(_missKey(themeId: themeId, cannonSkinId: cannonSkinId));
   }
+
+  /// The file a miss resolves to: the shooter's gun, else the target's
+  /// board, else the shared splash. Split out so it is the one definition
+  /// of that order — see [missKeyForTesting].
+  String _missKey({String? themeId, String? cannonSkinId}) =>
+      _variantKey('miss', cannonSkinId) ??
+      _variantKey('miss', themeId) ??
+      'miss';
+
+  /// `<base>_<id>` if that exists, else `<base>_<id without its `f_`>`,
+  /// else null — the same two-step every effect uses to fall from a themed
+  /// variant back towards the shared one.
+  String? _variantKey(String base, String? id) {
+    if (id == null) return null;
+    if (_hasSound('${base}_$id')) return '${base}_$id';
+    final clean = id.replaceFirst('f_', '');
+    return _hasSound('${base}_$clean') ? '${base}_$clean' : null;
+  }
+
+  @visibleForTesting
+  static String missKeyForTesting({String? themeId, String? cannonSkinId}) =>
+      instance._missKey(themeId: themeId, cannonSkinId: cannonSkinId);
 
   void sunk({String? shipSkinId}) {
     HapticFeedback.heavyImpact();
@@ -982,12 +1110,39 @@ class SoundService {
   /// gesture and played once. No human taps two different buttons within
   /// 100 ms; a double sound on every other press was what the guard is
   /// for.
+  ///
+  /// FEEDBACK ("the button audio plays twice on the deploy screen too").
+  /// The guard above only ever de-duplicated a click against ANOTHER
+  /// click, and that is not the only way one press makes two sounds. Some
+  /// buttons raise a cue of their own in the handler [NeonButton] invokes
+  /// — measured on the device, RANDOM fires `click` and `whir` in the SAME
+  /// millisecond, and SAVE fires `click` and the deployment fanfare — so
+  /// the press lands as two overlapping effects where every other button
+  /// in the app makes exactly one.
+  ///
+  /// So the generic click now yields to a specific one. It is deferred by
+  /// a single microtask, which runs only once the whole tap handler has
+  /// finished: any effect the handler raised on the way past cancels it
+  /// (see the head of [_play]), and a button that raises nothing still
+  /// clicks, a fraction of a millisecond later and inside the same frame.
+  /// Deliberately microtask-scoped rather than timed: it can only ever be
+  /// superseded from inside the same gesture, never by an effect that
+  /// happens to arrive from a timer or the network at the wrong moment.
   void click() {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastClickAt < 100) return;
     _lastClickAt = now;
-    _play('click', volume: 0.9);
+    _clickPending = true;
+    scheduleMicrotask(() {
+      if (!_clickPending) return;
+      _clickPending = false;
+      _play('click');
+    });
   }
+
+  /// A [click] waiting out its microtask — see there. Cleared either by
+  /// the click playing or by a more specific effect superseding it.
+  bool _clickPending = false;
 
   int _lastClickAt = -1000;
 
@@ -1100,22 +1255,92 @@ class _ManagedPool {
     required this.size,
     required this.audioContext,
     required this.safetyTimeout,
+    required this.volume,
   });
 
   final String asset;
   final int size;
   final AudioContext audioContext;
 
+  /// This effect's playback volume, applied once when a player is built.
+  final double volume;
+
+  /// Players known to be sitting at position zero, so the next play can
+  /// skip rewinding them.
+  ///
+  /// PERF: `play()` issues platform calls whose native side runs on
+  /// Android's main thread, and that is what makes frames stutter while
+  /// sound is playing. A clip that ends on its own needs no rewind from
+  /// us: `WrappedPlayer.onCompletion` already calls `stop()` natively,
+  /// which under `ReleaseMode.stop` is pause-and-seek-to-zero. So a player
+  /// handed back by its own completion event is ready to go, and only one
+  /// that was cut short — stolen mid-clip, or freed by the safety timer
+  /// without a completion — still has to be rewound.
+  final Set<AudioPlayer> _rewound = {};
+
   final List<AudioPlayer> _idle = [];
   final Map<AudioPlayer, void Function()> _busy = {};
+
+  /// Which checkout currently owns each busy player, and which teardown
+  /// era the pool is in. Both exist to answer the same question from two
+  /// directions — "is the player I am holding still mine to give back?" —
+  /// because a checkout is a long-lived chain of awaits and BOTH of the
+  /// things it holds across those awaits can be taken from it mid-flight.
+  ///
+  /// ROOT-CAUSE FIX (effects playing "sometimes, and sometimes not at
+  /// all", persisting until the app is restarted). `release()` used to
+  /// return its player to [_idle] unconditionally, no matter what had
+  /// happened to the pool in the meantime. Two ways that poisons a pool
+  /// for the rest of the session:
+  ///
+  ///  1. **A rebuild underneath a live checkout.** [dispose] tears down
+  ///     exactly the players it can see — `_idle` plus `_busy.keys` — but
+  ///     a checkout between "took the player out of `_idle`" and "put it
+  ///     into `_busy`" is in NEITHER, so its player survives a rebuild the
+  ///     whole point of which is that the old players can no longer be
+  ///     trusted (the OS may have reclaimed their native samples). Its
+  ///     `release()` — or its safety timer, up to a clip-length later —
+  ///     then filed that stale player into the freshly rebuilt `_idle`,
+  ///     where it sat as a permanently silent slot, handed out to roughly
+  ///     one play in `size` forever after. A checkout that IS in `_busy`
+  ///     when the rebuild lands hits the same ending by the other road:
+  ///     its player gets genuinely disposed, its next platform call
+  ///     throws, and the catch-all calls `release()` — filing a DISPOSED
+  ///     player into the new pool. Either way: "sometimes it plays,
+  ///     sometimes nothing", getting worse with each resume that happens
+  ///     to collide with a sound.
+  ///  2. **A steal underneath a live checkout.** The steal path detaches
+  ///     the old checkout's listeners so they can't hand the player back,
+  ///     but it can't unwind that checkout's own in-flight `play()` body:
+  ///     if one of its platform calls throws after the steal, its catch
+  ///     block still calls `release()`, filing into `_idle` a player the
+  ///     NEW checkout is at that moment playing out loud. A third play
+  ///     then checks that same player out of `_idle` and `stop()`s it —
+  ///     cutting off a clip that had only just started.
+  ///
+  /// So a checkout now records the era it began in and takes a token
+  /// proving ownership of its player, and `release()` verifies both before
+  /// touching the pool's books. A checkout that has been superseded either
+  /// way retires quietly instead of filing a player it no longer owns.
+  int _generation = 0;
+  final Map<AudioPlayer, Object> _owner = {};
+
+  List<AudioPlayer> get players => [..._idle, ..._busy.keys];
 
   /// How long a checked-out player is considered busy before it's forced
   /// back into the idle pool.
   ///
-  /// This is the ONLY thing that ever returns a low-latency player to the
-  /// pool: Android's SoundPool has no completion callback, so
-  /// `onPlayerComplete` never fires for `PlayerMode.lowLatency` (the
-  /// listener below is kept purely for the platforms where it does work).
+  /// A backstop, not the primary mechanism. It used to be the latter:
+  /// under `PlayerMode.lowLatency` Android's SoundPool has no completion
+  /// callback at all, so `onPlayerComplete` never fired and this timer was
+  /// the only thing that ever returned a player. On `mediaPlayer` (see
+  /// [_create] for why the mode changed) completion events do arrive, so
+  /// the listener below is what normally frees a player and this only has
+  /// to cover a clip that was interrupted without reporting it.
+  ///
+  /// It still needs to be sized per effect rather than left at the
+  /// worst-case fallback — a backstop that fires far too late still pins a
+  /// player for seconds if its event is ever missed.
   ///
   /// ROOT-CAUSE FIX (audio still inconsistent — cut off / silent —
   /// specifically during fast-paced gameplay, even after the pooling and
@@ -1219,8 +1444,6 @@ class _ManagedPool {
   /// second trip to the background.
   int _staleGeneration = 0;
 
-  bool get isStale => _stale;
-
   void markStale() {
     _stale = true;
     _staleGeneration++;
@@ -1249,7 +1472,7 @@ class _ManagedPool {
   }
 
   Future<AudioPlayer> _create() async {
-    final p = AudioPlayer();
+    final p = SoundService.playerFactory();
     // ROOT-CAUSE FIX (mobile jank + audio dying mid-match) — measured on a
     // real device with the Dart profiler: 99.4% of ALL UI-thread samples
     // were inside `AudioPlayer.getCurrentPosition` →
@@ -1279,12 +1502,41 @@ class _ManagedPool {
     p.positionUpdater = null;
     await p.setAudioContext(audioContext);
     await p.setSource(AssetSource(asset));
-    await p.setPlayerMode(PlayerMode.lowLatency);
+    // ROOT-CAUSE FIX (effects "not playing consistently" — the one every
+    // round of pool fixes above was actually chasing). This was
+    // `PlayerMode.lowLatency`, which on Android is `SoundPool`, and
+    // SoundPool was silently dropping most of what it was asked to play.
+    //
+    // Measured on a real device over one scripted CHAOS match, counting
+    // requests in Dart against `addTrack_l` in AudioFlinger — i.e. sounds
+    // asked for, versus sounds that actually reached the audio hardware:
+    //
+    //     lowLatency (SoundPool)   73 requested → 27 audible  (37%)
+    //     mediaPlayer              73 requested → 71 audible  (97%)
+    //
+    // Nothing upstream could see it. `SoundPool.play()` returns a stream id
+    // and 0 on failure; the plugin stores that id without checking it, and
+    // the Dart-side state flag is set from the call returning, not from a
+    // stream actually starting. So every one of those 73 plays reported
+    // `PlayerState.playing` — which is why the traces kept coming back
+    // clean while the game kept sounding broken, and why each earlier fix
+    // (pool bookkeeping, busy windows, missing variants) was real but only
+    // ever moved the remaining third around.
+    //
+    // The trade is a few ms of extra start latency — measured at 14-24ms
+    // from request to dispatch, against SoundPool's ~4ms — which is
+    // inaudible against a shot that has a visible animation, and a heavier
+    // native object per player. In-battle CPU was unchanged at ~95% of a
+    // core. Getting the sound out is worth both.
+    await p.setVolume(volume);
+    await p.setPlayerMode(PlayerMode.mediaPlayer);
     await p.setReleaseMode(ReleaseMode.stop);
+    _rewound.add(p);
     return p;
   }
 
-  Future<void> play({double volume = 1.0, double rate = 1.0}) async {
+  Future<void> play() async {
+    final generation = _generation;
     AudioPlayer player;
     try {
       if (_idle.isNotEmpty) {
@@ -1307,6 +1559,11 @@ class _ManagedPool {
         // regression this pool now avoids.
         final oldest = _busy.keys.first;
         _busy.remove(oldest)?.call();
+        // Ownership passes to this checkout here, so the stolen-from
+        // checkout's own `release()` (which its in-flight body can still
+        // reach via its catch-all) no longer files this player anywhere —
+        // see case 2 on [_owner].
+        _owner.remove(oldest);
         player = oldest;
       } else {
         // Only reachable if warmUp() never managed to create a single
@@ -1353,8 +1610,22 @@ class _ManagedPool {
         await previousSetup;
       } catch (_) {/* we only care that it's finished, not how */}
     }
+    // The pool can have been torn down and rebuilt while this checkout sat
+    // on the gate above (or on the `_idle`/steal bookkeeping before it) —
+    // see case 1 on [_owner]. The player in hand belongs to the previous
+    // era either way, so retire it here rather than let it into the books
+    // of the pool that replaced it. Disposing is best-effort: in the
+    // `_busy` half of the race [dispose] already got to it.
+    if (generation != _generation) {
+      unawaited(player.dispose().catchError((_) {}));
+      return;
+    }
+
     final setupCompleter = Completer<void>();
     _setupDone[player] = setupCompleter.future;
+
+    final token = Object();
+    _owner[player] = token;
 
     late final StreamSubscription<void> sub;
     late final Timer safety;
@@ -1364,13 +1635,25 @@ class _ManagedPool {
       released = true;
       safety.cancel();
       sub.cancel();
+      // Superseded — by a rebuild, or by a steal — so this player is no
+      // longer ours to file. See [_owner] for both cases.
+      if (generation != _generation) {
+        unawaited(player.dispose().catchError((_) {}));
+        return;
+      }
+      if (!identical(_owner[player], token)) return;
+      _owner.remove(player);
       _busy.remove(player);
       // Always back to idle — this pool never exceeds `size` players, so
       // there's never a "grew past capacity, let this one go" case.
       _idle.add(player);
     }
 
-    sub = player.onPlayerComplete.listen((_) => release());
+    sub = player.onPlayerComplete.listen((_) {
+      // Native side has already rewound it — see [_rewound].
+      _rewound.add(player);
+      release();
+    });
     safety = Timer(safetyTimeout, release);
     // The busy-map entry only cancels this checkout's OWN listeners — see
     // the steal-path comment above for why it must not also perform
@@ -1404,43 +1687,63 @@ class _ManagedPool {
       // one. It also explains why menu clicks died after a match: those
       // pools were spent during the battle and never reset.
       //
-      // `stop()` fixes BOTH preconditions in one call — it pauses (so
-      // `playing` goes false) and seeks to 0, which routes to
-      // SoundPoolPlayer.stop() and nulls `streamId` — so the next start()
-      // takes the `soundPool.play(...)` branch and produces a real, fresh
-      // stream every time. `prepared` stays true, so the already-loaded
-      // sample is reused and this is still the low-latency path (no asset
-      // reload).
-      await player.stop();
-      await player.setVolume(volume.clamp(0.0, 1.0));
+      // `stop()` fixed BOTH preconditions in one call — it pauses (so
+      // `playing` goes false) and seeks to 0, which routed to
+      // SoundPoolPlayer.stop() and nulled `streamId`, so the next start()
+      // took the `soundPool.play(...)` branch instead of resuming a dead
+      // stream.
+      //
+      // The backend is `mediaPlayer` now (see [_create]) and neither
+      // precondition is SoundPool's any more, but the call is still exactly
+      // right and still required: `stop()` is pause-and-seek-to-zero under
+      // `ReleaseMode.stop`, which is what makes a REUSED player start its
+      // clip from the beginning rather than resuming wherever the previous
+      // shot left it, and it is what clears `playing` so the guard in
+      // `WrappedPlayer.play()` lets the next one through.
+      // PERF (animations stuttering while sound plays): every call in here
+      // is a platform round trip whose native side runs on Android's main
+      // thread, and `MediaPlayer`'s seek/start are not cheap there. Firing
+      // a shot used to cost three of them. Measured in a live match, sound
+      // ON gave worst-frame spikes of 132ms and 60ms — a shell visibly
+      // jumping most of its flight; the identical match with sound MUTED
+      // never exceeded 26ms. Volume is the one that had no business being
+      // here: it never varies for a given effect (only the UI click is
+      // quieter, and it is always 0.9), so it is set once when the player
+      // is built — see [_ManagedPool.volume].
+      //
+      // The rewind goes the same way whenever it is already done for us:
+      // a clip that ended on its own was rewound natively by the plugin's
+      // own completion handling (see [_rewound]), which is the common case
+      // now that completion events actually arrive. Only a player that was
+      // cut short still needs this, which leaves the ordinary play a
+      // single platform call.
+      if (!_rewound.remove(player)) {
+        await player.stop();
+      }
       // Resuming (rather than re-calling play(source)) reuses the already
       // -prepared native player instead of tearing it down and reloading
-      // the asset on every single play — this is the low-latency path.
+      // the asset on every single play.
       await player.resume();
-      // ROOT-CAUSE FIX (cannon_fire/hit/miss/click — exactly the effects
-      // with pitch variation, see `_hasVariedPitch` — cut off or silent
-      // specifically under load): playback rate can only be applied to the
-      // underlying native stream once it has actually started (see
-      // SoundPool's per-stream setRate), so this is set AFTER resume(),
-      // not before — but that also means `resume()` has, at this point,
-      // ALREADY started the clip playing out loud. This call used to share
-      // the same try/catch as `resume()` above, so on a real device — a
-      // stream not QUITE ready for `setRate` yet, more likely exactly when
-      // effects are firing back-to-back (hit streaks, BLITZ/CHAOS's two
-      // independent guns) — a `setPlaybackRate` failure fell into the
-      // catch-all below and called `release()` on a player that was, at
-      // that exact moment, genuinely mid-clip: `release()` hands it
-      // straight back to `_idle`, so the very next `play()` call for ANY
-      // effect sharing this pool could immediately `stop()` it, cutting the
-      // clip off inches after it started — while the SoundService-level
-      // caller that requested THIS sound saw no error at all. A failure to
-      // apply the cosmetic pitch wobble must never be treated as "the play
-      // failed"; the clip is already audible and stays that way.
-      if (rate != 1.0) {
-        try {
-          await player.setPlaybackRate(rate);
-        } catch (_) {/* cosmetic only — the clip keeps playing at rate 1.0 */}
-      }
+      // FEEDBACK ("the button click plays twice"). There was a
+      // `setPlaybackRate` here, applying a ±6% pitch wobble so rapid
+      // repeats didn't sound robotic. It had to come AFTER `resume()`,
+      // because the SoundPool backend could only set a rate on a stream
+      // that had already started — and that ordering became a bug the
+      // moment the backend changed.
+      //
+      // Every step here is a platform round trip, and the whole dispatch
+      // measures 14-24ms on a loaded frame. `click.wav` is 60ms. So the
+      // rate call could easily land after its own clip had already
+      // finished — and Android's `MediaPlayer.setPlaybackParams()` STARTS
+      // playback on a player that is not currently started. That is a
+      // second click, from one press, hitting the shortest clip in the
+      // game first.
+      //
+      // Setting it before `resume()` is no safer: the same call on a
+      // paused player starts it too, which would race the resume. The
+      // wobble was cosmetic — the old comment here said as much, insisting
+      // a failed rate must never fail the play — so it is simply gone
+      // rather than traded for a subtler version of the same hazard.
     } catch (e) {
       if (kDebugMode) {
         debugPrint('SoundService: play failed for $asset ($e)');
@@ -1512,11 +1815,19 @@ class _ManagedPool {
     // platform-channel round trips as it had players, right before
     // [warmUp]'s own chain runs again via [rebuild]. Firing them together
     // lets the platform channel handle the batch concurrently instead.
+    // Opens a new era BEFORE anything is torn down, so any checkout that
+    // is mid-flight right now — including one holding a player that is in
+    // neither list and so is invisible to the teardown below — sees that
+    // it has been superseded and retires its player instead of filing it
+    // into the pool this rebuild is about to produce. See [_owner].
+    _generation++;
     await Future.wait([
       for (final p in [..._idle, ..._busy.keys]) p.dispose().catchError((_) {}),
     ]);
     _idle.clear();
     _busy.clear();
+    _owner.clear();
+    _rewound.clear();
     _setupDone.clear();
     // A rebuild's fresh `warmUp()` must be awaited by the next play too —
     // drop the cached future so `ensureWarm` re-runs rather than handing

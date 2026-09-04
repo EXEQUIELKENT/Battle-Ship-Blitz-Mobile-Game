@@ -133,14 +133,77 @@ Color damageAccentFor(DamageStyle style) => switch (style) {
 /// crater first). They also carry their own colours, keyed to the
 /// projectile — which is what [damageAccentFor] was introduced to do by
 /// hand, and now simply agrees with.
+///
+/// FEEDBACK ("looks flat compared to the previous ship damage that had
+/// shadow and glowing effects"): each SVG already has a dark `r=36` halo
+/// circle and a coloured `r≈16` glow circle baked into its markup, but
+/// `svg_replay` has no `<filter>`/blur support, so both replay as flat,
+/// hard-edged discs instead of the soft drop shadow / bloom a browser
+/// would render them as. `paintSvgFragmentCached` renders straight off
+/// the cached `Picture` and can't selectively blur just those two shapes
+/// out of the fragment, so the fix draws a real blurred shadow and a
+/// real blurred glow with Skia's own blur mask *underneath* the replay —
+/// depth the flat SVG shapes were only ever a stand-in for.
 void paintShipDamage(Canvas canvas, Offset center, double r, DamageStyle style) {
   final markup = shipDamageSvg[style];
   if (markup == null) return;
   final scale = r / 36;
+
   canvas.save();
   canvas.translate(center.dx, center.dy);
+
+  // PERF: these were `MaskFilter.blur` circles. A blur is not an ordinary
+  // draw — Skia renders the shape into an offscreen texture and runs a
+  // separable blur over it, per drawn circle, every frame. That is
+  // affordable for one decoration and ruinous here: a sinking hull draws
+  // one wound per cell, so five wounds meant TEN offscreen blur passes per
+  // frame, on a 900ms vsync-driven animation, while `Opacity` was already
+  // forcing a saveLayer around the whole thing. Hence a hull being
+  // destroyed tanking the frame rate for a couple of seconds and then
+  // recovering.
+  //
+  // A radial gradient gives the same soft falloff as a plain fragment
+  // shader — no offscreen, no kernel — and the shaders are cached, since
+  // every wound on a board shares one radius and only a handful of
+  // projectile colours are ever on screen at once.
+  canvas.drawCircle(Offset(0, r * 0.08), r * 1.15, _shadowPaint(r));
+  canvas.drawCircle(Offset.zero, r * 0.95, _glowPaint(style, r));
+
   canvas.scale(scale);
   canvas.translate(-60, -60);
   paintSvgFragmentCached(canvas, markup);
   canvas.restore();
 }
+
+/// Shaders are built around the origin so one per radius serves every
+/// wound on the board, wherever it sits — see [paintShipDamage], which
+/// translates the canvas before drawing.
+final Map<int, Paint> _shadowCache = {};
+final Map<(DamageStyle, int), Paint> _glowCache = {};
+
+int _key(double r) => (r * 4).round();
+
+Paint _shadowPaint(double r) => _shadowCache.putIfAbsent(_key(r), () {
+      final radius = r * 1.15;
+      return Paint()
+        ..shader = RadialGradient(
+          colors: const [Color(0x5E000000), Color(0x00000000)],
+          stops: const [0.45, 1.0],
+        ).createShader(
+          Rect.fromCircle(center: Offset(0, r * 0.08), radius: radius),
+        );
+    });
+
+Paint _glowPaint(DamageStyle style, double r) =>
+    _glowCache.putIfAbsent((style, _key(r)), () {
+      final accent = damageAccentFor(style);
+      final radius = r * 0.95;
+      return Paint()
+        ..shader = RadialGradient(
+          colors: [
+            accent.withValues(alpha: 0.55),
+            accent.withValues(alpha: 0.0),
+          ],
+          stops: const [0.0, 1.0],
+        ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius));
+    });

@@ -3602,20 +3602,16 @@ class _GhostSinkingShipState extends State<_GhostSinkingShip>
           ),
         );
       },
-      child: ship.horizontal
-          ? CustomPaint(
-              painter: ShipPainter(
-                spec: ship.spec,
-                skin: widget.skin,
-                sunk: true,
-                hitCount: ship.spec.size,
-                hitIndices: ship.hitIndices,
-                shooterCannonId: widget.shooterCannonId,
-              ),
-            )
-          : RotatedBox(
-              quarterTurns: 1,
-              child: CustomPaint(
+      // PERF: the wreck itself never changes over the 900ms it takes to go
+      // down — only the fade, the slide and the shrink around it do. It is
+      // already the builder's `child` so it isn't REBUILT per frame, but
+      // without a boundary of its own it was still fully REPAINTED on every
+      // one: a whole hull, plus one wound per cell, each of which used to
+      // carry two offscreen blur passes. Behind a repaint boundary it
+      // rasterizes once and the transforms just re-composite it.
+      child: RepaintBoundary(
+        child: ship.horizontal
+            ? CustomPaint(
                 painter: ShipPainter(
                   spec: ship.spec,
                   skin: widget.skin,
@@ -3624,8 +3620,21 @@ class _GhostSinkingShipState extends State<_GhostSinkingShip>
                   hitIndices: ship.hitIndices,
                   shooterCannonId: widget.shooterCannonId,
                 ),
+              )
+            : RotatedBox(
+                quarterTurns: 1,
+                child: CustomPaint(
+                  painter: ShipPainter(
+                    spec: ship.spec,
+                    skin: widget.skin,
+                    sunk: true,
+                    hitCount: ship.spec.size,
+                    hitIndices: ship.hitIndices,
+                    shooterCannonId: widget.shooterCannonId,
+                  ),
+                ),
               ),
-            ),
+      ),
     );
   }
 }

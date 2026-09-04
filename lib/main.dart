@@ -231,10 +231,17 @@ class _BattleshipBlitzAppState extends State<BattleshipBlitzApp>
         unawaited(context.read<MatchStore>().flushNow());
         SoundService.instance.onAppPaused();
         break;
-      case AppLifecycleState.inactive:
       case AppLifecycleState.detached:
       case AppLifecycleState.hidden:
         SoundService.instance.onAppPaused();
+        break;
+      case AppLifecycleState.inactive:
+        // The app is still in the foreground — this fires for a permission
+        // dialog, a peek at the notification shade, the start of a recents
+        // swipe — and is very often followed straight back by `resumed`.
+        // Quieten the music, but don't tell SoundService the app went
+        // away: see `onAppPaused`'s `leftForeground`.
+        SoundService.instance.onAppPaused(leftForeground: false);
         break;
     }
   }

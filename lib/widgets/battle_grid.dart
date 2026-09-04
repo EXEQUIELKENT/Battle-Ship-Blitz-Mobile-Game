@@ -1515,9 +1515,8 @@ class _StaticGridPainter extends CustomPainter {
   /// The shooter's own equipped `CannonSkin.id` — same value/meaning as
   /// `_Crosshair.cannonSkinId` (see its own doc): a hit/miss mark is a
   /// shell's impact, so it's themed by whoever fired it, not by whichever
-  /// board it lands on. Only meaningful when [boardFamily] is null (a
-  /// family shooter draws its marks from `family` directly, same as it
-  /// already did before this existed).
+  /// board it lands on. That now holds on EVERY board, family or legacy —
+  /// see the note in [paint] for the case where it did not.
   final String? shooterCannonId;
 
   _StaticGridPainter({
@@ -1538,6 +1537,23 @@ class _StaticGridPainter extends CustomPainter {
     final cell = size.width / kBoardSize;
     final family = boardFamily;
     final legacyBoard = legacyBoardId;
+
+    // FEEDBACK ("I use an MK-I cannon but the hit and miss still register
+    // as the opponent's lava theme"): a mark is a shell's impact, so it
+    // belongs to the gun that fired it — which is what [shooterCannonId]'s
+    // own doc has always said. The marker branch below did not do that. It
+    // asked [boardFamily] first, so the moment a shot landed on any FAMILY
+    // battlefield the board's own glyph won outright and the shooter was
+    // never consulted; only on a legacy board did the gun get a say. Firing
+    // MK-I at a Cinder Hold deck therefore left magma craters.
+    //
+    // Resolving the family from the SHOOTER instead makes the rule the same
+    // in both directions: a family gun leaves its own foam/frost/magma
+    // wherever it lands, a legacy gun leaves its own glyph, and the board
+    // decides only what the water underneath looks like.
+    final shooter = shooterCannonId;
+    final shooterFamily =
+        shooter == null ? null : FleetFamilies.byKey(Catalog.cannonById(shooter).familyKey);
 
     if (family != null) {
       // A themed battlefield replaces the water AND the gridlines — ice
@@ -1605,6 +1621,35 @@ class _StaticGridPainter extends CustomPainter {
     final hitCellPaint = Paint()..color = AppColors.outline;
     final hitDiamondPaint = Paint()..color = AppColors.burst;
 
+    // FEEDBACK ("some hit and miss marks aren't visible on some decks —
+    // their colours don't match the theme"). Measured by rendering every
+    // gun's mark on every deck and comparing the pixels against the bare
+    // deck: 32 combinations moved the cell's brightest pixel by less than
+    // 18%, several by under 3% — invisible. Every one of them was a MISS.
+    //
+    // Hits were already safe: they are solid, near-opaque glyphs. A miss
+    // is deliberately the quieter mark, and was drawn as a thin 25-60%
+    // -opacity glyph straight onto the deck art — which reads on the deck
+    // it was authored against and vanishes on a deck that happens to share
+    // its tone. That became far more likely once a mark started being
+    // themed by the SHOOTER's gun rather than the board it lands on: every
+    // gun can now land on every deck, so no pairing can be assumed.
+    //
+    // Rather than hand-tune 225 combinations, a miss now lands on its own
+    // scrim — a dark plate with a faint light rim, the same "this square
+    // is spent" language the flat board has always used (see [_drawMiss]).
+    // The plate is deck-independent, so the cell always reads as fired on;
+    // the dark fill separates the pale glyphs and the light rim keeps the
+    // plate's own edge visible even on the near-black decks. The glyph
+    // itself keeps its gun's shape and hue, drawn opaque enough to read
+    // against the plate (see `paintLegacyMiss`/`paintFamilyMiss`).
+    final missScrimPaint = Paint()
+      ..color = const Color(0xFF0F1922).withValues(alpha: 0.36);
+    final missScrimRimPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = cell * 0.045
+      ..color = const Color(0xFFE8F1F8).withValues(alpha: 0.20);
+
     // PERF: flatten the destroyed-ship footprints into one cell-key set
     // up front, instead of re-scanning every destroyed ship (and every
     // cell of each) for every hit marker drawn.
@@ -1624,26 +1669,26 @@ class _StaticGridPainter extends CustomPainter {
         // destroyed ship graphic replaces all individual hit cells.
         if (v == 2 && destroyedCells.contains(r * kBoardSize + c)) continue;
         final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
-        if (family != null) {
+        if (shooterFamily != null) {
           // A themed marker is still exactly one cell — a foam ring, a
           // frost star, a magma crater — so what a player has to read
           // ("that square is spent", "that square is a hit") is unchanged
           // and only the drawing differs.
           if (v == 2) {
-            paintFamilyHit(canvas, center, cell, family);
+            paintFamilyHit(canvas, center, cell, shooterFamily);
           } else {
-            paintFamilyMiss(canvas, center, cell, family);
+            _drawMissScrim(canvas, center, cell, missScrimPaint,
+                missScrimRimPaint);
+            paintFamilyMiss(canvas, center, cell, shooterFamily);
           }
         } else if (shooterCannonId != null) {
-          // The nine legacy cannons each get their own hit/miss glyph now
-          // (see `paintLegacyHit`/`paintLegacyMiss`) — a family id here
-          // (a family shooter firing onto a non-family board) falls
-          // through to those functions' own MK-I default, which is a
-          // safe, deliberate simplification rather than a sixth themed
-          // system for a mixed-mode edge case.
+          // The nine legacy cannons each get their own hit/miss glyph
+          // (see `paintLegacyHit`/`paintLegacyMiss`).
           if (v == 2) {
             paintLegacyHit(canvas, center, cell, shooterCannonId!);
           } else {
+            _drawMissScrim(canvas, center, cell, missScrimPaint,
+                missScrimRimPaint);
             paintLegacyMiss(canvas, center, cell, shooterCannonId!);
           }
         } else if (v == 2) {
@@ -1653,6 +1698,24 @@ class _StaticGridPainter extends CustomPainter {
         }
       }
     }
+  }
+
+  /// The plate a themed miss glyph is drawn on, so a spent square reads on
+  /// any deck rather than only on the one its gun was authored against —
+  /// see the note where these paints are built.
+  void _drawMissScrim(
+    Canvas canvas,
+    Offset center,
+    double cell,
+    Paint fill,
+    Paint rim,
+  ) {
+    final plate = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: center, width: cell * 0.86, height: cell * 0.86),
+      Radius.circular(cell * 0.18),
+    );
+    canvas.drawRRect(plate, fill);
+    canvas.drawRRect(plate, rim);
   }
 
   /// Miss marker (video): slightly darker cell + tiny grey ✕.

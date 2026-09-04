@@ -12,6 +12,7 @@ import '../services/network_service.dart';
 import '../services/online_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/ambient_loop.dart';
 import '../widgets/hero_ship_dock.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
@@ -30,9 +31,10 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin, RouteAware {
-  late final AnimationController _titleCtrl;
+class _HomeScreenState extends State<HomeScreen> with RouteAware {
+  // Decoration, not gameplay — rate-capped rather than vsync-driven; see
+  // [AmbientLoop].
+  final _titleCtrl = AmbientLoop(period: const Duration(seconds: 2));
   AIDifficulty _difficulty = AIDifficulty.normal;
 
   @override
@@ -42,15 +44,12 @@ class _HomeScreenState extends State<HomeScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) SoundService.instance.startMenuMusic();
     });
-    _titleCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _titleCtrl.enabled = TickerMode.valuesOf(context).enabled;
     final route = ModalRoute.of(context);
     if (route is PageRoute) {
       appRouteObserver.subscribe(this, route);
@@ -218,28 +217,33 @@ class _HomeScreenState extends State<HomeScreen>
                               ),
                               AnimatedBuilder(
                                 animation: _titleCtrl,
-                                builder: (context, _) {
+                                // Hoisted out of the builder so the wordmark
+                                // is laid out once rather than rebuilt every
+                                // frame. Deliberately NOT behind a
+                                // `RepaintBoundary`: this sits inside the
+                                // `Transform.scale` below, and a cached
+                                // raster drawn at a changing scale is
+                                // resampled — which turns crisp text into
+                                // soft text for the whole pulse.
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(Icons.bolt,
+                                        color: AppColors.gold, size: 26),
+                                    Text(
+                                      'BLITZ',
+                                      style: AppText.title(
+                                          size: 28, color: AppColors.gold),
+                                    ),
+                                    const Icon(Icons.bolt,
+                                        color: AppColors.gold, size: 26),
+                                  ],
+                                ),
+                                builder: (context, child) {
                                   final bump =
                                       1.0 + 0.06 * sin(_titleCtrl.value * pi);
                                   return Transform.scale(
-                                    scale: bump,
-                                    child: Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        const Icon(Icons.bolt,
-                                            color: AppColors.gold, size: 26),
-                                        Text(
-                                          'BLITZ',
-                                          style: AppText.title(
-                                              size: 28,
-                                              color: AppColors.gold),
-                                        ),
-                                        const Icon(Icons.bolt,
-                                            color: AppColors.gold, size: 26),
-                                      ],
-                                    ),
-                                  );
+                                      scale: bump, child: child);
                                 },
                               ),
                               const SizedBox(height: 4),

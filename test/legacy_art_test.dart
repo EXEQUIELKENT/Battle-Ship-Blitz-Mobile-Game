@@ -6,6 +6,7 @@ import 'package:battleship_blitz/art/fleet_family.dart';
 import 'package:battleship_blitz/art/legacy_board_art.dart';
 import 'package:battleship_blitz/art/legacy_cannon_art.dart';
 import 'package:battleship_blitz/art/legacy_crosshair_art.dart';
+import 'package:battleship_blitz/art/legacy_shell_art.dart';
 import 'package:battleship_blitz/art/legacy_ship_art.dart';
 import 'package:battleship_blitz/art/ship_damage_art.dart';
 import 'package:battleship_blitz/art/ship_damage_svg.dart';
@@ -581,6 +582,82 @@ void main() {
       expect(p.ownsLegacySet(set), isFalse, reason: 'missing the board');
       p.owned = {'ship:crimson', 'cannon:inferno', 'theme:inferno'};
       expect(p.ownsLegacySet(set), isTrue);
+    });
+  });
+
+  // FEEDBACK ("make the abyss cannon's visible round fire and rebuild").
+  // Drawn at scale 1 (design radius 34 as the outer radius, ring centre as
+  // the centre) so design coordinates land on canvas pixels one to one:
+  // the round occupies y 12-28 around x 60, and nothing else in the gun is
+  // painted up there, so a single pixel's alpha IS the round's state.
+  group('abyss railgun round', () {
+    Future<int> roundAlpha({required double cooldown, double recoil = 0}) async {
+      final rec = ui.PictureRecorder();
+      paintLegacyCannon(Canvas(rec), const Offset(60, 72), 34, 'phantom',
+          cooldown: cooldown, recoil: recoil);
+      final img = await rec.endRecording().toImage(120, 132);
+      final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+      return data!.getUint8(((22 * 120 + 60) * 4) + 3);
+    }
+
+    test('a loaded gun draws it solid, exactly as the art always did',
+        () async {
+      expect(await roundAlpha(cooldown: 1), 255);
+    });
+
+    test('the shot takes it, without waiting for the cooldown tick',
+        () async {
+      // Recoil starts on the frame of the shot; the cooldown only drops on
+      // the game's next 100ms tick, so the recoil is what has to clear it.
+      expect(await roundAlpha(cooldown: 1, recoil: 1), 0);
+      expect(await roundAlpha(cooldown: 0), 0);
+    });
+
+    test('it builds back up as the reload runs', () async {
+      final quarter = await roundAlpha(cooldown: 0.25);
+      final half = await roundAlpha(cooldown: 0.5);
+      final loaded = await roundAlpha(cooldown: 1);
+      expect(quarter, greaterThan(0));
+      expect(quarter, lessThan(half));
+      expect(half, lessThan(loaded));
+    });
+
+    test('no other legacy gun reacts to the new recoil argument', () {
+      // The eight others keep their ammunition inside the barrel, so
+      // nothing about them should change with the shot — held at one
+      // cooldown (so the ring sweep is identical either way), only the new
+      // `recoil` differs.
+      int bytes(String id, double recoil) {
+        final rec = ui.PictureRecorder();
+        paintLegacyCannon(Canvas(rec), const Offset(50, 50), 24, id,
+            cooldown: 0.5, recoil: recoil);
+        return rec.endRecording().approximateBytesUsed;
+      }
+
+      for (final id in _legacyCannonIds.where((i) => i != 'phantom')) {
+        expect(bytes(id, 0), bytes(id, 1),
+            reason: '$id: the shot changed what its turret draws');
+      }
+      expect(bytes('phantom', 0), isNot(bytes('phantom', 1)),
+          reason: 'the abyss round is the one that does react');
+    });
+  });
+
+  // FEEDBACK ("rename the Sunfire Battery and match its projectile to the
+  // cannon"). The gun's art, its catalogue entry and its shell were three
+  // separate copies of one palette, and the art was the only one that got
+  // re-imported as Coral — so this pins the three together.
+  group('coral battery', () {
+    test('the gun and the shell it fires share one palette', () {
+      final gun = Catalog.cannonSkins.firstWhere((c) => c.id == 'sunfire');
+      final shell = legacyShellPalette('sunfire');
+      expect(gun.name, 'Coral Battery');
+      expect(gun.barrel, const Color(0xFFC1543F));
+      expect(gun.projectile, const Color(0xFFFF9E7A));
+      expect(shell.hull, gun.barrel,
+          reason: 'the shell body should be the gun body');
+      expect(shell.trim, gun.projectile,
+          reason: 'the shell highlight should be the gun highlight');
     });
   });
 }

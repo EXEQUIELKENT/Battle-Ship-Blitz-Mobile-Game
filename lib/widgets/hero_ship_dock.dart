@@ -8,6 +8,7 @@ import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import 'ambient_loop.dart';
 import 'ship_painter.dart';
 
 /// The main menu's hero "water dock": a redesigned home for the player's
@@ -47,12 +48,16 @@ class HeroShipDock extends StatefulWidget {
 }
 
 class _HeroShipDockState extends State<HeroShipDock>
-    with TickerProviderStateMixin {
+    with SingleTickerProviderStateMixin {
   /// Drives the idle bob/rock, the foam drift and the wake ripples — one
-  /// shared ticker so all three stay in phase instead of fighting.
-  late final AnimationController _waveCtrl;
+  /// shared clock so all three stay in phase instead of fighting. Ambient
+  /// scenery, so it is rate-capped rather than vsync-driven; see
+  /// [AmbientLoop].
+  final _waveCtrl = AmbientLoop(period: const Duration(seconds: 4));
 
   /// A short, one-shot "pop" played whenever the previewed hull changes.
+  /// A real controller: this one is a direct response to a tap, so it
+  /// should run as smoothly as the display allows.
   late final AnimationController _swapCtrl;
 
   /// The shipyard's five hull classes, largest (carrier) first — the
@@ -69,14 +74,16 @@ class _HeroShipDockState extends State<HeroShipDock>
   @override
   void initState() {
     super.initState();
-    _waveCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 4),
-    )..repeat();
     _swapCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 260),
     );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _waveCtrl.enabled = TickerMode.valuesOf(context).enabled;
   }
 
   @override
@@ -234,10 +241,12 @@ class _HeroShipDockState extends State<HeroShipDock>
               // Drifting foam bands + wake ripples that trail wherever
               // the hull has been dragged. Purely decorative.
               Positioned.fill(
-                child: AnimatedBuilder(
-                  animation: _waveCtrl,
-                  builder: (context, _) => CustomPaint(
-                    painter: _HeroWaterPainter(_waveCtrl.value, _drag),
+                child: RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: _waveCtrl,
+                    builder: (context, _) => CustomPaint(
+                      painter: _HeroWaterPainter(_waveCtrl.value, _drag),
+                    ),
                   ),
                 ),
               ),
@@ -247,7 +256,30 @@ class _HeroShipDockState extends State<HeroShipDock>
               // untouched — only this wrapper moves and resizes it.
               AnimatedBuilder(
                 animation: Listenable.merge([_waveCtrl, _swapCtrl]),
-                builder: (context, _) {
+                // PERF: the hull's artwork doesn't change as it bobs — only
+                // the transforms around it do. As the builder's `child` it
+                // is built once per hull/skin change rather than rebuilt
+                // every frame.
+                //
+                // It had a `RepaintBoundary` here as well, which is wrong
+                // in this position: the transforms below SCALE and ROTATE
+                // it continuously, and a cached raster drawn under a
+                // changing scale/rotation is resampled every frame — a
+                // permanently soft-edged ship, and re-rasterization work
+                // on top. Hoisting the build out is the part that pays;
+                // caching the raster is not.
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: _cycleHull,
+                  onPanUpdate: _onPanUpdate,
+                  child: AnimatedShip(
+                    spec: hull,
+                    skin: widget.equippedSkin,
+                    width: _hullWidth(hull),
+                    height: _hullHeight(hull),
+                  ),
+                ),
+                builder: (context, child) {
                   final bob = math.sin(_waveCtrl.value * 2 * math.pi) * 7;
                   final rock =
                       math.sin(_waveCtrl.value * 2 * math.pi + 0.7) * 0.04;
@@ -257,20 +289,7 @@ class _HeroShipDockState extends State<HeroShipDock>
                     offset: Offset(_drag.dx, _drag.dy + bob),
                     child: Transform.rotate(
                       angle: rock,
-                      child: Transform.scale(
-                        scale: pop,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onTap: _cycleHull,
-                          onPanUpdate: _onPanUpdate,
-                          child: AnimatedShip(
-                            spec: hull,
-                            skin: widget.equippedSkin,
-                            width: _hullWidth(hull),
-                            height: _hullHeight(hull),
-                          ),
-                        ),
-                      ),
+                      child: Transform.scale(scale: pop, child: child),
                     ),
                   );
                 },

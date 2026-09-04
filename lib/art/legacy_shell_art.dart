@@ -75,10 +75,15 @@ const Map<String, ShellPalette> _legacyShellPalettes = {
     glow: Color(0xFFB6FFF1),
     inkW: 3,
   ),
+  // Coral Battery. Taken from the gun's own re-imported markup rather than
+  // its old amber catalogue colours — body `#C1543F`, highlight `#FF9E7A`,
+  // shadow `#3A1710`, and the cream `#FFF8D6` its muzzle glow is already
+  // drawn in. This palette feeds the muzzle exhaust too (see
+  // `_paintLegacyExhaust`), so the flare, the shell and the gun now agree.
   'sunfire': ShellPalette(
-    hull: Color(0xFFB45309),
-    trim: Color(0xFFFDE047),
-    ink: Color(0xFF432B03),
+    hull: Color(0xFFC1543F),
+    trim: Color(0xFFFF9E7A),
+    ink: Color(0xFF3A1710),
     glow: Color(0xFFFFF8D6),
     inkW: 3,
   ),
@@ -286,8 +291,9 @@ void _krakenShell(FamilyCanvas c, ShellPalette p) {
   c.circle(74, 74, 3, fillColor: p.glow, fillOpacity: 0.85);
 }
 
-// Sunfire Battery — a small sun: eight rays fanning out of a glowing
-// core.
+// Coral Battery — a small sun: eight rays fanning out of a glowing core.
+// The shape is the gun's own eight-ray sigil (the same burst its hit mark
+// and muzzle flare draw); only the palette above changed with the rename.
 void _sunfireOrb(FamilyCanvas c, ShellPalette p) {
   for (var i = 0; i < 8; i++) {
     c.rotated(i * 45.0, 60, 64, () {

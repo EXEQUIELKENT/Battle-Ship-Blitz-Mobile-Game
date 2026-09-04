@@ -1177,7 +1177,18 @@ class GameController extends ChangeNotifier {
     }
     for (var r = 0; r < kBoardSize; r++) {
       for (var c = 0; c < kBoardSize; c++) {
-        if (shotsByMe[r][c] != 0) enemy.markShot(r, c);
+        if (shotsByMe[r][c] == 0) continue;
+        enemy.markShot(r, c);
+        // Their damage is reconstructed the same way ours is above — a
+        // cell we recorded as a hit is one of their ship cells. Without
+        // this, coming back from a disconnect handed us an enemy fleet
+        // with no record of anything we had already hit, which the
+        // end-of-match reveal then drew undamaged.
+        if (shotsByMe[r][c] == 2) {
+          final ship = enemy.shipAt(r, c);
+          final idx = ship?.cellIndexAt(r, c);
+          if (ship != null && idx != null) ship.hitIndices.add(idx);
+        }
       }
     }
 
@@ -2156,6 +2167,31 @@ class GameController extends ChangeNotifier {
         PlacedShip? sunk;
         final sunkName = msg['sunk'] as String?;
 
+        // FEEDBACK ("when the game is over or I surrender against the AI,
+        // its ships have no damage on them"). Our copy of the enemy fleet
+        // only ever learned about SINKINGS — the branch below fills in
+        // every cell of a hull the moment it goes down, and an ordinary
+        // hit was recorded nowhere on it at all. That stays invisible for
+        // almost the whole match, because the enemy grid draws no ships;
+        // but the end-of-match reveal draws the entire fleet from this
+        // board, so every hull that had been hit without being sunk turned
+        // up pristine — and a surrender, where usually nothing has sunk
+        // yet, revealed a fleet without a scratch on it.
+        //
+        // It only ever showed up in the modes that run over the match
+        // protocol, which is every vs-AI mode except TURN BASED: those
+        // play the AI across a loopback link, so `fireAt` returns the
+        // moment the shot is sent and the outcome arrives back here, in
+        // the peer's reply. TURN BASED resolves locally through
+        // `boards[1].receiveShot`, which has always recorded per-cell
+        // damage properly — which is why the same reveal looked right
+        // there. Hotspot and online play had the identical hole.
+        if (result == ShotResult.hit) {
+          final ship = boards[1].shipAt(r, c);
+          final idx = ship?.cellIndexAt(r, c);
+          if (ship != null && idx != null) ship.hitIndices.add(idx);
+        }
+
         if (result == ShotResult.sunk &&
             sunkName != null) {
           final enemyBoard = boards[1];
@@ -2277,6 +2313,13 @@ class GameController extends ChangeNotifier {
           final c = pair[1] as int;
           if (r >= 0 && r < kBoardSize && c >= 0 && c < kBoardSize) {
             myShots[r][c] = 0;
+            // The mirror of their fleet now records ordinary hits too (see
+            // the 'result' case), so a repair has to lift the damage off
+            // that hull as well — otherwise the reveal shows a wound they
+            // healed, and enough of them would read as sunk.
+            final ship = boards[1].shipAt(r, c);
+            final idx = ship?.cellIndexAt(r, c);
+            if (ship != null && idx != null) ship.hitIndices.remove(idx);
           }
         }
         notifyListeners();

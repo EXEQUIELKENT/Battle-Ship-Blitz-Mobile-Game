@@ -1,0 +1,112 @@
+name: PR Update Summary
+
+# Runs whenever a pull request is opened, reopened, or has new commits pushed
+# to it (synchronize). It posts — or updates — a single comment on the PR
+# that lists the PR's title and every commit's title + full description, so
+# reviewers see the complete change context without having to click through
+# to the commits tab.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      # Build the summary body. We gather the PR title and, for each commit
+      # in the PR, its subject line plus the full commit body (description).
+      # Using the PR head ref as the base ensures we only list commits that
+      # are actually part of this PR, not everything on main.
+      - name: Build PR summary
+        id: summary
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "body<<EOF"
+            echo "### 🚀 New Update — ${PR_TITLE}"
+            echo ""
+            echo "---"
+            echo ""
+
+            # List each commit in the PR, oldest first, with its full
+            # description (commit body) preserved. %x00 separates commits,
+            # %x01 separates the subject from the body within a commit.
+            git log \
+              --reverse \
+              --format='%s%x01%b%x00' \
+              "${BASE_SHA}..${HEAD_SHA}" \
+            | while IFS= read -r -d '' commit; do
+                subject="${commit%%$'\x01'*}"
+                body="${commit#*$'\x01'}"
+
+                echo "- **${subject}**"
+                # Print the description only when one exists, so clean
+                # single-line commits don't leave a blank line behind.
+                if [ -n "$body" ]; then
+                  echo ""
+                  # Indent the body so it nests under the bullet in
+                  # Markdown — reads like a quote of the commit message.
+                  echo "$body" | sed 's/^/  /'
+                fi
+                echo ""
+              done
+
+            echo "---"
+            echo ""
+            echo "_Posted by PR Update Summary workflow_"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Post the summary as a comment, or update the one we already left if a
+      # new push landed on the PR. We search the PR's comments for one
+      # carrying our unique HTML marker and update it in place if found,
+      # otherwise create a fresh one — so there is exactly one summary
+      # comment no matter how many times new commits land on the PR.
+      - name: Post or update PR comment
+        uses: actions/github-script@v7
+        env:
+          SUMMARY_BODY: ${{ steps.summary.outputs.body }}
+        with:
+          script: |
+            const body = process.env.SUMMARY_BODY;
+            const marker = '<!-- PR_UPDATE_SUMMARY -->';
+            const taggedBody = marker + '\n' + body;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const ours = comments.find((c) => c.body && c.body.includes(marker));
+            if (ours) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: ours.id,
+                body: taggedBody,
+              });
+              console.log(`Updated existing summary comment #${ours.id}`);
+            } else {
+              const { data: created } = await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: taggedBody,
+              });
+              console.log(`Created summary comment #${created.id}`);
+            }

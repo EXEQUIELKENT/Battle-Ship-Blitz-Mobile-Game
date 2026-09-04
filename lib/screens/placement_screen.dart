@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../art/family_shell_art.dart';
 import '../art/fleet_family.dart';
+import '../art/legacy_identity.dart';
 import '../art/legacy_shell_art.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
@@ -2152,6 +2153,13 @@ class _GearDialog extends StatefulWidget {
   State<_GearDialog> createState() => _GearDialogState();
 }
 
+int Function(T, T) _byGearOrder<T>((String?, String?) Function(T) keyOf) =>
+    (a, b) {
+      final ka = keyOf(a);
+      final kb = keyOf(b);
+      return gearRank(ka.$1, ka.$2).compareTo(gearRank(kb.$1, kb.$2));
+    };
+
 class _GearDialogState extends State<_GearDialog> {
   late Loadout _lo = widget.current;
 
@@ -2165,13 +2173,16 @@ class _GearDialogState extends State<_GearDialog> {
   Widget build(BuildContext context) {
     final ships = Catalog.shipSkins
         .where((s) => widget.profile.ownsShip(s.id))
-        .toList();
+        .toList()
+      ..sort(_byGearOrder((s) => (s.familyKey, s.id)));
     final cannons = Catalog.cannonSkins
         .where((c) => widget.profile.ownsCannon(c.id))
-        .toList();
+        .toList()
+      ..sort(_byGearOrder((c) => (c.familyKey, c.id)));
     final themes = Catalog.gameplayThemes
         .where((t) => widget.profile.ownsTheme(t.id))
-        .toList();
+        .toList()
+      ..sort(_byGearOrder((t) => (t.familyKey, t.id)));
     final sets = FleetFamilies.all
         .where((f) => widget.profile.ownsFamilySet(f))
         .toList();

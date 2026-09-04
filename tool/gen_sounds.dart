@@ -875,13 +875,106 @@ void main() {
   writeWav('assets/sfx/miss_scifi.wav', missScifi);
   writeWav('assets/sfx/miss_f_scifi.wav', missScifi);
 
-  // Additional projectile misses
-  writeWav('assets/sfx/miss_inferno.wav', missVolcanic);
-  writeWav('assets/sfx/miss_tesla.wav', missScifi);
-  writeWav('assets/sfx/miss_venom.wav', missSteam);
-  writeWav('assets/sfx/miss_phantom.wav', missNaval);
-  writeWav('assets/sfx/miss_sunfire.wav', missScifi);
-  writeWav('assets/sfx/miss_void.wav', missDeep);
+  // ---- MISS: one per legacy identity ----
+  // These used to be ALIASES of the six family splashes, which is why
+  // several legacy identities sounded like each other rather than like
+  // themselves: Storm Circuit and Solar Flats were byte-identical (both
+  // the sci-fi splash), as were Abyssal Depths and Event Horizon.
+  //
+  // A legacy cannon and its battlefield share one id, and `SoundService
+  // .miss` picks by the SHOOTER's gun (a miss belongs to the shell, not to
+  // the water it lands in), so each of these is really that identity's
+  // shell falling short. They are still written from the matching board's
+  // character, which is what gives the nine their distinct voices.
+
+  // Iron Standard — plain steel-blue water. Unadorned: a flat slap and one
+  // dull rivet plink, deliberately the least characterful of the nine.
+  final missMk1 = buf(0.55);
+  add(missMk1, 0, tone(0.05, (t) => 1500 - 800 * t, volume: 0.22, decay: 34));
+  add(missMk1, 0, tone(0.20, (t) => 430 - 210 * t, volume: 0.40, decay: 12));
+  add(missMk1, (0.05 * sr).toInt(),
+      harmonicTone(0.16, 620, [0.3, 0.14], volume: 0.16, decay: 20));
+  add(missMk1, (0.03 * sr).toInt(),
+      sweep(0.34, (t) => 0.45 - 0.22 * t, volume: 0.24, decay: 9));
+  writeWav('assets/sfx/miss_mk1.wav', missMk1);
+
+  // Ember Field — scorched black water. The splash flashes off into steam.
+  final missInferno = buf(0.70);
+  add(missInferno, 0, tone(0.16, (t) => 380 - 190 * t, volume: 0.34, decay: 14));
+  add(missInferno, (0.03 * sr).toInt(),
+      noise(0.52, volume: 0.40, decay: 4.2, cutoff: 0.72)); // steam hiss
+  add(missInferno, (0.06 * sr).toInt(),
+      sweep(0.45, (t) => 0.75 - 0.5 * t, volume: 0.26, decay: 5));
+  writeWav('assets/sfx/miss_inferno.wav', missInferno);
+
+  // Storm Circuit — a live current band. The water answers with a crackle.
+  final missTesla = buf(0.60);
+  add(missTesla, 0, tone(0.14, (t) => 520 - 250 * t, volume: 0.30, decay: 15));
+  add(missTesla, 0,
+      fmTone(0.26, (t) => 900 - 300 * t, 240, 5.0, volume: 0.30, decay: 11));
+  for (var k = 0; k < 4; k++) {
+    add(missTesla, ((0.05 + k * 0.055) * sr).toInt(),
+        noise(0.05, volume: 0.20, decay: 70, cutoff: 0.85)); // arc spits
+  }
+  writeWav('assets/sfx/miss_tesla.wav', missTesla);
+
+  // Toxic Marsh — sickly, thick water. A heavy plop and rising bubbles.
+  final missVenom = buf(0.68);
+  add(missVenom, 0, tone(0.22, (t) => 300 - 160 * t, volume: 0.42, decay: 10));
+  for (var k = 0; k < 5; k++) {
+    add(missVenom, ((0.10 + k * 0.085) * sr).toInt(),
+        tone(0.09, (t) => 420 + k * 90 + 260 * t, volume: 0.16, decay: 26));
+  }
+  add(missVenom, (0.04 * sr).toInt(),
+      noise(0.30, volume: 0.20, decay: 8, cutoff: 0.28));
+  writeWav('assets/sfx/miss_venom.wav', missVenom);
+
+  // Gilded Waters — a parade ground. The splash rings like struck brass.
+  final missRoyal = buf(0.68);
+  add(missRoyal, 0, tone(0.16, (t) => 470 - 230 * t, volume: 0.32, decay: 14));
+  add(missRoyal, (0.02 * sr).toInt(),
+      harmonicTone(0.55, 523.25, [0.4, 0.26, 0.16, 0.08],
+          volume: 0.26, decay: 5.5)); // C5 brass ring
+  add(missRoyal, (0.02 * sr).toInt(),
+      sweep(0.30, (t) => 0.5 - 0.25 * t, volume: 0.20, decay: 10));
+  writeWav('assets/sfx/miss_royal.wav', missRoyal);
+
+  // Shadow Veil — ghostly violet water, slow concentric rings. Hollow, and
+  // it answers back.
+  final missPhantom = buf(0.85);
+  add(missPhantom, 0, tone(0.18, (t) => 340 - 170 * t, volume: 0.30, decay: 13));
+  add(missPhantom, (0.05 * sr).toInt(),
+      fmTone(0.40, (t) => 300 - 80 * t, 75, 1.4, volume: 0.22, decay: 5));
+  add(missPhantom, (0.30 * sr).toInt(),
+      fmTone(0.40, (t) => 260 - 70 * t, 70, 1.2, volume: 0.13, decay: 5)); // echo
+  writeWav('assets/sfx/miss_phantom.wav', missPhantom);
+
+  // Abyssal Depths — deep teal trench. The water swallows the shell whole.
+  final missKraken = buf(0.90);
+  add(missKraken, 0, tone(0.26, (t) => 250 - 140 * t, volume: 0.44, decay: 8));
+  add(missKraken, (0.06 * sr).toInt(),
+      sweep(0.62, (t) => 0.30 - 0.20 * t, volume: 0.30, decay: 4)); // undertow
+  add(missKraken, (0.12 * sr).toInt(),
+      tone(0.45, (t) => 120 - 45 * t, volume: 0.22, decay: 5));
+  writeWav('assets/sfx/miss_kraken.wav', missKraken);
+
+  // Solar Flats — sun-scorched amber sand, not water. A dry puff, no splash.
+  final missSunfire = buf(0.58);
+  add(missSunfire, 0, noise(0.30, volume: 0.42, decay: 9, cutoff: 0.38)); // dust
+  add(missSunfire, 0, tone(0.10, (t) => 700 - 400 * t, volume: 0.20, decay: 22));
+  add(missSunfire, (0.05 * sr).toInt(),
+      harmonicTone(0.30, 1180, [0.22, 0.1], volume: 0.14, decay: 12)); // heat shimmer
+  writeWav('assets/sfx/miss_sunfire.wav', missSunfire);
+
+  // Event Horizon — dark-matter water round a gravity well. It falls in and
+  // keeps falling.
+  final missVoid = buf(0.95);
+  add(missVoid, 0, tone(0.20, (t) => 300 - 200 * t, volume: 0.30, decay: 12));
+  add(missVoid, (0.03 * sr).toInt(),
+      tone(0.75, (t) => 190 * pow(0.35, t).toDouble(), volume: 0.36, decay: 2.6));
+  add(missVoid, (0.08 * sr).toInt(),
+      sweep(0.60, (t) => 0.36 - 0.30 * t, volume: 0.22, decay: 4));
+  writeWav('assets/sfx/miss_void.wav', missVoid);
 
   // =========================================================================
   // 5. TURN PASS / YOUR TURN SOUNDS (Decks & Thematic Families)
@@ -979,6 +1072,84 @@ void main() {
   }
   writeWav('assets/sfx/turn_pass_scifi.wav', passScifi);
   writeWav('assets/sfx/turn_pass_f_scifi.wav', passScifi);
+
+  // ---- TURN PASS: one per legacy battlefield ----
+  // None of the nine legacy boards had a handoff cue at all: the only
+  // non-family files were for `classic`/`deep`/`sunset`/`arctic`, the four
+  // flat themes deleted when the illustrated legacy decks replaced them.
+  // So every legacy deck — the default included — handed over on the
+  // generic chime while the six family decks each had their own. Each is
+  // written from the same instrument as that board's miss above, so a
+  // deck's water and its handoff read as one voice.
+
+  // Iron Standard — a plain ship's bell, struck twice.
+  final passMk1 = buf(0.58);
+  add(passMk1, 0, harmonicTone(0.30, 587.33, [0.5, 0.3, 0.14], volume: 0.42, decay: 8));
+  add(passMk1, (0.16 * sr).toInt(),
+      harmonicTone(0.36, 783.99, [0.45, 0.26, 0.12], volume: 0.36, decay: 7));
+  writeWav('assets/sfx/turn_pass_mk1.wav', passMk1);
+
+  // Ember Field — a heat-warped gong under a vent of steam.
+  final passInferno = buf(0.80);
+  add(passInferno, 0, noise(0.16, volume: 0.30, decay: 12, cutoff: 0.6));
+  add(passInferno, 0,
+      harmonicTone(0.70, 233.08, [0.44, 0.3, 0.18, 0.1], volume: 0.44, decay: 4));
+  writeWav('assets/sfx/turn_pass_inferno.wav', passInferno);
+
+  // Storm Circuit — a relay closing: a snap, then a charged hum.
+  final passTesla = buf(0.60);
+  add(passTesla, 0, noise(0.04, volume: 0.30, decay: 80, cutoff: 0.9));
+  add(passTesla, (0.02 * sr).toInt(),
+      fmTone(0.42, (t) => 640 + 180 * t, 210, 3.2, volume: 0.34, decay: 7));
+  writeWav('assets/sfx/turn_pass_tesla.wav', passTesla);
+
+  // Toxic Marsh — a dull drum of a barrel, and the marsh answering.
+  final passVenom = buf(0.70);
+  add(passVenom, 0,
+      harmonicTone(0.34, 174.61, [0.5, 0.22, 0.1], volume: 0.42, decay: 9));
+  for (var k = 0; k < 3; k++) {
+    add(passVenom, ((0.16 + k * 0.11) * sr).toInt(),
+        tone(0.10, (t) => 480 + k * 120 + 220 * t, volume: 0.14, decay: 24));
+  }
+  writeWav('assets/sfx/turn_pass_venom.wav', passVenom);
+
+  // Gilded Waters — a parade fanfare, two notes of brass.
+  final passRoyal = buf(0.72);
+  add(passRoyal, 0,
+      harmonicTone(0.34, 392.00, [0.45, 0.3, 0.2, 0.1], volume: 0.40, decay: 7));
+  add(passRoyal, (0.15 * sr).toInt(),
+      harmonicTone(0.50, 523.25, [0.45, 0.3, 0.2, 0.12], volume: 0.40, decay: 5));
+  writeWav('assets/sfx/turn_pass_royal.wav', passRoyal);
+
+  // Shadow Veil — a hollow ring that comes back a beat later.
+  final passPhantom = buf(0.95);
+  add(passPhantom, 0,
+      fmTone(0.45, (t) => 392 - 60 * t, 98, 1.6, volume: 0.36, decay: 5));
+  add(passPhantom, (0.34 * sr).toInt(),
+      fmTone(0.45, (t) => 330 - 50 * t, 82, 1.4, volume: 0.20, decay: 5));
+  writeWav('assets/sfx/turn_pass_phantom.wav', passPhantom);
+
+  // Abyssal Depths — a trench sonar ping with a long tail.
+  final passKraken = buf(0.95);
+  add(passKraken, 0, tone(0.55, (t) => 780 - 120 * t, volume: 0.34, decay: 5.5));
+  add(passKraken, (0.05 * sr).toInt(),
+      tone(0.75, (t) => 155 - 30 * t, volume: 0.26, decay: 3.4));
+  writeWav('assets/sfx/turn_pass_kraken.wav', passKraken);
+
+  // Solar Flats — a bright sun-bell over dry air.
+  final passSunfire = buf(0.65);
+  add(passSunfire, 0, noise(0.10, volume: 0.16, decay: 22, cutoff: 0.45));
+  add(passSunfire, 0,
+      harmonicTone(0.55, 880.00, [0.4, 0.24, 0.14, 0.07], volume: 0.36, decay: 6));
+  writeWav('assets/sfx/turn_pass_sunfire.wav', passSunfire);
+
+  // Event Horizon — a tone falling away into the well.
+  final passVoid = buf(0.90);
+  add(passVoid, 0,
+      tone(0.80, (t) => 520 * pow(0.28, t).toDouble(), volume: 0.40, decay: 2.8));
+  add(passVoid, (0.06 * sr).toInt(),
+      sweep(0.55, (t) => 0.34 - 0.28 * t, volume: 0.20, decay: 4));
+  writeWav('assets/sfx/turn_pass_void.wav', passVoid);
 
   stdout.writeln('All Battleship Blitz sound effects generated successfully.');
 }

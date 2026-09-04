@@ -10,6 +10,7 @@ import '../art/legacy_cannon_art.dart';
 import '../art/legacy_shell_art.dart';
 import '../core/theme.dart';
 import '../services/storage_service.dart';
+import 'ambient_loop.dart';
 
 /// Big round cartoon cannon (reference-style): thick black ring, colored
 /// accent ring, dark barrel dome, hard shadow. Animates with a recoil
@@ -95,7 +96,22 @@ class _CannonWidgetState extends State<CannonWidget>
   StreamSubscription<void>? _readySub;
 
   late final AnimationController _recoil;
-  late final AnimationController _pulse;
+
+  /// The idle "ready" breathing pulse. Deliberately NOT an
+  /// [AnimationController]: a controller's ticker asks for a frame on
+  /// every vsync, and on a 120Hz phone this one loop — running whenever a
+  /// gun is reloaded and waiting, which is most of a turn — was enough on
+  /// its own to hold the whole battle screen at ~120fps and ~115% of a
+  /// core. Measured there: the raster thread was the busiest thing in the
+  /// app, and after a resume the app gets barely half the CPU it needs for
+  /// ~1.5s while the governor ramps, so there was no headroom and frames
+  /// were dropped until it caught up.
+  ///
+  /// It is a 1.8s breath. Sixty updates a second is already far more than
+  /// it can show. Everything that reacts to a SHOT — recoil, muzzle flash,
+  /// smoke, the shell itself — stays vsync-driven below, because those are
+  /// fast and worth every frame the display offers.
+  late final AmbientLoop _pulse;
 
   // BUGFIX (turn handoff looked like a shot): `readyFlash()` used to
   // share `_recoil` with `fire()` — but `_recoil` is also what
@@ -137,10 +153,10 @@ class _CannonWidgetState extends State<CannonWidget>
       vsync: this,
       duration: _profile.recoilDuration,
     );
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    );
+    // 1800ms, not 900: the controller this replaces ran `reverse: true`,
+    // so a full out-and-back breath took twice its duration.
+    _pulse = AmbientLoop(period: const Duration(milliseconds: 1800))
+      ..enabled = false;
     _smoke = AnimationController(
       vsync: this,
       duration: _profile.muzzleFxDuration,
@@ -188,12 +204,18 @@ class _CannonWidgetState extends State<CannonWidget>
   /// Starts/stops the visual ready-pulse so it only burns CPU when the
   /// cannon is actually in the "ready" state — a reloaded cannon that's
   /// cooling down doesn't need its pulse animation running at 60fps.
-  void _updatePulseState(bool ready) {
-    if (ready && !_pulse.isAnimating) {
-      _pulse.repeat(reverse: true);
-    } else if (!ready && _pulse.isAnimating) {
-      _pulse.stop(canceled: false);
-    }
+  void _updatePulseState(bool ready) => _pulse.enabled = ready && _tickerOn;
+
+  /// A plain [Timer] keeps firing under a route that has covered this one
+  /// (a surrender dialog, the result screen), which a real ticker would
+  /// not — see [AmbientLoop.enabled].
+  bool _tickerOn = true;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _tickerOn = TickerMode.valuesOf(context).enabled;
+    _updatePulseState(widget.cooldownFraction >= 1 && widget.enabled);
   }
 
   @override
@@ -272,7 +294,10 @@ class _CannonWidgetState extends State<CannonWidget>
     final vertical = (fireShape.vertical + _readyKick.value)
         .clamp(-0.5, 1.4);
     final squash = 1 - vertical * 0.14 * _profile.squashMultiplier;
-    final pulseScale = ready ? 1 + _pulse.value * 0.05 : 1.0;
+    // The loop runs 0→1; the controller it replaces ran 0→1→0, so fold it
+    // back into a triangle to keep the breath identical.
+    final breath = 1 - (2 * _pulse.value - 1).abs();
+    final pulseScale = ready ? 1 + breath * 0.05 : 1.0;
     // Small downward kick synced to the same value that drives the
     // squash, so firing (or the ready cue) reads as a real jolt rather
     // than just a shrink-and-grow pulse. `lateral` is 0 for every
@@ -288,25 +313,35 @@ class _CannonWidgetState extends State<CannonWidget>
           offset: Offset(lateral, kick),
           child: Transform.scale(
             scale: squash * pulseScale,
+            // FEEDBACK ("the cannon zooms to the centre instead of gliding,
+            // and firing isn't smooth"): there was a `RepaintBoundary` here.
+            // It is the wrong place for one — it sits INSIDE the
+            // `Transform.scale`/`translate` above, which are exactly what
+            // the recoil, the ready-pulse and the slide to centre animate.
+            // A cached raster under a changing transform is resampled and
+            // re-rasterized every frame, so the boundary paid the cost of
+            // caching without ever reusing a cache, and softened the gun
+            // while it moved. The gun's own repaints are cheap; it is the
+            // transforms that run, and those composite fine without it.
             child: SizedBox(
-              width: widget.size,
-              height: widget.size,
-              child: CustomPaint(
-                painter: CannonPainter(
-                  accent: ready
-                      ? (widget.accentOverride ?? widget.skin.projectile)
-                      : AppColors.inkSoft,
-                  family: family,
-                  // Only meaningful when there's no family gun — see
-                  // CannonPainter.legacyCannonId.
-                  legacyCannonId: family == null ? widget.skin.id : null,
-                  cooldown: widget.cooldownFraction,
-                  recoil: _recoil.value,
-                  kickMultiplier: _profile.kickMultiplier,
-                  ready: ready,
-                  smoke: _smoke.value,
-                  smokePuffs: _puffs,
-                ),
+                width: widget.size,
+                height: widget.size,
+                child: CustomPaint(
+                  painter: CannonPainter(
+                    accent: ready
+                        ? (widget.accentOverride ?? widget.skin.projectile)
+                        : AppColors.inkSoft,
+                    family: family,
+                    // Only meaningful when there's no family gun — see
+                    // CannonPainter.legacyCannonId.
+                    legacyCannonId: family == null ? widget.skin.id : null,
+                    cooldown: widget.cooldownFraction,
+                    recoil: _recoil.value,
+                    kickMultiplier: _profile.kickMultiplier,
+                    ready: ready,
+                    smoke: _smoke.value,
+                    smokePuffs: _puffs,
+                  ),
               ),
             ),
           ),
@@ -449,6 +484,10 @@ class CannonPainter extends CustomPainter {
       // stays instantly ready (cooldown 1.0) and the circle timer is
       // hidden entirely, so a miss produces no reload visuals at all.
       cooldown: cooldown,
+      // Abyss Railgun's exposed round reads both of these — it leaves on
+      // the recoil and rebuilds over the cooldown. Every other skin
+      // ignores it.
+      recoil: recoil,
     );
 
     // `mouthCenter`/`mouthR` anchor the muzzle flash and smoke below —
@@ -592,7 +631,7 @@ class CannonPainter extends CustomPainter {
         rays(3, 0.85, r * 1.15 * recoil, p.glow, 2.6, alpha: 0.7);
         break;
 
-      // High-energy golden shell: an even sunburst, rays all the way
+      // High-energy coral shell: an even sunburst, rays all the way
       // round rather than a forward cone.
       case 'sunfire':
         disc(r * 0.8, p.trim, fade * 0.9);
