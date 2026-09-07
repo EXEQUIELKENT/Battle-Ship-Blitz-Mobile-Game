@@ -17,6 +17,7 @@ import '../services/storage_service.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/cartoon_confirm.dart';
 import '../widgets/cannon_widget.dart';
+import '../widgets/motion.dart';
 import '../widgets/ocean_background.dart';
 import '../widgets/ship_painter.dart';
 
@@ -331,7 +332,7 @@ class _LegacyShelfState extends State<_LegacyShelf> {
           ],
         ),
         const SizedBox(height: 8),
-        GestureDetector(
+        Pressable(
           onTap: () {
             SoundService.instance.click();
             setState(() => _open = !_open);
@@ -433,6 +434,11 @@ class _ShipsTab extends StatelessWidget {
         .where((s) => s.familyKey != null)
         .toList();
     final legacy = Catalog.shipSkins.where((s) => s.familyKey == null).toList();
+    // FEEDBACK ("...pop up animation when first opening a screen, one by
+    // one"): the shelf pops in as one block (it's collapsible — staggering
+    // its own nine cards would fight whatever state it's already in), then
+    // each family card gets its own later slot in the same sequence.
+    final pop = PopSequence();
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -441,7 +447,7 @@ class _ShipsTab extends StatelessWidget {
         // simple recolours, so they're what a new captain sees — and can
         // actually afford — first. The bespoke family hulls, which now
         // cost more to match how much more they carry, sit below.
-        _LegacyShelf(
+        pop.wrap(_LegacyShelf(
           summary: 'Steel · Crimson · Midnight · six more',
           note:
               'The nine original hulls, kept as one shelf. '
@@ -454,7 +460,7 @@ class _ShipsTab extends StatelessWidget {
             for (final skin in legacy)
               _LegacyHullCard(profile: profile, skin: skin),
           ],
-        ),
+        )),
         const SizedBox(height: 16),
         GridView.count(
           crossAxisCount: 2,
@@ -468,7 +474,10 @@ class _ShipsTab extends StatelessWidget {
           physics: const NeverScrollableScrollPhysics(),
           children: [
             for (final skin in families)
-              _FamilyHullCard(profile: profile, skin: skin),
+              pop.wrap(
+                _FamilyHullCard(profile: profile, skin: skin),
+                key: ValueKey('hull-${skin.id}'),
+              ),
           ],
         ),
         const SizedBox(height: 12),
@@ -491,7 +500,7 @@ class _FamilyHullCard extends StatelessWidget {
     final equipped = profile.shipSkinId == skin.id;
     final affordable = profile.rp >= skin.cost;
 
-    return GestureDetector(
+    return Pressable(
       onTap: () async {
         // Owned → equip outright; unowned → this tap spends RP, so ask.
         if (!profile.ownsShip(skin.id)) {
@@ -644,7 +653,7 @@ class _LegacyHullCard extends StatelessWidget {
     final equipped = profile.shipSkinId == skin.id;
     final affordable = profile.rp >= skin.cost;
 
-    return GestureDetector(
+    return Pressable(
       onTap: () async {
         if (!profile.ownsShip(skin.id)) {
           final ok = await _confirmBuy(
@@ -838,6 +847,7 @@ class _CannonsTab extends StatelessWidget {
     final legacy = Catalog.cannonSkins
         .where((c) => c.familyKey == null)
         .toList();
+    final pop = PopSequence();
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -846,7 +856,7 @@ class _CannonsTab extends StatelessWidget {
         // recolours, so they're what a new captain sees — and can
         // actually afford — first. The bespoke family cannons, which now
         // cost more to match how much more they carry, sit below.
-        _LegacyShelf(
+        pop.wrap(_LegacyShelf(
           summary: 'MK-I Standard · Tesla · Void · six more',
           note:
               'The nine original guns, kept as one shelf. '
@@ -858,10 +868,13 @@ class _CannonsTab extends StatelessWidget {
             for (final cannon in legacy)
               _CannonCard(profile: profile, cannon: cannon),
           ],
-        ),
+        )),
         const SizedBox(height: 16),
         for (final cannon in families)
-          _CannonCard(profile: profile, cannon: cannon),
+          pop.wrap(
+            _CannonCard(profile: profile, cannon: cannon),
+            key: ValueKey('cannon-${cannon.id}'),
+          ),
         const SizedBox(height: 12),
       ],
     );
@@ -963,7 +976,7 @@ class _CannonCard extends StatelessWidget {
     final equipped = profile.cannonSkinId == cannon.id;
     final affordable = profile.rp >= cannon.cost;
 
-    return GestureDetector(
+    return Pressable(
       onTap: () async {
         if (!profile.ownsCannon(cannon.id)) {
           final ok = await _confirmBuy(
@@ -1121,6 +1134,7 @@ class _DeckTab extends StatelessWidget {
     final legacy = Catalog.gameplayThemes
         .where((t) => t.familyKey == null)
         .toList();
+    final pop = PopSequence();
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -1130,7 +1144,7 @@ class _DeckTab extends StatelessWidget {
         // actually afford — first. The bespoke family battlefields,
         // which now cost more to match how much more they carry, sit
         // below.
-        _LegacyShelf(
+        pop.wrap(_LegacyShelf(
           summary: 'One illustrated deck per legacy cannon — nine in all.',
           note:
               'Matches the cannon it ships with. '
@@ -1142,10 +1156,13 @@ class _DeckTab extends StatelessWidget {
             for (final theme in legacy)
               _ThemeCard(profile: profile, theme: theme),
           ],
-        ),
+        )),
         const SizedBox(height: 16),
         for (final theme in families)
-          _ThemeCard(profile: profile, theme: theme),
+          pop.wrap(
+            _ThemeCard(profile: profile, theme: theme),
+            key: ValueKey('theme-${theme.id}'),
+          ),
         const SizedBox(height: 12),
       ],
     );
@@ -1209,8 +1226,12 @@ class _GameplayTab extends StatelessWidget {
             style: AppText.body(size: 11, color: AppColors.navyDeep),
           ),
         ),
-        for (final family in sets)
-          _MatchedSetCard(profile: profile, family: family),
+        for (final (i, family) in sets.indexed)
+          PopIn(
+            key: ValueKey('set-${family.id}'),
+            delay: Duration(milliseconds: 90 * i.clamp(0, 6)),
+            child: _MatchedSetCard(profile: profile, family: family),
+          ),
         const SizedBox(height: 12),
       ],
     );
@@ -1400,7 +1421,7 @@ class _MatchedSetCard extends StatelessWidget {
           // is the one card that charges for three things at once, in a
           // list where every other card buys on a tap anywhere. It also
           // ALWAYS confirms — it's the priciest tap in the shop.
-          GestureDetector(
+          Pressable(
             onTap: () async {
               final ok = await _confirmBuy(
                 context,
@@ -1460,7 +1481,7 @@ class _ThemeCard extends StatelessWidget {
         ? AppColors.outline
         : AppColors.cream;
 
-    return GestureDetector(
+    return Pressable(
       onTap: () async {
         if (!owned) {
           final ok = await _confirmBuy(

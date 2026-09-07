@@ -6,6 +6,8 @@ import 'package:provider/provider.dart';
 import '../core/theme.dart';
 import '../services/online_service.dart';
 import '../services/sound_service.dart';
+import '../services/storage_service.dart';
+import 'lobby_widgets.dart';
 import 'neon_widgets.dart';
 
 /// The MATCHMAKING page of the ONLINE section — the second tab next to
@@ -43,6 +45,10 @@ class _MatchmakingPanelState extends State<MatchmakingPanel>
   Timer? _rejoinTimer;
   Timer? _ticker;
   DateTime? _searchSince;
+
+  /// When this device first saw the current pairing, which is what the
+  /// accept countdown runs from — see [OnlineService.pairHold].
+  DateTime? _foundAt;
 
   /// Whether the player still wants to be matched. Backing out — or the
   /// match finally sailing — stops the automatic re-queue.
@@ -85,9 +91,14 @@ class _MatchmakingPanelState extends State<MatchmakingPanel>
       await _join();
     });
 
-    // Drives the elapsed-seconds line while the radar spins.
+    // Drives both clocks: the elapsed one while the radar spins, and the
+    // pairing countdown once a captain answers. The countdown was the
+    // reason this had to stop being search-only — a number that only
+    // moves while you are searching is not a deadline.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _online.searching && _wantSearch) setState(() {});
+      if (!mounted) return;
+      final paired = _online.match?.isFound ?? false;
+      if (paired || (_online.searching && _wantSearch)) setState(() {});
     });
   }
   @override
@@ -214,66 +225,116 @@ class _MatchmakingPanelState extends State<MatchmakingPanel>
       _searchSince = null;
     }
 
-    final body = match != null && match.isFound
-        ? (match.youAccepted
-              ? _waitingOnPeer(match, busy)
-              : _foundCard(match, busy))
-        : online.searching
-        ? _searchingBody(online)
-        : _betweenBody(online);
+    // Same for the pairing clock — stamped the first frame a pairing is
+    // on screen, and dropped the moment it isn't, so a second pairing
+    // never inherits the first one's remaining time.
+    if (match != null && match.isFound) {
+      _foundAt ??= DateTime.now();
+    } else {
+      _foundAt = null;
+    }
 
-    return Padding(padding: const EdgeInsets.all(24), child: body);
+    final Widget body;
+    final Key bodyKey;
+    if (match != null && match.isFound) {
+      body = _pairedCard(online, match, busy);
+      bodyKey = const ValueKey('paired');
+    } else if (online.searching) {
+      body = _searchingBody(online);
+      bodyKey = const ValueKey('searching');
+    } else {
+      body = _betweenBody(online);
+      bodyKey = const ValueKey('between');
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      // FEEDBACK ("different transition animations... whether you click
+      // or do any activity"): these three states used to swap via a bare
+      // ternary — a poll landing mid-frame replaced the whole subtree with
+      // no transition at all, so "someone accepted" or "the search timed
+      // out" read as a flicker rather than something having happened. A
+      // scale+fade here doubles as the cue itself: this state ended,
+      // that one began.
+      child: AnimatedSwitcher(
+        // FEEDBACK ("make all of the animations smooth and slowly").
+        duration: const Duration(milliseconds: 460),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeIn,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.96, end: 1.0).animate(animation),
+            child: child,
+          ),
+        ),
+        child: KeyedSubtree(key: bodyKey, child: body),
+      ),
+    );
   }
 // ------------------------------------------------------------ STATES --
 
-  /// Loading: radar sweep, waiting copy, cancel.
+  /// Searching: the wait itself, in a card, with the radar as its dial.
+  ///
+  /// REDESIGN: this used to be a bare column on the coral deck — a big
+  /// radar, two lines of centred prose and a button, none of it bounded by
+  /// anything. It reads as a panel now, the same shape the pairing prompt
+  /// that replaces it does, so the page doesn't visibly change its mind
+  /// about what kind of surface it is the moment a captain is found.
+  ///
+  /// The clock counts UP, and the bar under it is indeterminate: a search
+  /// runs until somebody else joins the queue, and there is no honest
+  /// deadline to draw a draining bar against. The pairing card is where a
+  /// real countdown belongs, because there a real one exists.
   Widget _searchingBody(OnlineService online) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Center(
-          child: AnimatedBuilder(
-            animation: _radar,
-            builder: (_, __) => CustomPaint(
-              size: const Size(150, 150),
-              painter: _RadarPainter(sweep: _radar.value),
-            ),
+        Container(
+          padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+          decoration: cartoonBox(AppColors.cream, radius: 20),
+          child: Column(
+            children: [
+              Text(
+                'SEARCHING THE SEAS',
+                textAlign: TextAlign.center,
+                style: AppText.title(size: 20, color: AppColors.navy),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                // Accurate to what the server actually does: it pairs the
+                // captain who has been waiting longest, not by rank.
+                'Whoever has been waiting longest is paired first —\n'
+                'give it a moment.',
+                textAlign: TextAlign.center,
+                style: AppText.body(size: 11.5, color: AppColors.inkSoft),
+              ),
+              const SizedBox(height: 18),
+              AnimatedBuilder(
+                animation: _radar,
+                builder: (_, __) => ScanDial(sweep: _radar.value, size: 96),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                _elapsedClock,
+                style: AppText.title(size: 30, color: AppColors.navy),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _elapsedLabel,
+                style: AppText.label(size: 9, color: AppColors.inkSoft),
+              ),
+              const SizedBox(height: 12),
+              const LobbyProgressBar(color: AppColors.blue),
+            ],
           ),
         ),
-        const SizedBox(height: 28),
-        // Dark navy ink, not the default cream — this sits straight on
-        // the light coral deck with no card behind it, and cream-on-coral
-        // (or gold-on-coral, below) is nearly unreadable.
-        Text(
-          'SEARCHING FOR\nAN OPPONENT…',
-          textAlign: TextAlign.center,
-          style: AppText.title(size: 20, color: AppColors.navy),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          'Both captains must accept the match\nbefore it begins.',
-          textAlign: TextAlign.center,
-          style: AppText.body(size: 12, color: AppColors.inkSoft),
-        ),
-        if (_elapsedLabel.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          // The elapsed-time timer itself — a solid navy chip instead of
-          // bare gold text, so it stays legible no matter what's behind
-          // it and reads as a proper HUD readout rather than a caption.
-          Center(
-            child: HudChip(
-              icon: Icons.timer,
-              text: _elapsedLabel,
-              color: AppColors.navy,
-            ),
-          ),
-        ],
         if (online.lastError != null) ...[
           const SizedBox(height: 12),
           _errorBanner(online.lastError!),
         ],
-        const SizedBox(height: 34),
+        const SizedBox(height: 18),
         NeonButton(
           label: 'CANCEL',
           icon: Icons.close,
@@ -310,104 +371,156 @@ class _MatchmakingPanelState extends State<MatchmakingPanel>
     );
   }
 
-  String get _elapsedLabel {
+  String get _elapsedClock {
     final since = _searchSince;
-    if (since == null) return '';
-    final secs = DateTime.now().difference(since).inSeconds;
-    if (secs < 60) return '$secs SECONDS AT SEA';
-    return '${(secs / 60).floor()}M ${secs % 60}S AT SEA';
+    if (since == null) return '0:00';
+    return CountdownBar.format(DateTime.now().difference(since));
   }
-/// Paired; neither of us has answered yet.
-  Widget _foundCard(OnlineMatch match, bool busy) {
+
+  String get _elapsedLabel =>
+      _searchSince == null ? 'AT SEA' : 'AT SEA, LOOKING FOR A CAPTAIN';
+
+  /// Paired. One card covers both halves of the handshake — waiting on
+  /// either captain, or on both — because they are the same moment seen
+  /// from different sides, and swapping the whole panel between them made
+  /// the prompt appear to restart the instant you tapped accept.
+  ///
+  /// What replaced two near-identical cards: who the opponent is, how long
+  /// the pairing is held for, and which of the two yeses are in. The
+  /// buttons are the only part that actually differs.
+  Widget _pairedCard(OnlineService online, OnlineMatch match, bool busy) {
+    final youIn = match.youAccepted;
+    final remaining = _pairRemaining;
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Container(
-          padding: const EdgeInsets.all(22),
-          decoration: cartoonBox(AppColors.gold, radius: 20),
+          padding: const EdgeInsets.fromLTRB(18, 20, 18, 18),
+          decoration: cartoonBox(AppColors.cream, radius: 20),
           child: Column(
             children: [
-              const Icon(Icons.sports_esports,
-                  size: 40, color: AppColors.outline),
-              const SizedBox(height: 10),
-              Text('MATCH FOUND!',
-                  textAlign: TextAlign.center,
-                  style: AppText.title(size: 24, color: AppColors.outline)),
+              Text(
+                'A CAPTAIN ANSWERED',
+                textAlign: TextAlign.center,
+                style: AppText.title(size: 20, color: AppColors.navy),
+              ),
               const SizedBox(height: 6),
-              Text('vs ${match.peerName.toUpperCase()}',
-                  textAlign: TextAlign.center,
-                  style: AppText.heading(size: 15, color: AppColors.navy)),
-              const SizedBox(height: 4),
-              Text('Both captains must accept to play.',
-                  textAlign: TextAlign.center,
-                  style: AppText.body(size: 11.5, color: AppColors.inkSoft)),
+              Text(
+                'Both of you accept and the mode vote opens.',
+                textAlign: TextAlign.center,
+                style: AppText.body(size: 11.5, color: AppColors.inkSoft),
+              ),
+              const SizedBox(height: 16),
+              CountdownBar(
+                remaining: remaining,
+                total: OnlineService.pairHold,
+              ),
+              const SizedBox(height: 16),
+              _opponentRow(online, match),
+              const SizedBox(height: 16),
+              AcceptPair(
+                youAccepted: youIn,
+                peerAccepted: match.peerAccepted,
+                peerName: match.peerName,
+              ),
+              const SizedBox(height: 14),
+              Text(
+                youIn
+                    ? 'WAITING ON ${match.peerName.toUpperCase()} — THE MATCH '
+                        'STARTS THE MOMENT THEY ACCEPT'
+                    : 'BOTH MUST ACCEPT BEFORE THE CLOCK RUNS OUT, OR YOU '
+                        'BOTH GO BACK IN THE QUEUE',
+                textAlign: TextAlign.center,
+                style: AppText.label(size: 8.5, color: AppColors.hit),
+              ),
             ],
           ),
         ),
-        const SizedBox(height: 18),
-        NeonButton(
-          label: 'ACCEPT',
-          icon: Icons.check_circle,
-          color: AppColors.seafoam,
-          onPressed: busy ? null : () => _accept(match),
-        ),
-        const SizedBox(height: 10),
-        NeonButton(
-          label: 'DECLINE',
-          icon: Icons.close,
-          color: AppColors.hit,
-          onPressed: busy ? null : () => _decline(match),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: NeonButton(
+                label: youIn ? 'CANCEL' : 'DECLINE',
+                icon: Icons.close,
+                color: AppColors.hit,
+                compact: true,
+                onPressed: busy ? null : () => _decline(match),
+              ),
+            ),
+            if (!youIn) ...[
+              const SizedBox(width: 12),
+              Expanded(
+                child: NeonButton(
+                  label: 'ACCEPT',
+                  icon: Icons.check_circle,
+                  color: AppColors.seafoam,
+                  compact: true,
+                  onPressed: busy ? null : () => _accept(match),
+                ),
+              ),
+            ],
+          ],
         ),
       ],
     );
   }
 
-  /// We said yes; the other captain hasn't yet.
-  Widget _waitingOnPeer(OnlineMatch match, bool busy) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(22),
-          decoration: cartoonBox(AppColors.cream, radius: 20),
-          child: Column(
-            children: [
-              const SizedBox(
-                width: 34,
-                height: 34,
-                child: CircularProgressIndicator(
-                  strokeWidth: 3.5,
-                  valueColor: AlwaysStoppedAnimation(AppColors.blue),
+  /// Who you have been paired with. Their record is shown only when this
+  /// device actually knows it — a friend, or someone already in the
+  /// captain's log — because matchmaking pairs strangers by wait time and
+  /// the pairing itself carries nothing but a name.
+  Widget _opponentRow(OnlineService online, OnlineMatch match) {
+    OnlinePlayer? known;
+    for (final f in online.friends) {
+      if (f.id == match.peerId) {
+        known = f;
+        break;
+      }
+    }
+    final subtitle = known == null
+        ? 'MET IN THE OPEN SEAS'
+        : '${rankTitleForRp(known.rp)}  ·  ${known.rp} RP  ·  '
+            '${known.wins}W ${known.losses}L';
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: cartoonBox(AppColors.coralLight, radius: 14),
+      child: Row(
+        children: [
+          CaptainAvatar(name: match.peerName),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  match.peerName.toUpperCase(),
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.heading(size: 14, color: AppColors.navy),
                 ),
-              ),
-              const SizedBox(height: 16),
-              Text('YOU ACCEPTED',
-                  textAlign: TextAlign.center,
-                  style: AppText.label(size: 11, color: AppColors.green)),
-              const SizedBox(height: 8),
-              Text(
-                'WAITING FOR\n${match.peerName.toUpperCase()} TO ACCEPT…',
-                textAlign: TextAlign.center,
-                style: AppText.title(size: 17, color: AppColors.navy),
-              ),
-              const SizedBox(height: 6),
-              Text('The match begins the moment they do.',
-                  textAlign: TextAlign.center,
-                  style: AppText.body(size: 11, color: AppColors.inkSoft)),
-            ],
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.label(size: 8.5, color: AppColors.inkSoft),
+                ),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(height: 18),
-        NeonButton(
-          label: 'CANCEL',
-          icon: Icons.close,
-          color: AppColors.hit,
-          onPressed: busy ? null : () => _decline(match),
-        ),
-      ],
+        ],
+      ),
     );
+  }
+
+  /// Time left on the pairing, measured from when this device first saw
+  /// it — see [OnlineService.pairHold] for why that is the honest clock
+  /// to count from and why it errs short.
+  Duration get _pairRemaining {
+    final since = _foundAt;
+    if (since == null) return OnlineService.pairHold;
+    final left = OnlineService.pairHold - DateTime.now().difference(since);
+    return left.isNegative ? Duration.zero : left;
   }
 /// Between pairings — declined, timed out, or a failed request. Brief
   /// notice, then the automatic re-join takes over. When the player has
@@ -455,55 +568,6 @@ class _MatchmakingPanelState extends State<MatchmakingPanel>
   }
 }
 
-/// The loading-state radar: rings, two blips and a rotating sonar sweep.
-class _RadarPainter extends CustomPainter {
-  final double sweep;
-  const _RadarPainter({required this.sweep});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = size.center(Offset.zero);
-    final r = size.shortestSide / 2;
-
-    final rings = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5
-      ..color = AppColors.sonar.withValues(alpha: 0.55);
-    for (final f in const [1.0, 0.72, 0.44]) {
-      canvas.drawCircle(c, r * f, rings);
-    }
-
-    canvas.drawCircle(
-      c + Offset.fromDirection(-0.9, r * 0.62),
-      4.5,
-      Paint()..color = AppColors.seafoam,
-    );
-    canvas.drawCircle(
-      c + Offset.fromDirection(2.3, r * 0.35),
-      3,
-      Paint()..color = AppColors.seafoam.withValues(alpha: 0.7),
-    );
-
-    final beam = Paint()
-      ..shader = SweepGradient(
-        colors: [
-          AppColors.sonar.withValues(alpha: 0.0),
-          AppColors.sonar.withValues(alpha: 0.55),
-        ],
-        transform: GradientRotation(sweep * 6.283 - 1.57),
-      ).createShader(Rect.fromCircle(center: c, radius: r));
-    canvas.drawCircle(c, r * 0.98, beam);
-
-    canvas.drawCircle(
-      c,
-      r,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3
-        ..color = AppColors.outline,
-    );
-  }
-
-  @override
-  bool shouldRepaint(_RadarPainter oldDelegate) => oldDelegate.sweep != sweep;
-}
+// The loading-state radar this file used to carry is now `ScanDial` in
+// `lobby_widgets.dart`, shared with the HOTSPOT screen's own sweep — the
+// two were drawing the same idea in two different hands.

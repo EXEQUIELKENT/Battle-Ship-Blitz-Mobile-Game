@@ -18,9 +18,18 @@ USE battleship_blitz;
 -- registers itself once, keeps the returned token in its own local
 -- storage, and sends it with every request. Only the token's SHA-256 is
 -- stored, so a dump of this table cannot be used to impersonate anybody.
+--
+-- `game` is which title the account belongs to. One deployment serves more
+-- than one game and nothing may cross between them: a captain can only see,
+-- search for, befriend or be matched against someone playing the same title,
+-- so installing a second game registers a second, independent account.
+-- `profile_json` is that game's own profile shape — Battleship's stats have
+-- columns above, other titles keep theirs in here rather than growing a
+-- column per field per game.
 CREATE TABLE IF NOT EXISTS players (
   id           INT AUTO_INCREMENT PRIMARY KEY,
-  tag          VARCHAR(8)  NOT NULL UNIQUE,   -- friend code, e.g. "K7X2QM"
+  game         VARCHAR(16) NOT NULL DEFAULT 'bsb',
+  tag          VARCHAR(8)  NOT NULL,          -- friend code, e.g. "K7X2QM"
   name         VARCHAR(32) NOT NULL,
   token_hash   CHAR(64)    NOT NULL,
   rp           INT         NOT NULL DEFAULT 1000,
@@ -31,10 +40,13 @@ CREATE TABLE IF NOT EXISTS players (
   ship_chosen  TINYINT(1)  NOT NULL DEFAULT 0,
   cannon_skin  VARCHAR(24) NOT NULL DEFAULT 'mk1',
   theme        VARCHAR(24) NOT NULL DEFAULT 'classic',
+  profile_json TEXT        NULL,
   last_seen    DATETIME    NOT NULL,
   created_at   DATETIME    NOT NULL,
   INDEX idx_token (token_hash),
-  INDEX idx_last_seen (last_seen)
+  UNIQUE KEY uniq_game_tag (game, tag),
+  INDEX idx_last_seen (last_seen),
+  INDEX idx_game_last_seen (game, last_seen)
 ) ENGINE=InnoDB;
 
 -- ------------------------------------------------------------ friendships

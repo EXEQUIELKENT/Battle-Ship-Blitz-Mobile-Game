@@ -196,6 +196,18 @@ class OnlineService extends ChangeNotifier {
   /// keeping (the server-side `wins`/`losses` counters are that).
   static const _maxHistory = 25;
 
+  /// How long the server holds a matchmaking pairing before releasing both
+  /// captains back into the queue — `pair_hold_seconds` in
+  /// `server/config.php`, mirrored here so the accept prompt can show the
+  /// time actually left instead of an open-ended "waiting…".
+  ///
+  /// The client has no server clock to read, so it counts from the moment
+  /// it FIRST SAW the pairing, which can be up to one poll behind the
+  /// server's own start. That makes the number shown slightly pessimistic
+  /// — the safe direction for a deadline, since it can only ever hurry a
+  /// captain rather than promise them time they don't have.
+  static const Duration pairHold = Duration(seconds: 30);
+
   final OnlineApi api = OnlineApi();
 
   SharedPreferences? _prefs;

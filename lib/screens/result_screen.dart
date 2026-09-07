@@ -39,9 +39,13 @@ class _ResultScreenState extends State<ResultScreen>
       vsync: this,
       duration: const Duration(seconds: 6),
     )..repeat();
+    // FEEDBACK ("make all of the animations smooth and slowly"): was
+    // 900ms — every `Interval` below is a FRACTION of this duration, so
+    // stretching it slows the whole staged reveal (badge, RP panel,
+    // summary, buttons) together without needing to touch each one.
     _revealCtrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 900),
+      duration: const Duration(milliseconds: 1400),
     )..forward();
     for (var i = 0; i < 60; i++) {
       _confetti.add(_Confetti(_rng));
@@ -138,7 +142,13 @@ class _ResultScreenState extends State<ResultScreen>
                       ScaleTransition(
                         scale: CurvedAnimation(
                           parent: _revealCtrl,
-                          curve: Curves.elasticOut,
+                          // FEEDBACK ("make all of the animations smooth
+                          // and slowly"): `elasticOut` overshoots past
+                          // 1.0 and wobbles a couple of times before
+                          // settling — the "smooth" ask rules that out
+                          // for the same reason it ruled out `PopIn`'s
+                          // old overshoot curve (see `motion.dart`).
+                          curve: Curves.easeOutCubic,
                         ),
                         child: Column(
                           children: [
@@ -250,43 +260,56 @@ class _ResultScreenState extends State<ResultScreen>
                       // losses: boards[0] is Player 1's fleet, boards[1]
                       // is Player 2's, mirroring the PLAYER 1 / PLAYER 2
                       // labels already used on the placement screen.
-                      Container(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration:
-                            cartoonBox(AppColors.coralLight, radius: 16),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: controller.mode == GameMode.local
-                              ? [
-                                  _summaryPip('PLAYER 1',
-                                      '${controller.enemySunk}/5',
-                                      AppColors.shipRed),
-                                  Container(
-                                      width: 2,
-                                      height: 34,
-                                      color: AppColors.outline),
-                                  _summaryPip('PLAYER 2',
-                                      '${controller.mySunk}/5',
-                                      AppColors.shipBlue),
-                                ]
-                              : [
-                                  _summaryPip('ENEMY SUNK',
-                                      '${controller.mySunk}/5',
-                                      AppColors.hit),
-                                  Container(
-                                      width: 2,
-                                      height: 34,
-                                      color: AppColors.outline),
-                                  _summaryPip('FLEET LOST',
-                                      '${controller.enemySunk}/5',
-                                      AppColors.navy),
-                                ],
+                      // FEEDBACK ("...pop up animation when first
+                      // opening a screen, one by one"): the badge and the
+                      // RP panel above already stage in off `_revealCtrl`
+                      // (elasticOut scale, then a delayed fade) — this
+                      // extends that SAME 900ms sequence two more steps
+                      // rather than starting a second, independent
+                      // entrance that could drift out of time with it.
+                      _revealStep(
+                        interval: const Interval(0.55, 1, curve: Curves.easeOut),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration:
+                              cartoonBox(AppColors.coralLight, radius: 16),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: controller.mode == GameMode.local
+                                ? [
+                                    _summaryPip('PLAYER 1',
+                                        '${controller.enemySunk}/5',
+                                        AppColors.shipRed),
+                                    Container(
+                                        width: 2,
+                                        height: 34,
+                                        color: AppColors.outline),
+                                    _summaryPip('PLAYER 2',
+                                        '${controller.mySunk}/5',
+                                        AppColors.shipBlue),
+                                  ]
+                                : [
+                                    _summaryPip('ENEMY SUNK',
+                                        '${controller.mySunk}/5',
+                                        AppColors.hit),
+                                    Container(
+                                        width: 2,
+                                        height: 34,
+                                        color: AppColors.outline),
+                                    _summaryPip('FLEET LOST',
+                                        '${controller.enemySunk}/5',
+                                        AppColors.navy),
+                                  ],
+                          ),
                         ),
                       ),
                       const SizedBox(height: 26),
 
                       // ---- Actions ----
-                      _actions(controller),
+                      _revealStep(
+                        interval: const Interval(0.72, 1, curve: Curves.easeOut),
+                        child: _actions(controller),
+                      ),
                     ],
                   ),
                 ),
@@ -294,6 +317,21 @@ class _ResultScreenState extends State<ResultScreen>
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  /// One later stage of the badge/RP-panel reveal — a pop (fade + scale
+  /// up from just under size) that plays over [interval]'s own slice of
+  /// [_revealCtrl]'s single 900ms run, so every element on this screen
+  /// arrives on the SAME clock rather than each guessing its own timing.
+  Widget _revealStep({required Interval interval, required Widget child}) {
+    final curved = CurvedAnimation(parent: _revealCtrl, curve: interval);
+    return FadeTransition(
+      opacity: curved,
+      child: ScaleTransition(
+        scale: Tween<double>(begin: 0.9, end: 1.0).animate(curved),
+        child: child,
       ),
     );
   }

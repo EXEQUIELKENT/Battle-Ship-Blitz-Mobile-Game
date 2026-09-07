@@ -15,6 +15,35 @@ reconnect, rematch) works over the internet without a single change to the
 game logic on either end. See the docblock at the top of `api.php` and the
 comments above `relay_send`/`relay_poll` for the detail.
 
+
+## More than one game
+
+This deployment serves several titles. Because the relay is deliberately just
+a post box for opaque JSON lines, it would happily carry one game's protocol
+into another game's client — so the games are kept apart at the only place it
+matters: `players.game`.
+
+| | |
+|---|---|
+| `register` | files the new account under the request's `game` (whitelisted in `GAMES` at the top of `api.php`; anything unknown, or absent, is `bsb`) |
+| `find` / `request` | only ever see captains playing the caller's own game |
+| `queue_join` | only pairs you with a searcher of the same game |
+| `ping` | advertises `games`, so each client can recognise a server it can use |
+
+Everything after that is already safe: a match names two player rows, and the
+relay only serves the two of them.
+
+An account is per game. Installing a second title registers a second, separate
+captain with its own friend code, friends and stats — which is what you want,
+since none of those mean anything across games.
+
+Stats that only one game has go in `players.profile_json`, written by `sync`
+and handed back by every endpoint that returns a player. Battleship's own
+figures (RP, ship/cannon skins, theme) predate this and keep their columns.
+
+Existing installs: run `server/migrate-game-tag.sql`. Every row already there
+becomes `bsb`, and the Battleship client needs no change — it never sends the
+field and the default covers it.
 ## Setup
 
 1. Create the database and tables:

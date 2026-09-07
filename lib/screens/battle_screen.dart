@@ -23,6 +23,7 @@ import '../widgets/cartoon_confirm.dart';
 import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ship_painter.dart';
+import '../widgets/wreck_reveal.dart';
 import 'result_screen.dart';
 
 /// Battle arena — 1:1 copy of the reference gameplay video:
@@ -2351,6 +2352,11 @@ class _BattleScreenState extends State<BattleScreen>
                         (gameOver || (showOwnFleet && !ghostMode))
                             ? const []
                             : sunkShips,
+                    // The fleet those wrecks belong to — this half's own
+                    // owner, whose skin picks the destruction motion each
+                    // wreck plays. `skin` above can't serve: it is null
+                    // for the whole match on the enemy's half.
+                    wreckShipSkinId: fleetSkin.id,
                     // `enabled` is what actually lets `onTapCell` fire (see
                     // `_BattleGridState._onTap`) — extended here so a
                     // MINEFIELD/TRAP LINE pick on your OWN grid, which
@@ -3552,24 +3558,20 @@ class _GhostSinkingShip extends StatefulWidget {
 class _GhostSinkingShipState extends State<_GhostSinkingShip>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
-  late final Animation<double> _fade;
-  late final Animation<double> _sink;
-  late final Animation<double> _scale;
+
+  /// This hull's own fleet character on the way down — the departure half
+  /// of the same per-skin destruction vocabulary the permanent wreck
+  /// reveal uses (see [wreckSinkFrame]). Iron capsizes, magma slumps,
+  /// Abyss simply dissolves.
+  late final WreckMotion _motion;
 
   @override
   void initState() {
     super.initState();
+    _motion = wreckMotionForShipSkin(widget.skin.id);
     _ctrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
-    );
-    _fade = CurvedAnimation(
-      parent: _ctrl,
-      curve: const Interval(0.35, 1.0, curve: Curves.easeIn),
-    );
-    _sink = CurvedAnimation(parent: _ctrl, curve: Curves.easeInCubic);
-    _scale = Tween<double>(begin: 1.0, end: 0.92).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeInCubic),
     );
     _ctrl.forward().whenComplete(() {
       if (mounted) widget.onCompleted();
@@ -3585,45 +3587,33 @@ class _GhostSinkingShipState extends State<_GhostSinkingShip>
   @override
   Widget build(BuildContext context) {
     final ship = widget.ship;
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (context, child) {
-        final sinkPx = _sink.value * widget.cell * 0.55;
-        final fade = 1 - _fade.value;
-        return Opacity(
-          opacity: fade.clamp(0.0, 1.0),
-          child: Transform.translate(
-            offset: Offset(0, sinkPx),
-            child: Transform.scale(
-              scale: _scale.value,
-              alignment: Alignment.center,
-              child: child,
-            ),
-          ),
-        );
-      },
-      // PERF: the wreck itself never changes over the 900ms it takes to go
-      // down — only the fade, the slide and the shrink around it do. It is
-      // already the builder's `child` so it isn't REBUILT per frame, but
-      // without a boundary of its own it was still fully REPAINTED on every
-      // one: a whole hull, plus one wound per cell, each of which used to
-      // carry two offscreen blur passes. Behind a repaint boundary it
-      // rasterizes once and the transforms just re-composite it.
-      child: RepaintBoundary(
-        child: ship.horizontal
-            ? CustomPaint(
-                painter: ShipPainter(
-                  spec: ship.spec,
-                  skin: widget.skin,
-                  sunk: true,
-                  hitCount: ship.spec.size,
-                  hitIndices: ship.hitIndices,
-                  shooterCannonId: widget.shooterCannonId,
-                ),
-              )
-            : RotatedBox(
-                quarterTurns: 1,
-                child: CustomPaint(
+    // The boundary goes OUTSIDE the animation, not inside it. It used to
+    // sit between the transforms and the hull, on the argument that the
+    // wreck's own paint never changes over the 900ms it takes to go down —
+    // but a cached raster inside a `Transform` has to be resampled every
+    // frame anyway, so the caching bought nothing and the resampling
+    // softened the artwork (and would now visibly blur, since several
+    // fleets roll as they capsize). Out here it does the thing that
+    // actually matters: a sinking hull is one of the most expensive
+    // things on screen — a `saveLayer` for the charring plus a gradient
+    // wound per cell — and without a boundary its per-frame repaint
+    // invalidates up to the nearest ancestor one, dragging its siblings
+    // into every frame with it. Same split the grid's own wrecks use.
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (context, child) => buildWreckFrame(
+          wreckSinkFrame(_motion, _ctrl.value, widget.cell),
+          child!,
+        ),
+        // The inner boundary caches the hull's raster for the whole 900ms
+        // it takes to go down — nothing inside it changes, only the frame
+        // around it does. See `WreckReveal.build` for the full reasoning,
+        // and for why this is the one situation worth putting a boundary
+        // inside a `Transform`.
+        child: RepaintBoundary(
+          child: ship.horizontal
+              ? CustomPaint(
                   painter: ShipPainter(
                     spec: ship.spec,
                     skin: widget.skin,
@@ -3632,8 +3622,21 @@ class _GhostSinkingShipState extends State<_GhostSinkingShip>
                     hitIndices: ship.hitIndices,
                     shooterCannonId: widget.shooterCannonId,
                   ),
+                )
+              : RotatedBox(
+                  quarterTurns: 1,
+                  child: CustomPaint(
+                    painter: ShipPainter(
+                      spec: ship.spec,
+                      skin: widget.skin,
+                      sunk: true,
+                      hitCount: ship.spec.size,
+                      hitIndices: ship.hitIndices,
+                      shooterCannonId: widget.shooterCannonId,
+                    ),
+                  ),
                 ),
-              ),
+        ),
       ),
     );
   }

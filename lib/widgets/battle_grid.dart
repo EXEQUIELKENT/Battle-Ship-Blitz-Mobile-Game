@@ -1,9 +1,8 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
 
 import '../art/family_board_art.dart';
 import '../art/fleet_family.dart';
+import '../art/impact_fx.dart';
 import '../art/legacy_board_art.dart';
 import '../art/legacy_cannon_art.dart';
 import '../art/legacy_crosshair_art.dart';
@@ -11,6 +10,7 @@ import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/storage_service.dart';
 import 'ship_painter.dart';
+import 'wreck_reveal.dart';
 
 /// A transient cell effect (explosion / splash).
 class CellFx {
@@ -18,17 +18,36 @@ class CellFx {
   final int col;
   final ShotResult result;
   final DateTime start;
-  final Random rng; // cached so explosion particles are stable per-frame
 
-  CellFx(this.row, this.col, this.result)
-    : start = DateTime.now(),
-      rng = Random(row * 31 + col);
+  /// The impact vocabulary of the gun that fired THIS shot, captured when
+  /// the effect is created rather than read off the widget at paint time:
+  /// a match can change which gun is shooting at a board (both seats fire
+  /// at each other, and POWER PLAY can swap loadouts mid-match), and an
+  /// effect already in flight should finish in the colours it started in.
+  final ImpactFx fx;
+
+  /// Whether this shot left a permanent mark on the deck.
+  ///
+  /// PHANTOM and GHOST FLEET never write the tracking cache (see
+  /// `battle_screen`'s `ghost` branch), so there is no mark for
+  /// [paintMarkArrival] to deliver in those modes — the splash and burst
+  /// carry the whole story instead.
+  final bool recorded;
+
+  CellFx(this.row, this.col, this.result,
+      {required this.fx, required this.recorded})
+      : start = DateTime.now();
 
   double get progress =>
       (DateTime.now().difference(start).inMilliseconds / 800).clamp(0.0, 1.0);
   bool get done => progress >= 1.0;
 
   int get key => row * kBoardSize + col;
+
+  /// Stable jitter seed for this cell's particles — see `_jit` in
+  /// `impact_fx.dart` for why the effects hash a seed instead of pulling
+  /// from a stateful `Random`.
+  int get seed => row * 31 + col;
 }
 
 /// Lightweight event descriptor (avoids importing the controller here).
@@ -58,6 +77,14 @@ class BattleGrid extends StatefulWidget {
   /// in their destroyed form — shown regardless of [ships]/[skin], since a
   /// sunk ship's kind and position are common knowledge to both players.
   final List<PlacedShip> destroyedShips;
+
+  /// The fleet those wrecks belong to — the skin of the board's OWNER, not
+  /// the shooter. Picks the destruction motion each wreck plays as it is
+  /// revealed (see [wreckMotionForShipSkin]); it does not affect how the
+  /// wreck is drawn, which stays the neutral charred [wreckSkin]. Separate
+  /// from [skin] because the enemy's grid holds `skin: null` for the whole
+  /// match (its fleet is hidden) yet still reveals wrecks.
+  final String? wreckShipSkinId;
 
   /// Cell fill color (defaults to the video's steel blue).
   final Color cellColor;
@@ -175,6 +202,7 @@ const BattleGrid({
     this.recentEvents = const [],
     this.enabled = true,
     this.destroyedShips = const [],
+    this.wreckShipSkinId,
     this.glowColor = AppColors.water,
     this.cellColor = AppColors.steelBlue,
     this.boardFamily,
@@ -328,11 +356,24 @@ class _BattleGridState extends State<BattleGrid>
       _fx.removeWhere((_, fx) => fx.done);
       return;
     }
+    final fxProfile = impactFxForCannon(widget.cannonSkinId);
     for (var i = _lastProcessedEvents; i < events.length; i++) {
       final e = events[i];
       final key = e.row * kBoardSize + e.col;
       if (!_fx.containsKey(key)) {
-        _fx[key] = CellFx(e.row, e.col, e.result);
+        _fx[key] = CellFx(
+          e.row,
+          e.col,
+          e.result,
+          fx: fxProfile,
+          // `shots` is already the post-shot cache by the time this runs
+          // (it is the same rebuild that delivered the event), so a
+          // non-zero entry means a mark has just landed here and wants
+          // delivering. In PHANTOM/GHOST it stays 0 and no arrival plays.
+          recorded: e.row < widget.shots.length &&
+              e.col < widget.shots[e.row].length &&
+              widget.shots[e.row][e.col] != 0,
+        );
         _ensureTickerRunning();
       }
     }
@@ -810,59 +851,123 @@ class _BattleGridState extends State<BattleGrid>
   /// battle grids (where [ships] is null and only hit/miss markers would
   /// otherwise show).
   ///
-  /// The wreck is wrapped in [_ShipRevealTransition] so it eases into view
-  /// (fade + settle-scale) the instant it's added to [widget.destroyedShips]
+  /// The wreck is wrapped in [WreckReveal] so it plays its own fleet's
+  /// destruction motion the instant it's added to [widget.destroyedShips]
   /// instead of just popping onto the grid fully-formed.
+  ///
+  /// PERF (measured: "when the ship is destroyed the game performance
+  /// drops"). A wreck is by far the most expensive thing this grid draws —
+  /// `ShipPainter` opens a `saveLayer` for the charring colour filter and
+  /// then lays a gradient wound on every cell of the hull, ~1.7ms of raster
+  /// each. That was affordable while wrecks sat still, and ruinous the
+  /// moment one of them animated: a `Transform` with no repaint boundary
+  /// under it invalidates up to the nearest one, which is the WHOLE GRID
+  /// (see the layering note in [build]), so every frame of a destruction
+  /// animation re-rastered every other wreck on the board and every live
+  /// ship with it. Five wrecks measured ~9ms per frame — over budget on
+  /// its own at 120Hz, before the board, the FX layer or the HUD.
+  ///
+  /// So the wrecks are split by whether they are still moving:
+  ///  * SETTLED wrecks — the overwhelming majority, and permanently
+  ///    static — share ONE `RepaintBoundary`. They rasterize once and are
+  ///    composited from then on, and crucially are no longer dragged into
+  ///    a repaint by a sibling that is animating.
+  ///  * The one that is CURRENTLY animating gets its own boundary, so its
+  ///    per-frame repaint is confined to itself instead of dirtying the
+  ///    grid.
+  ///
+  /// That keeps faith with the "boundaries are not free" rule in [build]:
+  /// the layer count here is 1 + however many wrecks are mid-animation
+  /// (one, in practice), NOT one per wreck growing with match length,
+  /// which is what made an earlier attempt at this worse. Both boundaries
+  /// sit OUTSIDE the animating `Transform`, never inside it — a cached
+  /// raster inside a transform has to be resampled every frame anyway, so
+  /// it buys nothing and softens the artwork.
   List<Widget> _destroyedShipWidgets(double cell) {
+    // FEEDBACK ("it is all the same popping out animation to all the
+    // ships"): keyed to the SUNK hull's own fleet, not the shooter's gun —
+    // it is this fleet being destroyed, so it is this fleet's character
+    // that should show. `wreckShipSkinId` is the defending board's fleet;
+    // the neutral charred `wreckSkin` the wreck is DRAWN in stays as it
+    // was (see its own doc), only the motion varies.
+    final motion = wreckMotionForShipSkin(widget.wreckShipSkinId);
+    final settled = <Widget>[];
+    final moving = <Widget>[];
+    for (final ship in widget.destroyedShips) {
+      final id = 'wreck-${ship.spec.kind}-${ship.row}-${ship.col}';
+      final done = _settledWrecks.contains(id);
+      final art = IgnorePointer(
+        // FEEDBACK ("the ship damage is all the same on the cannons"): the
+        // wreck reveal used to leave `shooterCannonId` null, so every sunk
+        // hull on the board drew the same fallback flourish regardless of
+        // which gun had actually put it there — the one view where the
+        // whole fleet's worth of damage is on screen at once, and so the
+        // most obvious place for it to read as "all the same". Same
+        // shooter's-cannon value the live ships and hit/miss marks use.
+        child: ship.horizontal
+            ? CustomPaint(
+                painter: ShipPainter(
+                  spec: ship.spec,
+                  skin: wreckSkin,
+                  sunk: true,
+                  hitCount: ship.spec.size,
+                  shooterCannonId: widget.cannonSkinId,
+                ),
+              )
+            : RotatedBox(
+                quarterTurns: 1,
+                child: CustomPaint(
+                  painter: ShipPainter(
+                    spec: ship.spec,
+                    skin: wreckSkin,
+                    sunk: true,
+                    hitCount: ship.spec.size,
+                    shooterCannonId: widget.cannonSkinId,
+                  ),
+                ),
+              ),
+      );
+      final placed = Positioned(
+        key: ValueKey(id),
+        left: ship.col * cell + 1,
+        top: ship.row * cell + 1,
+        width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
+        height: ship.horizontal ? cell - 2 : ship.spec.size * cell - 2,
+        child: done
+            ? art
+            : RepaintBoundary(
+                child: WreckReveal(
+                  motion: motion,
+                  span: cell,
+                  onSettled: () => _markWreckSettled(id),
+                  child: art,
+                ),
+              ),
+      );
+      (done ? settled : moving).add(placed);
+    }
     return [
-      for (final ship in widget.destroyedShips)
-        Positioned(
-          key: ValueKey('wreck-${ship.spec.kind}-${ship.row}-${ship.col}'),
-          left: ship.col * cell + 1,
-          top: ship.row * cell + 1,
-          width: ship.horizontal ? ship.spec.size * cell - 2 : cell - 2,
-          height: ship.horizontal ? cell - 2 : ship.spec.size * cell - 2,
-          // NB: no `RepaintBoundary` here either — see `_animatedShipBox`.
-          // Wrecks are the worst case for that mistake: they only ever
-          // accumulate as the match goes on, so one offscreen layer per
-          // wreck meant the GPU cost climbed with every ship sunk.
+      if (settled.isNotEmpty)
+        Positioned.fill(
           child: IgnorePointer(
-            child: _ShipRevealTransition(
-              // FEEDBACK ("the ship damage is all the same on the
-              // cannons"): the wreck reveal used to leave this null, so
-              // every sunk hull on the board drew the same fallback
-              // flourish regardless of which gun had actually put it
-              // there — the one view where the whole fleet's worth of
-              // damage is on screen at once, and so the most obvious
-              // place for it to read as "all the same". Same shooter's
-              // -cannon value the live ships and the hit/miss marks
-              // already use.
-              child: ship.horizontal
-                  ? CustomPaint(
-                      painter: ShipPainter(
-                        spec: ship.spec,
-                        skin: wreckSkin,
-                        sunk: true,
-                        hitCount: ship.spec.size,
-                        shooterCannonId: widget.cannonSkinId,
-                      ),
-                    )
-                  : RotatedBox(
-                      quarterTurns: 1,
-                      child: CustomPaint(
-                        painter: ShipPainter(
-                          spec: ship.spec,
-                          skin: wreckSkin,
-                          sunk: true,
-                          hitCount: ship.spec.size,
-                          shooterCannonId: widget.cannonSkinId,
-                        ),
-                      ),
-                    ),
+            child: RepaintBoundary(
+              child: Stack(clipBehavior: Clip.none, children: settled),
             ),
           ),
         ),
+      ...moving,
     ];
+  }
+
+  /// Wrecks whose destruction animation has finished, keyed the same way
+  /// their `Positioned` is. Moving one into this set drops its
+  /// `WreckReveal` and folds it into the shared, cached settled layer —
+  /// see [_destroyedShipWidgets].
+  final Set<String> _settledWrecks = {};
+
+  void _markWreckSettled(String id) {
+    if (!mounted || _settledWrecks.contains(id)) return;
+    setState(() => _settledWrecks.add(id));
   }
 
   Widget _dragGhost(double cell) {
@@ -1052,61 +1157,6 @@ class _ShipPullInState extends State<_ShipPullIn>
         offset: _offset.value,
         child: ScaleTransition(scale: _scale, child: child),
       ),
-    );
-  }
-}
-
-/// One-shot "reveal" transition for a sunk ship's wreck graphic: fades in
-/// and scales up from slightly-small with a gentle overshoot-then-settle
-/// (like the wreck is bobbing up to the surface), instead of the graphic
-/// just instantly appearing on the grid. Plays exactly once, starting the
-/// moment this widget is first mounted — which, since the parent keys each
-/// wreck by `ship.spec.kind`/row/col (see `_destroyedShipWidgets`), is
-/// precisely when that ship enters `destroyedShips` for the first time.
-/// Later rebuilds reuse the same element/State, so the animation is never
-/// re-triggered on an already-revealed wreck.
-class _ShipRevealTransition extends StatefulWidget {
-  final Widget child;
-  const _ShipRevealTransition({required this.child});
-
-  @override
-  State<_ShipRevealTransition> createState() => _ShipRevealTransitionState();
-}
-
-class _ShipRevealTransitionState extends State<_ShipRevealTransition>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _scale;
-  late final Animation<double> _fade;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 480),
-    );
-    _scale = CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack);
-    // Opacity finishes ahead of the scale settle so the tail end of the
-    // overshoot doesn't read as a flicker.
-    _fade = CurvedAnimation(
-      parent: _ctrl,
-      curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
-    );
-    _ctrl.forward();
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: _fade,
-      child: ScaleTransition(scale: _scale, child: widget.child),
     );
   }
 }
@@ -1800,28 +1850,41 @@ class _FxGridPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final cell = size.width / kBoardSize;
 
-    // REDESIGN: every impact — hit, miss, or sunk — gets a water splash
-    // first (the cannonball always lands "in the water" of the grid cell
-    // regardless of outcome), with hit/sunk shots additionally layering
-    // the explosion burst on top. That's what gives the sequence
-    // "impact → water splash → result marker → hit/sunk feedback" instead
-    // of misses getting no impact effect at all.
+    // REDESIGN: every impact — hit, miss, or sunk — gets a splash first
+    // (the shell always lands "in the water" of the grid cell regardless
+    // of outcome), with hit/sunk shots additionally layering the burst on
+    // top. That's what gives the sequence "impact → splash → result
+    // marker → hit/sunk feedback" instead of misses getting no impact
+    // effect at all.
+    //
+    // FEEDBACK ("different splash effects to different cannon skins…the
+    // hit effects in phantom and ghost mode are all the same"): both
+    // layers now come from the firing gun's own [ImpactFx] rather than
+    // being one hardcoded white splash and one yellow starburst for every
+    // cannon in the game. `effect.fx` was resolved when the shot landed,
+    // so an effect finishes in the colours it started in even if the
+    // board changes hands mid-flight.
     fx.forEach((_, effect) {
       final center = Offset(
         effect.col * cell + cell / 2,
         effect.row * cell + cell / 2,
       );
       final prog = effect.progress;
-      _drawSplash(canvas, center, cell, prog, rng: effect.rng);
+      paintImpactSplash(canvas, center, cell, prog, effect.fx, effect.seed);
       if (effect.result == ShotResult.hit || effect.result == ShotResult.sunk) {
-        _drawExplosion(
+        paintImpactBurst(
           canvas,
           center,
           cell,
           prog,
+          effect.fx,
+          effect.seed,
           big: effect.result == ShotResult.sunk,
-          rng: effect.rng,
         );
+      }
+      // Only where a mark actually landed — see [CellFx.recorded].
+      if (effect.recorded) {
+        paintMarkArrival(canvas, center, cell, prog, effect.fx);
       }
     });
 
@@ -1836,126 +1899,6 @@ class _FxGridPainter extends CustomPainter {
       final center = Offset(c * cell + cell / 2, r * cell + cell / 2);
       _drawTapRipple(canvas, center, cell, t.clamp(0.0, 1.0));
     });
-  }
-
-  /// Impact flash: toned-down yellow starburst core + fewer white sparkle
-  /// stars flying outward; sinks into the persistent black-square marker.
-  void _drawExplosion(
-    Canvas canvas,
-    Offset center,
-    double cell,
-    double t, {
-    bool big = false,
-    required Random rng,
-  }) {
-    final scale = big ? 1.2 : 0.7;
-    // Yellow starburst (4 rounded rays) — flashes in, then fades.
-    final burstAlpha = (1 - t * 1.35).clamp(0.0, 1.0);
-    if (burstAlpha > 0) {
-      final grow = 0.45 + t * 0.55;
-      final ray = Paint()
-        ..color = AppColors.burst.withValues(alpha: burstAlpha * 0.7)
-        ..strokeWidth = cell * 0.12 * scale * (1 - t * 0.5)
-        ..strokeCap = StrokeCap.round;
-      final len = cell * 0.45 * scale * grow;
-      for (var i = 0; i < 4; i++) {
-        final ang = i * pi / 2;
-        canvas.drawLine(
-          center,
-          center + Offset(cos(ang) * len, sin(ang) * len),
-          ray,
-        );
-      }
-      canvas.drawCircle(
-        center,
-        cell * 0.28 * scale * grow,
-        Paint()..color = AppColors.burst.withValues(alpha: burstAlpha * 0.7),
-      );
-      canvas.drawCircle(
-        center,
-        cell * 0.15 * scale * grow,
-        Paint()..color = Colors.white.withValues(alpha: burstAlpha * 0.7),
-      );
-    }
-    // White sparkle stars drifting outward — fewer and dimmer.
-    final sparkAlpha = (1 - t).clamp(0.0, 1.0);
-    for (var i = 0; i < (big ? 4 : 2); i++) {
-      final ang = rng.nextDouble() * 2 * pi;
-      final dist =
-          cell * scale * (0.25 + 0.75 * t) * (0.6 + rng.nextDouble() * 0.5);
-      final p = center + Offset(cos(ang) * dist, sin(ang) * dist);
-      final sr = cell * 0.08 * (1 - t * 0.6);
-      final sp = Paint()
-        ..color = Colors.white.withValues(alpha: sparkAlpha * 0.6);
-      canvas.drawPath(
-        Path()
-          ..moveTo(p.dx, p.dy - sr)
-          ..lineTo(p.dx + sr * 0.35, p.dy - sr * 0.35)
-          ..lineTo(p.dx + sr, p.dy)
-          ..lineTo(p.dx + sr * 0.35, p.dy + sr * 0.35)
-          ..lineTo(p.dx, p.dy + sr)
-          ..lineTo(p.dx - sr * 0.35, p.dy + sr * 0.35)
-          ..lineTo(p.dx - sr, p.dy)
-          ..lineTo(p.dx - sr * 0.35, p.dy - sr * 0.35)
-          ..close(),
-        sp,
-      );
-    }
-  }
-
-  /// Water splash: the base impact effect for EVERY landed shot (hit, miss
-  /// or sunk) — the cannonball always hits "the water" of the grid cell
-  /// regardless of outcome. Deliberately brief (fully faded by ~55% of the
-  /// fx lifetime — see [CellFx.progress]) so it reads as a quick, punchy
-  /// splash rather than lingering; hit/sunk shots layer the yellow
-  /// explosion burst on top afterward (see the `fx.forEach` call site) for
-  /// a clear MISS vs HIT/SUNK distinction. Pure vector draws (no images,
-  /// no new particle system) — same cost class as `_drawExplosion` below,
-  /// which this game already runs per-shot without issue.
-  void _drawSplash(
-    Canvas canvas,
-    Offset center,
-    double cell,
-    double t, {
-    required Random rng,
-  }) {
-    final local = (t / 0.55).clamp(0.0, 1.0);
-    if (local >= 1.0) return;
-    final fade = 1 - local;
-    final grow = Curves.easeOut.transform(local);
-
-    // Expanding ripple ring.
-    canvas.drawCircle(
-      center,
-      cell * (0.12 + 0.46 * grow),
-      Paint()
-        ..color = Colors.white.withValues(alpha: fade * 0.55)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = cell * 0.045 * fade,
-    );
-
-    // Small water droplets flung outward and briefly upward before the
-    // splash settles — an arc shape (sin curve) rather than a straight
-    // radial fling, so they read as droplets falling back rather than
-    // just dots sliding outward.
-    for (var i = 0; i < 6; i++) {
-      final ang = (i / 6) * 2 * pi + rng.nextDouble() * 0.35;
-      final dist = cell * 0.42 * grow;
-      final lift = -cell * 0.30 * sin(local * pi);
-      final p = center + Offset(cos(ang) * dist, sin(ang) * dist * 0.6 + lift);
-      canvas.drawCircle(
-        p,
-        cell * 0.05 * fade,
-        Paint()..color = Colors.white.withValues(alpha: fade * 0.8),
-      );
-    }
-
-    // Central white flash right at the impact point.
-    canvas.drawCircle(
-      center,
-      cell * 0.20 * (1 - local * 0.5),
-      Paint()..color = Colors.white.withValues(alpha: fade * 0.45),
-    );
   }
 
   /// Quick expanding-ring "tap registered" pulse — replaces the old

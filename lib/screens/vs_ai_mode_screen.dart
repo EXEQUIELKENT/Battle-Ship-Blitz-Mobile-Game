@@ -7,6 +7,7 @@ import '../services/game_controller.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../services/vs_ai_session.dart';
+import '../widgets/motion.dart';
 import '../widgets/ocean_background.dart';
 import 'lan_mode_screen.dart' show lanModeIcon;
 import 'placement_screen.dart';
@@ -116,8 +117,11 @@ class _VsAiModeScreenState extends State<VsAiModeScreen> {
                                 AppText.label(size: 10, color: AppColors.navy),
                           ),
                           const SizedBox(height: 14),
-                          for (final mode in LanBattleMode.values) ...[
-                            _modeCard(mode),
+                          for (final (i, mode) in LanBattleMode.values.indexed) ...[
+                            PopIn(
+                              delay: Duration(milliseconds: 90 * i),
+                              child: _modeCard(mode),
+                            ),
                             const SizedBox(height: 12),
                           ],
                         ],
@@ -142,7 +146,7 @@ class _VsAiModeScreenState extends State<VsAiModeScreen> {
   }
 
   Widget _modeCard(LanBattleMode mode) {
-    return GestureDetector(
+    return Pressable(
       onTap: _starting ? null : () => _pick(mode),
       child: Container(
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),

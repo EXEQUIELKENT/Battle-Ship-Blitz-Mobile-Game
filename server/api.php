@@ -126,8 +126,28 @@ function int_field(array $in, string $key, int $default = 0): int
     return isset($in[$key]) && is_numeric($in[$key]) ? (int) $in[$key] : $default;
 }
 
+/**
+ * Games this deployment serves. A request naming anything else is treated
+ * as Battleship, which is what every pre-multi-game client sends by
+ * omitting the field entirely.
+ *
+ * This list is the whole mechanism keeping two games apart: accounts,
+ * friend searches and the matchmaking queue are all filtered by it, so a
+ * Raft captain can never be paired with a Battleship one — which matters
+ * because the relay carries opaque JSON lines and would happily deliver
+ * one game's protocol into the other game's client.
+ */
+const GAMES = ['bsb', 'raft'];
+
+function game_field(array $in): string
+{
+    $g = strtolower(trim((string) ($in['game'] ?? 'bsb')));
+    return in_array($g, GAMES, true) ? $g : 'bsb';
+}
+
+
 /** A short, unambiguous friend code. No O/0/I/1 — these get read aloud. */
-function make_tag(PDO $pdo): string
+function make_tag(PDO $pdo, string $game): string
 {
     $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     for ($attempt = 0; $attempt < 40; $attempt++) {
@@ -135,8 +155,9 @@ function make_tag(PDO $pdo): string
         for ($i = 0; $i < 6; $i++) {
             $tag .= $alphabet[random_int(0, strlen($alphabet) - 1)];
         }
-        $stmt = $pdo->prepare('SELECT 1 FROM players WHERE tag = ?');
-        $stmt->execute([$tag]);
+        // Codes only have to be unique within a game — see schema.sql.
+        $stmt = $pdo->prepare('SELECT 1 FROM players WHERE game = ? AND tag = ?');
+        $stmt->execute([$game, $tag]);
         if (!$stmt->fetchColumn()) {
             return $tag;
         }
@@ -198,6 +219,11 @@ function public_player(array $row, int $onlineWindow): array
         'shipChosen'  => ((int) $row['ship_chosen']) === 1,
         'cannon'      => $row['cannon_skin'],
         'theme'       => $row['theme'],
+        // The per-game half (see `sync`). Null for a client that never
+        // sent one, which is every Battleship build.
+        'profile'     => isset($row['profile_json']) && $row['profile_json'] !== null
+            ? json_decode((string) $row['profile_json'], true)
+            : null,
         'online'      => isset($row['seconds_since_seen'])
             ? ((int) $row['seconds_since_seen']) <= $onlineWindow
             : false,
@@ -383,8 +409,18 @@ $window = (int) $config['online_window_seconds'];
 switch ($action) {
 
     // ------------------------------------------------------------ health
+    //
+    // `service` stays exactly as it was so Battleship's own discovery,
+    // which matches on that literal, keeps working untouched. `games`
+    // is the additive part: a client for another title probes for its own
+    // id in here to tell "a server I can use" from "some other server".
     case 'ping':
-        respond(['ok' => true, 'service' => 'battleship-blitz', 'version' => 1]);
+        respond([
+            'ok'      => true,
+            'service' => 'battleship-blitz',
+            'version' => 1,
+            'games'   => GAMES,
+        ]);
 
     // ---------------------------------------------------------- register
     //
@@ -392,16 +428,17 @@ switch ($action) {
     // app stores locally. Called once, on first entry to the online
     // screen; after that the app just reuses its saved token.
     case 'register': {
+        $game = game_field($in);
         $name = str_field($in, 'name', 32, 'Captain');
         $token = bin2hex(random_bytes(32));
-        $tag = make_tag($pdo);
+        $tag = make_tag($pdo, $game);
         $stmt = $pdo->prepare(
-            'INSERT INTO players (tag, name, token_hash, last_seen, created_at)
-             VALUES (?, ?, ?, NOW(), NOW())'
+            'INSERT INTO players (game, tag, name, token_hash, last_seen, created_at)
+             VALUES (?, ?, ?, ?, NOW(), NOW())'
         );
-        $stmt->execute([$tag, $name, hash('sha256', $token)]);
+        $stmt->execute([$game, $tag, $name, hash('sha256', $token)]);
         $id = (int) $pdo->lastInsertId();
-        respond(['ok' => true, 'id' => $id, 'tag' => $tag, 'token' => $token]);
+        respond(['ok' => true, 'id' => $id, 'tag' => $tag, 'token' => $token, 'game' => $game]);
     }
 
     // -------------------------------------------------------------- sync
@@ -412,10 +449,22 @@ switch ($action) {
     // read, not a scoreboard to be defended.
     case 'sync': {
         $me = require_player($pdo, $in);
+        // `profile` is the per-game half: a title that isn't Battleship
+        // keeps its own stat shape in there rather than adding a column
+        // per field per game. Absent (Battleship, and any older client)
+        // leaves whatever was stored alone.
+        $profile = null;
+        if (isset($in['profile']) && is_array($in['profile'])) {
+            $profile = json_encode($in['profile'], JSON_UNESCAPED_UNICODE);
+            if ($profile !== false && strlen($profile) > 4096) {
+                $profile = null;
+            }
+        }
         $stmt = $pdo->prepare(
             'UPDATE players SET name = ?, rp = ?, wins = ?, losses = ?,
                     best_streak = ?, ship_skin = ?, ship_chosen = ?,
-                    cannon_skin = ?, theme = ?
+                    cannon_skin = ?, theme = ?,
+                    profile_json = COALESCE(?, profile_json)
              WHERE id = ?'
         );
         $stmt->execute([
@@ -428,6 +477,7 @@ switch ($action) {
             !empty($in['shipChosen']) ? 1 : 0,
             str_field($in, 'cannon', 24, $me['cannon_skin']),
             str_field($in, 'theme', 24, $me['theme']),
+            $profile,
             $me['id'],
         ]);
         respond(['ok' => true]);
@@ -497,7 +547,7 @@ switch ($action) {
     // has an old code handy, their exact friend code. Names are how
     // players find each other now; codes remain as a fallback.
     case 'find': {
-        require_player($pdo, $in);
+        $me = require_player($pdo, $in);
         $q = str_field($in, 'q', 32);
         if ($q === '') {
             fail('Type a captain\'s name.');
@@ -505,15 +555,19 @@ switch ($action) {
         // LIKE wildcards in a searched name must stay literal. Exact
         // matches first, then whoever was seen most recently — an active
         // captain beats a dormant lookalike from months ago.
-        $prefix = addcslashes($q, '\\%_');
+        //
+        // Scoped to the searcher's own game: captains playing a different
+        // title on this same server are not people you can befriend or
+        // play, so they must not appear at all.
+        $prefix = addcslashes($q, '\%_');
         $stmt = $pdo->prepare(
             'SELECT *, TIMESTAMPDIFF(SECOND, last_seen, NOW()) AS seconds_since_seen
              FROM players
-             WHERE name LIKE ? OR tag = ?
+             WHERE game = ? AND (name LIKE ? OR tag = ?)
              ORDER BY (name = ?) DESC, seconds_since_seen ASC, name ASC, id ASC
              LIMIT 12'
         );
-        $stmt->execute(["{$prefix}%", strtoupper($q), $q]);
+        $stmt->execute([$me['game'], "{$prefix}%", strtoupper($q), $q]);
         $out = [];
         foreach ($stmt->fetchAll() as $row) {
             $out[] = public_player($row, $window);
@@ -530,8 +584,9 @@ switch ($action) {
         $otherId = int_field($in, 'playerId');
         if ($otherId === 0) {
             $tag = strtoupper(str_field($in, 'tag', 8));
-            $stmt = $pdo->prepare('SELECT id FROM players WHERE tag = ?');
-            $stmt->execute([$tag]);
+            // Codes are unique per game, so the lookup is scoped too.
+            $stmt = $pdo->prepare('SELECT id FROM players WHERE game = ? AND tag = ?');
+            $stmt->execute([$me['game'], $tag]);
             $otherId = (int) ($stmt->fetchColumn() ?: 0);
         }
         if ($otherId === 0) {
@@ -735,13 +790,16 @@ switch ($action) {
                    ON (av.player_id = ? AND av.avoid_id = q.player_id)
                    OR (av.player_id = q.player_id AND av.avoid_id = ?)
                  WHERE q.player_id <> ?
+                   AND p.game = ?
                    AND TIMESTAMPDIFF(SECOND, p.last_seen, NOW()) <= ?
                  GROUP BY q.player_id
                  HAVING COUNT(m.id) = 0
                  ORDER BY (MAX(av.player_id) IS NOT NULL) ASC, q.joined_at ASC
                  LIMIT 1'
             );
-            $stmt->execute([$me['id'], $me['id'], $me['id'], $window]);
+            // Bind order follows the placeholders above: avoid-pair (x2),
+            // self, game, presence window.
+            $stmt->execute([$me['id'], $me['id'], $me['id'], $me['game'], $window]);
             $opponentId = (int) ($stmt->fetchColumn() ?: 0);
 
             if ($opponentId !== 0) {

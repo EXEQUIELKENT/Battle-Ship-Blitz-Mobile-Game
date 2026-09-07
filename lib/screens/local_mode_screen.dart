@@ -5,6 +5,7 @@ import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../services/game_controller.dart';
 import '../services/sound_service.dart';
+import '../widgets/motion.dart';
 import '../widgets/ocean_background.dart';
 import 'lan_mode_screen.dart' show lanModeIcon;
 import 'placement_screen.dart';
@@ -96,9 +97,12 @@ class _LocalModeScreenState extends State<LocalModeScreen> {
                                 AppText.label(size: 10, color: AppColors.navy),
                           ),
                           const SizedBox(height: 14),
-                          _modeCard(LanBattleMode.turns),
+                          PopIn(child: _modeCard(LanBattleMode.turns)),
                           const SizedBox(height: 12),
-                          _modeCard(LanBattleMode.phantom),
+                          PopIn(
+                            delay: const Duration(milliseconds: 90),
+                            child: _modeCard(LanBattleMode.phantom),
+                          ),
                         ],
                       ),
                       if (_starting)
@@ -121,7 +125,7 @@ class _LocalModeScreenState extends State<LocalModeScreen> {
   }
 
   Widget _modeCard(LanBattleMode mode) {
-    return GestureDetector(
+    return Pressable(
       onTap: _starting ? null : () => _pick(mode),
       child: Container(
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),

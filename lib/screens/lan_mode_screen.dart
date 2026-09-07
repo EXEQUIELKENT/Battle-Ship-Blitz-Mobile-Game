@@ -11,6 +11,7 @@ import '../services/network_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/match_chat.dart';
+import '../widgets/motion.dart';
 import '../widgets/ocean_background.dart';
 import '../widgets/reconnect_overlay.dart';
 import 'placement_screen.dart';
@@ -299,8 +300,12 @@ class _LanModeScreenState extends State<LanModeScreen> {
                           // Four modes now, so this scrolls — which it
                           // already did, since a phone was never going to fit
                           // three cards of this weight either.
-                          for (final mode in LanBattleMode.values) ...[
-                            _modeCard(net, mode, myName),
+                          for (final (i, mode) in LanBattleMode.values.indexed) ...[
+                            PopIn(
+                              key: ValueKey('mode-${mode.name}'),
+                              delay: Duration(milliseconds: 90 * i),
+                              child: _modeCard(net, mode, myName),
+                            ),
                             const SizedBox(height: 12),
                           ],
                         ],
@@ -357,7 +362,7 @@ class _LanModeScreenState extends State<LanModeScreen> {
 
     return Opacity(
       opacity: lostOut ? 0.42 : 1,
-      child: GestureDetector(
+      child: Pressable(
         onTap: locked != null ? null : () => _vote(mode),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),

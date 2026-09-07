@@ -14,6 +14,7 @@ import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/ambient_loop.dart';
 import '../widgets/hero_ship_dock.dart';
+import '../widgets/motion.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'customize_screen.dart';
@@ -36,6 +37,11 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   // [AmbientLoop].
   final _titleCtrl = AmbientLoop(period: const Duration(seconds: 2));
   AIDifficulty _difficulty = AIDifficulty.normal;
+
+  /// Bumped every time this screen becomes visible again, which replays
+  /// the staggered entrance below — see [PopIn.restart] for why the main
+  /// menu is the one screen that needs asking.
+  final _entrance = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -61,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
     appRouteObserver.unsubscribe(this);
     SoundService.instance.stopMenuMusic();
     _titleCtrl.dispose();
+    _entrance.dispose();
     super.dispose();
   }
 
@@ -73,7 +80,14 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   @override
   void didPopNext() {
     super.didPopNext();
-    if (mounted) SoundService.instance.startMenuMusic();
+    if (!mounted) return;
+    SoundService.instance.startMenuMusic();
+    // The menu is arriving in front of the player again, so it gets its
+    // entrance again — see [PopIn.restart]. This is also the ONLY time
+    // it can: as the root route it is never rebuilt from scratch, so
+    // without this the pop-in it does have played once, at launch,
+    // behind the very first frame, and never again.
+    _entrance.value++;
   }
 
   /// TURN BASED here still runs on the original, lightweight vs-AI engine
@@ -178,6 +192,18 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   Widget build(BuildContext context) {
     final profile = context.watch<ProfileStore>();
     final matchStore = context.watch<MatchStore>();
+    // FEEDBACK ("all of the buttons, cards, elements will have unique pop
+    // up animation when first time opening a screen... 1 by 1 not
+    // simultaneously"). One `PopSequence` per `build()` hands each block
+    // below the next slot in line — see its own doc for why a screen
+    // rebuilding later (the profile card refreshing its RP, say) doesn't
+    // replay this: `PopIn`'s controller starts once, in `initState`, and
+    // Flutter reuses the same `State` for as long as this stays the same
+    // widget at the same spot in the tree.
+    //
+    // `restart` is what makes this screen in particular replay it — see
+    // [didPopNext] and [PopIn.restart].
+    final pop = PopSequence(restart: _entrance);
     return Scaffold(
       body: OceanBackground(
         child: SafeArea(
@@ -193,19 +219,21 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                       children: [
                         const SizedBox(height: 16),
                         // ---- Profile bar ----
-                        Row(
-                          children: [
-                            Expanded(child: _profileCard(profile)),
-                            const SizedBox(width: 10),
-                            _soundButton(profile),
-                          ],
+                        pop.wrap(
+                          Row(
+                            children: [
+                              Expanded(child: _profileCard(profile)),
+                              const SizedBox(width: 10),
+                              _soundButton(profile),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 22),
                         // ---- Resume banner (if MatchStore has one) ----
                         if (_resumeBanner(matchStore) case final banner?)
-                          banner,
+                          pop.wrap(banner),
                         // ---- Title card ----
-                        Container(
+                        pop.wrap(Container(
                           width: double.infinity,
                           padding: const EdgeInsets.symmetric(vertical: 18),
                           decoration: cartoonBox(AppColors.navy, radius: 20),
@@ -257,20 +285,20 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                               ),
                             ],
                           ),
-                        ),
+                        )),
                         const SizedBox(height: 16),
                         // ---- Hero ship on an interactive water dock ----
                         // Bobs on its own, can be dragged around inside
                         // the plate, and cycles through the shipyard's
                         // hull classes (always in the equipped skin) on
                         // tap — see HeroShipDock for the choreography.
-                        HeroShipDock(equippedSkin: profile.shipSkin),
+                        pop.wrap(HeroShipDock(equippedSkin: profile.shipSkin)),
                         const SizedBox(height: 18),
                         // ---- Difficulty selector ----
-                        _difficultySelector(),
+                        pop.wrap(_difficultySelector()),
                         const SizedBox(height: 14),
                         // ---- Mode buttons ----
-                        SizedBox(
+                        pop.wrap(SizedBox(
                           width: double.infinity,
                           child: NeonButton(
                             label: 'BATTLE vs AI',
@@ -278,9 +306,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                             color: AppColors.blue,
                             onPressed: _startVsAI,
                           ),
-                        ),
+                        )),
                         const SizedBox(height: 12),
-                        Row(
+                        pop.wrap(Row(
                           children: [
                             Expanded(
                               child: NeonButton(
@@ -314,13 +342,13 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                               ),
                             ),
                           ],
-                        ),
+                        )),
                         const SizedBox(height: 12),
                         // Hotspot/LAN is same-Wi-Fi play, so it gets its own dedicated
                         // page — opening straight into the host/join
                         // screen (`HotspotScreen`) instead of a tab inside
                         // a broader multiplayer lobby.
-                        SizedBox(
+                        pop.wrap(SizedBox(
                           width: double.infinity,
                           child: NeonButton(
                             label: 'HOTSPOT / LAN',
@@ -334,9 +362,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                               );
                             },
                           ),
-                        ),
+                        )),
                         const SizedBox(height: 12),
-                        SizedBox(
+                        pop.wrap(SizedBox(
                           width: double.infinity,
                           child: NeonButton(
                             label: 'SHIPYARD — CUSTOMIZE',
@@ -350,9 +378,9 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                               );
                             },
                           ),
-                        ),
+                        )),
                         const SizedBox(height: 18),
-                        _statsRow(profile),
+                        pop.wrap(_statsRow(profile)),
                         const SizedBox(height: 24),
                       ],
                     ),
@@ -367,7 +395,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   }
 
   Widget _profileCard(ProfileStore profile) {
-    return GestureDetector(
+    return Pressable(
       onTap: () => _editName(profile),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
@@ -437,7 +465,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   }
 
   Widget _soundButton(ProfileStore profile) {
-    return GestureDetector(
+    return Pressable(
       onTap: () {
         // Play the click while sound is still in its current state, so
         // toggling OFF gets an audible confirmation on the way out.
@@ -445,16 +473,29 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
         profile.toggleSound();
         SoundService.instance.enabled = !SoundService.instance.enabled;
       },
-      child: Container(
+      child: AnimatedContainer(
+        // FEEDBACK ("make all of the animations smooth and slowly").
+        duration: const Duration(milliseconds: 280),
         padding: const EdgeInsets.all(10),
         decoration: cartoonBox(
           profile.soundOn ? AppColors.blue : AppColors.inkSoft,
           radius: 14,
         ),
-        child: Icon(
-          profile.soundOn ? Icons.volume_up : Icons.volume_off,
-          color: AppColors.cream,
-          size: 20,
+        // Swapping the icon outright used to be a silent swap on the very
+        // next frame; a toggle is exactly the kind of "activity" this
+        // pass is about giving a visible response.
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 280),
+          transitionBuilder: (child, anim) => ScaleTransition(
+            scale: anim,
+            child: child,
+          ),
+          child: Icon(
+            profile.soundOn ? Icons.volume_up : Icons.volume_off,
+            key: ValueKey(profile.soundOn),
+            color: AppColors.cream,
+            size: 20,
+          ),
         ),
       ),
     );
@@ -468,13 +509,15 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
         children: AIDifficulty.values.map((d) {
           final selected = d == _difficulty;
           return Expanded(
-            child: GestureDetector(
+            child: Pressable(
               onTap: () {
                 SoundService.instance.click();
                 setState(() => _difficulty = d);
               },
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
+                // FEEDBACK ("make all of the animations smooth and
+                // slowly").
+                duration: const Duration(milliseconds: 280),
                 padding: const EdgeInsets.symmetric(vertical: 9),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(10),

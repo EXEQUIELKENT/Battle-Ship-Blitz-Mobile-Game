@@ -132,6 +132,16 @@ class NetworkService extends ChangeNotifier {
   bool _isHost = false;
   bool connected = false;
   bool isSearching = false;
+
+  /// How long [scanRooms] listens for beacons before giving up.
+  ///
+  /// Public because the HOTSPOT screen draws the scan as a bar filling
+  /// across exactly this window — a wait with a visible end. It was a
+  /// literal inside `scanRooms`, so the screen either had to hardcode its
+  /// own copy of the number or show an indeterminate spinner that says
+  /// nothing about how much longer to hold on.
+  static const Duration scanWindow = Duration(seconds: 6);
+
   String statusMessage = '';
   String roomCode = '';
   String localIp = '';
@@ -546,7 +556,7 @@ class NetworkService extends ChangeNotifier {
           }
         } catch (_) {}
       });
-      _scanTimer = Timer(const Duration(seconds: 6), stopScan);
+      _scanTimer = Timer(scanWindow, stopScan);
     } catch (_) {
       isSearching = false;
       notifyListeners();

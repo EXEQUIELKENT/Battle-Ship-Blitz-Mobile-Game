@@ -13,6 +13,8 @@ import '../services/online_service.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/app_notification.dart';
+import '../widgets/lobby_widgets.dart';
+import '../widgets/motion.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'battle_screen.dart';
@@ -444,16 +446,34 @@ class _FriendsScreenState extends State<FriendsScreen>
                     ],
                   ),
                 ),
+              // The setup card only ever shows for the first few seconds of
+              // a session (while auto-connect is running) or after a real
+              // connection problem, so this transition fires rarely — but
+              // when it does, going straight from "we can't reach a
+              // server" to the friends list read as the SCREEN having
+              // glitched rather than the connection having recovered. A
+              // cross-fade says "state changed", not "something broke".
               Expanded(
-                child: online.signedIn
-                    ? TabBarView(
-                        controller: _tab,
-                        children: [
-                          _body(online),
-                          const MatchmakingPanel(),
-                        ],
-                      )
-                    : _setupCard(online),
+                child: AnimatedSwitcher(
+                  // FEEDBACK ("make all of the animations smooth and
+                  // slowly").
+                  duration: const Duration(milliseconds: 440),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeIn,
+                  child: online.signedIn
+                      ? TabBarView(
+                          key: const ValueKey('online-tabs'),
+                          controller: _tab,
+                          children: [
+                            _body(online),
+                            const MatchmakingPanel(),
+                          ],
+                        )
+                      : KeyedSubtree(
+                          key: const ValueKey('online-setup'),
+                          child: _setupCard(online),
+                        ),
+                ),
               ),
             ],
           ),
@@ -462,40 +482,63 @@ class _FriendsScreenState extends State<FriendsScreen>
     );
   }
 
+  /// Wraps each row a list builds in [PopIn], staggered by position
+  /// — a batch of captains settles onto the page one after another rather
+  /// than snapping in as a block whenever a search returns, a request
+  /// arrives, or the friends list refreshes. Capped at 6 steps of delay
+  /// so a long list's last row isn't kept waiting on all the others.
+  List<Widget> _staggered(
+    List<OnlinePlayer> players,
+    Widget Function(OnlinePlayer) build,
+  ) =>
+      [
+        for (var i = 0; i < players.length; i++)
+          PopIn(
+            key: ValueKey('captain-${players[i].id}'),
+            delay: Duration(milliseconds: 90 * i.clamp(0, 6)),
+            child: build(players[i]),
+          ),
+      ];
+
   Widget _body(OnlineService online) {
     final match = online.match;
+    // The list rows below run their OWN stagger, keyed by captain id, so
+    // they keep settling in correctly however often this rebuilds as
+    // polls land. These top cards are the ones that only ever appear
+    // once, on the tab's first build — a fresh `PopSequence` for them.
+    final pop = PopSequence();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
       children: [
         if (match != null && match.isIncomingInvite) ...[
-          _inviteBanner(match),
+          pop.wrap(_inviteBanner(match)),
           const SizedBox(height: 14),
         ],
         if (match != null && match.isOutgoingInvite) ...[
-          _waitingBanner(match),
+          pop.wrap(_waitingBanner(match)),
           const SizedBox(height: 14),
         ],
         if (match != null && match.isActive && !_launching) ...[
-          _rejoinBanner(match),
+          pop.wrap(_rejoinBanner(match)),
           const SizedBox(height: 14),
         ],
-        _myCodeCard(online),
+        pop.wrap(_myCodeCard(online)),
         const SizedBox(height: 14),
         // Random matchmaking is the MATCHMAKING tab now, not a card here.
-        _searchCard(online),
+        pop.wrap(_searchCard(online)),
         if (_searchResults.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          _sectionTitle('SEARCH RESULTS  (${_searchResults.length})'),
-          for (final p in _searchResults) _resultTile(p),
+          const SizedBox(height: 16),
+          _sectionTitle('SEARCH RESULTS', count: _searchResults.length),
+          ..._staggered(_searchResults, _resultTile),
         ],
         if (online.incomingRequests.isNotEmpty) ...[
           const SizedBox(height: 18),
-          _sectionTitle('REQUESTS  (${online.incomingRequests.length})'),
-          for (final p in online.incomingRequests) _requestTile(p),
+          _sectionTitle('REQUESTS', count: online.incomingRequests.length),
+          ..._staggered(online.incomingRequests, _requestTile),
         ],
         const SizedBox(height: 18),
-        _sectionTitle('YOUR FLEET COMMANDERS  (${online.friends.length})'),
+        _sectionTitle('YOUR FLEET COMMANDERS', count: online.friends.length),
         if (online.friends.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 18),
@@ -507,19 +550,24 @@ class _FriendsScreenState extends State<FriendsScreen>
               style: AppText.body(size: 12, color: AppColors.inkSoft),
             ),
           ),
-        for (final f in online.friends)
-          _friendTile(f, canInvite: match == null),
+        ..._staggered(
+          online.friends,
+          (f) => _friendTile(f, canInvite: match == null),
+        ),
         if (online.outgoingRequests.isNotEmpty) ...[
           const SizedBox(height: 18),
           _sectionTitle('WAITING ON THEM'),
-          for (final p in online.outgoingRequests) _pendingTile(p),
+          ..._staggered(online.outgoingRequests, _pendingTile),
         ],
         // A captain's log of recent internet matches — with an ADD button
         // on each row so a stranger met through FIND A MATCH doesn't have
         // to be tracked down again just to send them a friend request.
         if (online.history.isNotEmpty) ...[
           const SizedBox(height: 18),
-          _historyCard(online),
+          PopIn(
+            key: const ValueKey('history-card'),
+            child: _historyCard(online),
+          ),
         ],
         if (online.lastError != null) ...[
           const SizedBox(height: 18),
@@ -536,9 +584,43 @@ class _FriendsScreenState extends State<FriendsScreen>
   // This list sits directly on the coral deck — no navy panel or card
   // behind it — so section titles use dark navy ink instead of the
   // default cream, which all but disappeared here.
-  Widget _sectionTitle(String text) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Text(text, style: AppText.label(size: 10, color: AppColors.navy)),
+  //
+  // REDESIGN: the count used to be spelled into the title itself
+  // ("REQUESTS  (2)"). It is a count pill now, so the eye can find how
+  // many without reading the heading, and every section reads the same
+  // way whether it has a count or not.
+  Widget _sectionTitle(String text, {int? count}) => Padding(
+    padding: const EdgeInsets.only(bottom: 8, top: 2),
+    child: Row(
+      children: [
+        Text(text, style: AppText.label(size: 10, color: AppColors.navy)),
+        if (count != null) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: AppColors.navy,
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(color: AppColors.outline, width: 2),
+            ),
+            child: Text(
+              '$count',
+              style: AppText.label(size: 9, color: AppColors.cream),
+            ),
+          ),
+        ],
+        const SizedBox(width: 10),
+        // A hairline running out to the margin, so a section reads as a
+        // band across the page rather than a line of text floating above
+        // some cards.
+        Expanded(
+          child: Container(
+            height: 2,
+            color: AppColors.navy.withValues(alpha: 0.20),
+          ),
+        ),
+      ],
+    ),
   );
 
   Widget _historyCard(OnlineService online) {
@@ -972,44 +1054,65 @@ class _FriendsScreenState extends State<FriendsScreen>
 
   // ---------------------------------------------------------------- CARDS
 
+  /// REDESIGN: this was a label, a big name and a sentence explaining the
+  /// code. It is the player's own captain card now — the same avatar, name
+  /// and rank line every OTHER captain on this page is drawn with, so a
+  /// player can see at a glance what their friends see of them, with the
+  /// code they hand out as a pill they can actually tap to copy.
   Widget _myCodeCard(OnlineService online) {
+    final name = online.myName.isEmpty ? online.myTag : online.myName;
+    final hasTag = online.myTag.isNotEmpty;
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: cartoonBox(AppColors.cream, radius: 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Row(
         children: [
-          Text(
-            'YOUR CAPTAIN NAME',
-            style: AppText.label(size: 10, color: AppColors.inkSoft),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  online.myName.isEmpty ? online.myTag : online.myName,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.title(size: 24, color: AppColors.navy),
+          CaptainAvatar(name: name, size: 52),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'YOU',
+                  style: AppText.label(size: 8.5, color: AppColors.inkSoft),
                 ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.copy, color: AppColors.navy),
-                onPressed: online.myTag.isEmpty
-                    ? null
-                    : () {
-                        SoundService.instance.click();
-                        Clipboard.setData(ClipboardData(text: online.myName));
-                        _toast('Name copied.');
-                      },
-              ),
-            ],
+                const SizedBox(height: 2),
+                Text(
+                  name,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.title(size: 20, color: AppColors.navy),
+                ),
+                const SizedBox(height: 5),
+                Row(
+                  children: [
+                    CodePill(code: hasTag ? online.myTag : '……'),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        'FRIENDS ADD YOU BY NAME OR CODE',
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.label(
+                          size: 8,
+                          color: AppColors.inkSoft,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-          Text(
-            'Friends add you by searching this name. '
-            'Your code ${online.myTag.isEmpty ? '……' : online.myTag} '
-            'works too.',
-            style: AppText.body(size: 11, color: AppColors.inkSoft),
+          IconButton(
+            icon: const Icon(Icons.copy, color: AppColors.navy),
+            tooltip: 'Copy your captain name',
+            onPressed: !hasTag
+                ? null
+                : () {
+                    SoundService.instance.click();
+                    Clipboard.setData(ClipboardData(text: online.myName));
+                    _toast('Name copied.');
+                  },
           ),
         ],
       ),
@@ -1017,62 +1120,54 @@ class _FriendsScreenState extends State<FriendsScreen>
   }
 
   Widget _searchCard(OnlineService online) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: cartoonBox(AppColors.cream, radius: 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    return LobbyCard(
+      title: 'ADD A FRIEND',
+      icon: Icons.person_search,
+      color: AppColors.green,
+      subtitle: 'Search a captain by the name they go by, then send them '
+          'a request.',
+      child: Row(
         children: [
-          Text(
-            'ADD A FRIEND BY NAME',
-            style: AppText.label(size: 10, color: AppColors.inkSoft),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _searchCtrl,
-                  textInputAction: TextInputAction.search,
-                  onSubmitted: (_) => _search(),
-                  maxLength: 32,
-                  style: AppText.body(size: 14, color: AppColors.navy),
-                  decoration: InputDecoration(
-                    hintText: 'CAPTAIN NAME',
-                    hintStyle: AppText.body(size: 12, color: AppColors.inkSoft),
-                    counterText: '',
-                    filled: true,
-                    fillColor: AppColors.coralLight,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(
-                        color: AppColors.outline,
-                        width: 2.5,
-                      ),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(
-                        color: AppColors.blue,
-                        width: 2.5,
-                      ),
-                    ),
+          Expanded(
+            child: TextField(
+              controller: _searchCtrl,
+              textInputAction: TextInputAction.search,
+              onSubmitted: (_) => _search(),
+              maxLength: 32,
+              style: AppText.body(size: 14, color: AppColors.navy),
+              decoration: InputDecoration(
+                hintText: 'CAPTAIN NAME',
+                hintStyle: AppText.body(size: 12, color: AppColors.inkSoft),
+                counterText: '',
+                filled: true,
+                fillColor: AppColors.coralLight,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 12,
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(
+                    color: AppColors.outline,
+                    width: 2.5,
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(
+                    color: AppColors.blue,
+                    width: 2.5,
                   ),
                 ),
               ),
-              const SizedBox(width: 10),
-              NeonButton(
-                label: _searching ? '…' : 'SEARCH',
-                icon: Icons.search,
-                color: AppColors.green,
-                compact: true,
-                onPressed: _searching ? null : _search,
-              ),
-            ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          NeonButton(
+            label: _searching ? '…' : 'SEARCH',
+            icon: Icons.search,
+            color: AppColors.green,
+            onPressed: _searching ? null : _search,
           ),
         ],
       ),
@@ -1081,31 +1176,11 @@ class _FriendsScreenState extends State<FriendsScreen>
 
   /// One captain a name search found. ADD sends the friend request by
   /// player id — no codes to copy anywhere.
-  Widget _resultTile(OnlinePlayer p) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      decoration: cartoonBox(AppColors.coralLight, radius: 16),
-      child: Row(
-        children: [
-          _presenceDot(p.online),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  p.name.toUpperCase(),
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.label(size: 12, color: AppColors.navy),
-                ),
-                Text(
-                  '${p.tag} · ${p.rankTitle} · ${p.rp} RP',
-                  style: AppText.body(size: 10.5, color: AppColors.inkSoft),
-                ),
-              ],
-            ),
-          ),
+  Widget _resultTile(OnlinePlayer p) => _captainRow(
+        player: p,
+        fill: AppColors.coralLight,
+        subtitle: '${p.rankTitle}  ·  ${p.rp} RP  ·  ${p.wins}W ${p.losses}L',
+        trailing: [
           NeonButton(
             label: 'ADD',
             icon: Icons.person_add,
@@ -1114,28 +1189,48 @@ class _FriendsScreenState extends State<FriendsScreen>
             onPressed: _online.busy ? null : () => _add(p),
           ),
         ],
-      ),
-    );
-  }
+      );
 
-  // ---------------------------------------------------------------- TILES
-
-  Widget _friendTile(OnlinePlayer p, {required bool canInvite}) {
-    // A friend's hull is theirs, wherever it's shown — the same rule the
-    // deployment screen, the mode vote and the battle grid follow.
-    final look = fleetLook(
-      isRedSide: false,
-      equippedShipSkinId: p.shipSkinId,
-      chosen: p.shipChosen,
-    );
-    return Container(
+  /// The one row shape every captain on this page is drawn in — search
+  /// result, friend, incoming request, pending invite.
+  ///
+  /// REDESIGN: those four used to be four separately-built rows. One had a
+  /// presence dot, one had a coloured tag chip, one had bare icon buttons,
+  /// one had none of it — so the same person looked like a different kind
+  /// of thing depending on which list they happened to be in. They share a
+  /// shape now: who they are on the left, what is known about them in the
+  /// middle, what you can do about them on the right.
+  Widget _captainRow({
+    required OnlinePlayer player,
+    required String subtitle,
+    required List<Widget> trailing,
+    Color fill = AppColors.cream,
+    Widget? nameBadge,
+    String? footnote,
+    Color? footnoteColor,
+    VoidCallback? onTap,
+  }) {
+    final row = Container(
       margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      decoration: cartoonBox(AppColors.cream, radius: 16),
+      padding: const EdgeInsets.all(10),
+      decoration: cartoonBox(fill, radius: 16),
       child: Row(
         children: [
-          _presenceDot(p.online),
-          const SizedBox(width: 10),
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              CaptainAvatar(name: player.name, size: 42),
+              // Presence rides the avatar instead of sitting beside it as
+              // a loose dot — it is a property of the captain, and pinning
+              // it to their tile is what makes that read at a glance.
+              Positioned(
+                right: -2,
+                bottom: -2,
+                child: _presenceDot(player.online),
+              ),
+            ],
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1144,146 +1239,137 @@ class _FriendsScreenState extends State<FriendsScreen>
                   children: [
                     Flexible(
                       child: Text(
-                        p.name.toUpperCase(),
+                        player.name.toUpperCase(),
                         overflow: TextOverflow.ellipsis,
-                        style: AppText.label(size: 12, color: AppColors.navy),
+                        style: AppText.heading(size: 13, color: AppColors.navy),
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: look.color,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: AppColors.outline,
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Text(
-                        p.tag,
-                        style: AppText.label(size: 8, color: look.ink),
-                      ),
-                    ),
+                    if (nameBadge != null) ...[
+                      const SizedBox(width: 6),
+                      nameBadge,
+                    ],
                   ],
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 3),
                 Text(
-                  '${p.rankTitle} · ${p.rp} RP · ${p.wins}W ${p.losses}L'
-                  '${p.winRate == null ? '' : ' · ${p.winRate}%'}',
-                  style: AppText.body(size: 10.5, color: AppColors.inkSoft),
+                  subtitle,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.label(size: 8.5, color: AppColors.inkSoft),
                 ),
-                Text(
-                  p.presenceLabel,
-                  style: AppText.label(
-                    size: 8,
-                    color: p.online ? AppColors.green : AppColors.inkSoft,
+                if (footnote != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    footnote,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.label(
+                      size: 8,
+                      color: footnoteColor ?? AppColors.inkSoft,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
           const SizedBox(width: 8),
-          if (p.online && canInvite)
-            NeonButton(
-              label: 'INVITE',
-              icon: Icons.sports_esports,
-              color: AppColors.ember,
-              compact: true,
-              onPressed: () => _invite(p),
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.more_horiz, color: AppColors.inkSoft),
-              onPressed: () => _showProfile(p),
-            ),
+          ...trailing,
         ],
       ),
     );
+    return onTap == null ? row : Pressable(onTap: onTap, child: row);
   }
 
-  Widget _requestTile(OnlinePlayer p) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-      decoration: cartoonBox(AppColors.coralLight, radius: 16),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  p.name.toUpperCase(),
-                  style: AppText.label(size: 12, color: AppColors.navy),
-                ),
-                Text(
-                  '${p.tag} · ${p.rankTitle} · ${p.rp} RP',
-                  style: AppText.body(size: 10.5, color: AppColors.inkSoft),
-                ),
-              ],
-            ),
-          ),
+  // ---------------------------------------------------------------- TILES
+
+  Widget _friendTile(OnlinePlayer p, {required bool canInvite}) {
+    // A friend's hull is theirs, wherever it's shown — the same rule the
+    // deployment screen, the mode vote and the battle grid follow. It
+    // rides their code pill here, which is the one thing on the row that
+    // is theirs alone.
+    final look = fleetLook(
+      isRedSide: false,
+      equippedShipSkinId: p.shipSkinId,
+      chosen: p.shipChosen,
+    );
+    return _captainRow(
+      player: p,
+      nameBadge: CodePill(code: p.tag, color: look.color, textColor: look.ink),
+      subtitle: '${p.rankTitle}  ·  ${p.rp} RP  ·  ${p.wins}W ${p.losses}L'
+          '${p.winRate == null ? '' : '  ·  ${p.winRate}%'}',
+      footnote: p.presenceLabel,
+      footnoteColor: p.online ? AppColors.green : AppColors.inkSoft,
+      onTap: () => _showProfile(p),
+      trailing: [
+        if (p.online && canInvite)
+          NeonButton(
+            label: 'INVITE',
+            icon: Icons.sports_esports,
+            color: AppColors.ember,
+            compact: true,
+            onPressed: () => _invite(p),
+          )
+        else
           IconButton(
-            icon: const Icon(Icons.check_circle, color: AppColors.green),
-            onPressed: () async {
-              SoundService.instance.click();
-              await _online.respondToRequest(p.id, true);
-            },
+            icon: const Icon(Icons.more_horiz, color: AppColors.inkSoft),
+            onPressed: () => _showProfile(p),
           ),
+      ],
+    );
+  }
+
+  /// Someone asking to be added. Both answers are real buttons rather than
+  /// two bare icons — accepting and rejecting a person are not the kind of
+  /// choice to offer as unlabelled glyphs.
+  Widget _requestTile(OnlinePlayer p) => _captainRow(
+        player: p,
+        fill: AppColors.coralLight,
+        nameBadge: const StatusPill(
+          text: 'WANTS IN',
+          color: AppColors.gold,
+        ),
+        subtitle: '${p.rankTitle}  ·  ${p.rp} RP  ·  ${p.wins}W ${p.losses}L',
+        trailing: [
+          NeonButton(
+            label: 'ACCEPT',
+            color: AppColors.green,
+            compact: true,
+            onPressed: _online.busy
+                ? null
+                : () async => _online.respondToRequest(p.id, true),
+          ),
+          const SizedBox(width: 6),
           IconButton(
             icon: const Icon(Icons.cancel, color: AppColors.hit),
-            onPressed: () async {
-              SoundService.instance.click();
-              await _online.respondToRequest(p.id, false);
-            },
+            tooltip: 'Decline',
+            onPressed: _online.busy
+                ? null
+                : () async {
+                    SoundService.instance.click();
+                    await _online.respondToRequest(p.id, false);
+                  },
           ),
         ],
-      ),
-    );
-  }
+      );
 
-  Widget _pendingTile(OnlinePlayer p) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: cartoonBox(
-        AppColors.cream.withValues(alpha: 0.55),
-        radius: 14,
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.hourglass_bottom,
-            size: 15,
-            color: AppColors.inkSoft,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '${p.name.toUpperCase()} · ${p.tag}',
-              style: AppText.label(size: 10, color: AppColors.navy),
-            ),
-          ),
-          Text(
-            'PENDING',
-            style: AppText.label(size: 9, color: AppColors.inkSoft),
+  Widget _pendingTile(OnlinePlayer p) => _captainRow(
+        player: p,
+        fill: AppColors.cream.withValues(alpha: 0.55),
+        subtitle: '${p.tag}  ·  REQUEST SENT',
+        trailing: const [
+          StatusPill(
+            text: 'PENDING',
+            color: AppColors.cellGrey,
+            icon: Icons.hourglass_bottom,
           ),
         ],
-      ),
-    );
-  }
+      );
 
   Widget _presenceDot(bool online) => Container(
-    width: 11,
-    height: 11,
+    width: 13,
+    height: 13,
     decoration: BoxDecoration(
       shape: BoxShape.circle,
       color: online ? AppColors.green : AppColors.cellGrey,
-      border: Border.all(color: AppColors.outline, width: 2),
+      border: Border.all(color: AppColors.outline, width: 2.5),
     ),
   );
 

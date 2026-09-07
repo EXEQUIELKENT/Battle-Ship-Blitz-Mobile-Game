@@ -18,6 +18,7 @@ import '../widgets/app_notification.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/match_chat.dart';
+import '../widgets/motion.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/reconnect_overlay.dart';
 import '../widgets/ship_painter.dart';
@@ -1420,7 +1421,7 @@ class _PlacementScreenState extends State<PlacementScreen>
                         children: [
                           Row(
                             children: [
-                              GestureDetector(
+                              Pressable(
                                 onTap: () {
                                   SoundService.instance.click();
                                   _exitPlacement(isLan, controller);
@@ -2003,7 +2004,7 @@ class _ExitButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Pressable(
       onTap: () {
         SoundService.instance.click();
         onTap();
@@ -2111,7 +2112,7 @@ class _GearButton extends StatelessWidget {
     final ink = color.computeLuminance() > 0.5
         ? AppColors.outline
         : AppColors.cream;
-    return GestureDetector(
+    return Pressable(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
@@ -2208,7 +2209,7 @@ class _GearDialogState extends State<_GearDialog> {
                     style: AppText.title(size: 18),
                   ),
                 ),
-                GestureDetector(
+                Pressable(
                   onTap: () {
                     SoundService.instance.click();
                     Navigator.pop(context);
@@ -2373,9 +2374,17 @@ class _GearDialogState extends State<_GearDialog> {
     required bool selected,
     required VoidCallback onTap,
   }) {
-    return GestureDetector(
+    return Pressable(
       onTap: onTap,
-      child: Container(
+      child: AnimatedContainer(
+        // FEEDBACK ("...whether you click or do any activity"): the
+        // selected border used to just BE a different colour/width on the
+        // next `build` — no transition at all, so picking a new chip
+        // looked like the old one had silently vanished and this one
+        // silently appeared already-selected. `AnimatedContainer` tweens
+        // the same decoration change instead.
+        // FEEDBACK ("make all of the animations smooth and slowly").
+        duration: const Duration(milliseconds: 280),
         width: 94,
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
@@ -2421,9 +2430,17 @@ class _GearDialogState extends State<_GearDialog> {
     required bool selected,
     required VoidCallback onTap,
   }) {
-    return GestureDetector(
+    return Pressable(
       onTap: onTap,
-      child: Container(
+      child: AnimatedContainer(
+        // FEEDBACK ("...whether you click or do any activity"): the
+        // selected border used to just BE a different colour/width on the
+        // next `build` — no transition at all, so picking a new chip
+        // looked like the old one had silently vanished and this one
+        // silently appeared already-selected. `AnimatedContainer` tweens
+        // the same decoration change instead.
+        // FEEDBACK ("make all of the animations smooth and slowly").
+        duration: const Duration(milliseconds: 280),
         width: 94,
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
@@ -2476,9 +2493,17 @@ class _GearDialogState extends State<_GearDialog> {
     required bool selected,
     required VoidCallback onTap,
   }) {
-    return GestureDetector(
+    return Pressable(
       onTap: onTap,
-      child: Container(
+      child: AnimatedContainer(
+        // FEEDBACK ("...whether you click or do any activity"): the
+        // selected border used to just BE a different colour/width on the
+        // next `build` — no transition at all, so picking a new chip
+        // looked like the old one had silently vanished and this one
+        // silently appeared already-selected. `AnimatedContainer` tweens
+        // the same decoration change instead.
+        // FEEDBACK ("make all of the animations smooth and slowly").
+        duration: const Duration(milliseconds: 280),
         width: 94,
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.fromLTRB(6, 6, 6, 4),
@@ -2657,7 +2682,7 @@ class _ArrowScrollerState extends State<_ArrowScroller> {
   }
 
   Widget _arrowButton({required IconData icon, required VoidCallback onTap}) {
-    return GestureDetector(
+    return Pressable(
       onTap: onTap,
       child: Container(
         width: 26,
