@@ -692,6 +692,12 @@ class NetworkService extends ChangeNotifier {
     'shipPicked': _selfShipChosen ? 1 : 0,
     'cannon': _selfCannonSkinId,
     'theme': _selfThemeId,
+    // Whether THIS device wants the cinematic finish. A loadout is a
+    // private choice — my ships look how I bought them, yours look how
+    // you bought yours — but the closing camera is not: it stops the
+    // board for a couple of seconds on BOTH screens at once, so it only
+    // runs when both players asked for it. See `wantsCinematic`.
+    'cine': _selfWantsCinematic ? 1 : 0,
     'room': roomCode,
     if (rejoin) 'rejoin': 1,
   };
@@ -842,6 +848,10 @@ class NetworkService extends ChangeNotifier {
       peerShipSkinChosen = msg['shipPicked'] == 1;
       peerCannonSkinId = (msg['cannon'] as String?) ?? 'mk1';
       peerThemeId = (msg['theme'] as String?) ?? 'mk1';
+      // Absent means no: an older build that never sends this field has
+      // not opted in, and a camera move the other end knows nothing about
+      // is exactly the desync worth avoiding.
+      peerWantsCinematic = msg['cine'] == 1;
       connected = true;
       statusMessage = 'Connected to $peerName!';
       // Whoever is currently listening answers the greeting. During a
@@ -1292,6 +1302,26 @@ class NetworkService extends ChangeNotifier {
   bool _selfShipChosen = false;
   String _selfCannonSkinId = 'mk1';
   String _selfThemeId = 'mk1';
+  bool _selfWantsCinematic = false;
+
+  /// Whether the OPPONENT has the cinematic finish switched on. False
+  /// until they say otherwise, including against a build old enough not
+  /// to send the field at all.
+  bool peerWantsCinematic = false;
+
+  /// Whether the closing camera should run in a networked match.
+  ///
+  /// FEEDBACK ("on the online and hotspot cinematic, it will only show if
+  /// both players have it on in their settings"): it is a shared moment,
+  /// not a private one. The camera pushes in, slows the shell down and
+  /// holds the board for a couple of seconds — do that on one device only
+  /// and the two screens disagree about how long the match took to end,
+  /// with one player watching a slow-motion finish while the other is
+  /// already on the result screen wondering what happened.
+  ///
+  /// Both have to want it, so either one switching it off is enough to
+  /// keep the ending brisk for both.
+  bool get bothWantCinematic => _selfWantsCinematic && peerWantsCinematic;
 
   void setSelfName(String name) => _selfName = name;
 
@@ -1313,11 +1343,13 @@ class NetworkService extends ChangeNotifier {
     required String cannonSkinId,
     required String themeId,
     bool shipChosen = false,
+    bool wantsCinematic = false,
   }) {
     _selfShipSkinId = shipSkinId;
     _selfShipChosen = shipChosen;
     _selfCannonSkinId = cannonSkinId;
     _selfThemeId = themeId;
+    _selfWantsCinematic = wantsCinematic;
   }
 
   /// Re-announces this device's gear to an already-connected opponent.
@@ -1334,12 +1366,14 @@ class NetworkService extends ChangeNotifier {
     required String cannonSkinId,
     required String themeId,
     bool shipChosen = false,
+    bool wantsCinematic = false,
   }) {
     setSelfLoadout(
       shipSkinId: shipSkinId,
       cannonSkinId: cannonSkinId,
       themeId: themeId,
       shipChosen: shipChosen,
+      wantsCinematic: wantsCinematic,
     );
     _send(_helloPayload());
   }

@@ -1310,6 +1310,7 @@ class _PlacementScreenState extends State<PlacementScreen>
         cannonSkinId: lo.cannonSkinId,
         themeId: lo.themeId,
         shipChosen: true,
+        wantsCinematic: profile.cinematicFinish,
       );
     }
   }

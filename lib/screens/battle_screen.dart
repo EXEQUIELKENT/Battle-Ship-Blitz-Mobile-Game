@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../art/impact_fx.dart';
 import '../art/family_shell_art.dart';
 import '../art/fleet_family.dart';
 import '../art/legacy_shell_art.dart';
@@ -311,9 +312,35 @@ class _BattleScreenState extends State<BattleScreen>
   /// nearby cannot restart it.
   CombatEvent? _cineEvent;
 
-  /// How long the whole move runs: push in, hold through the impact, pull
-  /// back out.
-  static const Duration _cineDuration = Duration(milliseconds: 2600);
+  /// The shell the camera is riding in on.
+  ///
+  /// FEEDBACK ("the cam will zoom to the target when the projectile is
+  /// NEAR"): the push-in used to run on this controller's own clock,
+  /// started the moment the deciding event arrived — which is not the
+  /// moment the shell is close. Depending on how far the shot had to
+  /// travel and when the result came back, the camera could be sitting at
+  /// full zoom for most of a second with nothing in frame yet, or still
+  /// pushing in as the shell landed. The approach is driven off the
+  /// SHELL's own remaining flight now, so "near" means near.
+  _Projectile? _cineProj;
+
+  /// When the deciding shell actually landed. Null until it does — the
+  /// whole back half of the move (shake, hold, pull out) is measured from
+  /// this, so nothing can run ahead of the impact it is reacting to.
+  DateTime? _cineImpact;
+
+  /// The camera holds on the impact while the shake plays out.
+  static const int _cineHoldMs = 620;
+
+  /// …then eases back out to the ordinary view.
+  static const int _cinePullOutMs = 760;
+
+  /// Outer bound on the whole move — a ceiling, not the timeline. The
+  /// shape now comes from the shell and from [_cineImpact]; this only has
+  /// to be long enough to cover a full stretched flight plus the hold and
+  /// the pull-out, and to guarantee the state is torn down even if a shell
+  /// somehow never reports landing.
+  static const Duration _cineDuration = Duration(milliseconds: 5200);
 
   /// How much the shell's remaining flight is stretched once the camera
   /// takes over. This is the "slow motion" — the effects layer runs off a
@@ -366,6 +393,12 @@ class _BattleScreenState extends State<BattleScreen>
   double _shakeMagnitude = 6;
   static const _shakeHitMagnitude = 6.0;
   static const _shakeSunkMagnitude = 12.0;
+
+  /// The match-ending shot, watched from the close-up. Bigger because the
+  /// camera is zoomed 1.75× into it: a 12px wobble that reads as a solid
+  /// knock across the whole board is a barely-visible twitch when the
+  /// board is filling the screen.
+  static const _shakeFinaleMagnitude = 22.0;
   static const _shakeCycles = 3.5;
 
   /// Decaying sine wobble: full magnitude at t=0, settles back to exactly
@@ -380,8 +413,18 @@ class _BattleScreenState extends State<BattleScreen>
     return Offset(dx, dy);
   }
 
-  void _shake(double magnitude) {
+  void _shake(double magnitude, {Duration? over}) {
+    // LOW graphics asks for no screen shake, and until now it got one
+    // anyway — see `screenShakeEnabled`. A shake is a transform on the
+    // entire battle screen for its whole duration, so this is one of the
+    // larger things that setting can actually switch off.
+    if (!screenShakeEnabled) return;
     _shakeMagnitude = magnitude;
+    // A harder knock rings for longer. The finale's shake is given the
+    // length of the camera's hold, so the board is still settling as the
+    // camera starts easing back out rather than having gone still half a
+    // second before it moves.
+    _shakeCtrl.duration = over ?? const Duration(milliseconds: 380);
     _shakeCtrl.forward(from: 0);
   }
 
@@ -569,20 +612,23 @@ class _BattleScreenState extends State<BattleScreen>
       duration: const Duration(milliseconds: 380),
     );
     _cineCtrl = AnimationController(vsync: this, duration: _cineDuration)
+      // The controller is the per-frame tick for the camera (the zoom
+      // itself is computed from the shell and the impact — see
+      // `_cineZoom`), and this is what ends the move: the frame the
+      // pull-out finishes, not some fixed fraction of a fixed duration.
+      ..addListener(() {
+        final at = _cineImpact;
+        if (at == null || !mounted) return;
+        final done = DateTime.now().difference(at).inMilliseconds >=
+            _cineHoldMs + _cinePullOutMs;
+        if (done && _cineCtrl.isAnimating) _cineCtrl.stop(canceled: false);
+        if (done) _endCinematic();
+      })
+      // The safety net: if a shell somehow never reports landing, the
+      // controller still runs out and tears the move down rather than
+      // leaving the board stuck at full zoom behind letterbox bars.
       ..addStatusListener((s) {
-        if (s == AnimationStatus.completed && mounted) {
-          // Hand every slot its normal flight time back. The match is
-          // over by now, but the slots are reused and this screen
-          // outlives the shot — a stretched duration left behind would
-          // make the next match's shells crawl.
-          for (final p in _allProjectiles) {
-            p.ctrl.duration = _projDuration;
-          }
-          setState(() {
-            _cineFocus = null;
-            _cineEvent = null;
-          });
-        }
+        if (s == AnimationStatus.completed && mounted) _endCinematic();
       });
 
     _projP1 = _Projectile(byP1: true, vsync: this, duration: _projDuration);
@@ -767,14 +813,48 @@ class _BattleScreenState extends State<BattleScreen>
     for (final p in _volley) {
       _tryResolveImpact(p);
     }
-    // The match-deciding shell gets the slow close-up, if it is switched
-    // on — while it is still in the air, not after it lands.
-    if (controller.hasPendingFinish) {
-      for (final e in controller.events.reversed) {
-        if (e.impactAt != null) continue;
-        _maybeStartCinematic(controller, e);
-        break;
-      }
+    _tryStartCinematic(controller);
+  }
+
+  /// Whether the closing camera may run in THIS match.
+  ///
+  /// On one device it is purely this player's business — their setting,
+  /// their screen. With a real opponent on the other end it stops being
+  /// that: the camera holds the board and slows the shell for a couple of
+  /// seconds, and if only one side does it the two screens disagree about
+  /// how the match ended, one player still watching the shell land while
+  /// the other is already reading the result.
+  ///
+  /// So a networked match needs BOTH players to have asked for it — see
+  /// `NetworkService.bothWantCinematic`, which is fed by the `cine` field
+  /// in the handshake. `_hasRemotePeer` is the test for "someone else is
+  /// actually on the other end", so the loopback opponent in vs-AI (which
+  /// runs over the same network plumbing but is nobody's device) still
+  /// answers to this player's setting alone.
+  bool _cinematicAllowed(GameController controller) {
+    if (!context.read<ProfileStore>().cinematicFinish) return false;
+    if (!_hasRemotePeer) return true;
+    return controller.network.bothWantCinematic;
+  }
+
+  /// Looks for a match-deciding shell still in the air and gives it the
+  /// close-up, if the player has switched it on.
+  ///
+  /// BUGFIX (the cinematic never played on a shared screen or against the
+  /// AI — i.e. in most matches): this used to run ONLY from `_onUpdate`.
+  /// That is fine over a network, where the result comes back mid-flight,
+  /// but `GameController.fireAt`'s local branch registers the shot
+  /// synchronously and notifies from inside the same call — so `_onUpdate`
+  /// ran BEFORE `_fireAtCell` had reached `_launchBall`. There was no ball
+  /// in the air to follow yet, `_maybeStartCinematic` bailed on its empty
+  /// `flying` list, and nothing ever asked again. It is called after a
+  /// launch as well now, which covers both orders.
+  void _tryStartCinematic(GameController controller) {
+    if (!controller.hasPendingFinish) return;
+    for (final e in controller.events.reversed) {
+      if (e.impactAt != null) continue;
+      _maybeStartCinematic(controller, e);
+      break;
     }
   }
 
@@ -789,7 +869,7 @@ class _BattleScreenState extends State<BattleScreen>
   void _maybeStartCinematic(GameController controller, CombatEvent e) {
     if (_cineEvent != null) return; // one is already running
     if (!controller.isDecidingShot(e)) return;
-    if (!context.read<ProfileStore>().cinematicFinish) return;
+    if (!_cinematicAllowed(controller)) return;
     final targetGeom = _geom[e.byPlayer];
     if (targetGeom == null) return;
     // Only worth doing while the shell is still crossing the water; a
@@ -811,6 +891,11 @@ class _BattleScreenState extends State<BattleScreen>
     }
     setState(() {
       _cineEvent = e;
+      _cineImpact = null;
+      // The shell the camera rides in on. `flying` is every slot carrying
+      // this shot; they all land together, so the first is as good a
+      // clock as any.
+      _cineProj = flying.first;
       _cineFocus = targetGeom.cellCenterScreen(e.row, e.col);
     });
     _cineCtrl.forward(from: 0);
@@ -821,15 +906,70 @@ class _BattleScreenState extends State<BattleScreen>
       [_projP1, _projP2, ..._volley];
 
   /// The camera's push-in, 0 at rest and 1 at full close-up.
+  ///
+  /// Two halves, and neither runs on [_cineCtrl]'s own value — that
+  /// controller is only the per-frame tick and the safety timeout now:
+  ///
+  ///  * Before impact the zoom rides the SHELL. It stays at zero until
+  ///    the shot is [_cineApproach] of the way there and then pushes in
+  ///    to meet it, so the camera arrives with the shell rather than
+  ///    ahead of it. Because the shell's own flight is stretched, this
+  ///    also means the closer it gets the slower everything moves.
+  ///  * After impact it holds tight while the screen shakes, then eases
+  ///    back out to the ordinary view.
   double get _cineZoom {
     if (_cineFocus == null) return 0;
-    final t = _cineCtrl.value;
-    // In over the first third, hold through the impact, back out at the
-    // end — so the hold lands on the explosion rather than on the
-    // approach.
-    if (t < 0.30) return Curves.easeInOut.transform(t / 0.30);
-    if (t < 0.74) return 1;
-    return 1 - Curves.easeInOut.transform((t - 0.74) / 0.26);
+
+    final impact = _cineImpact;
+    if (impact == null) {
+      final p = _cineProj;
+      if (p == null) return 0;
+      final t = p.ctrl.value;
+      if (t <= _cineApproach) return 0;
+      return Curves.easeInOut
+          .transform(((t - _cineApproach) / (1 - _cineApproach)).clamp(0.0, 1.0));
+    }
+
+    final ms = DateTime.now().difference(impact).inMilliseconds;
+    if (ms <= _cineHoldMs) return 1;
+    final out = (ms - _cineHoldMs) / _cinePullOutMs;
+    return 1 - Curves.easeInOut.transform(out.clamp(0.0, 1.0));
+  }
+
+  /// How far along its flight the shell has to be before the camera
+  /// begins to move. Late on purpose: the drama is the last stretch.
+  static const double _cineApproach = 0.55;
+
+  /// The deciding shell has landed — start the back half of the move.
+  ///
+  /// Called from `_resolveImpact` so the shake, the hold and the pull-out
+  /// are all measured from the frame the shell actually arrives on,
+  /// rather than from a clock that started when the event did.
+  void _cineImpactNow() {
+    if (_cineEvent == null || _cineImpact != null) return;
+    _cineImpact = DateTime.now();
+  }
+
+  /// Puts the camera away and hands the board back.
+  ///
+  /// The single teardown for the move, reached either by the pull-out
+  /// finishing (the normal path) or by the controller running out (the
+  /// safety net) — so the two cannot drift apart.
+  void _endCinematic() {
+    if (_cineEvent == null && _cineFocus == null) return;
+    // Hand every slot its normal flight time back. The match is over by
+    // now, but the slots are reused and this screen outlives the shot —
+    // a stretched duration left behind would make the next match's
+    // shells crawl.
+    for (final p in _allProjectiles) {
+      p.ctrl.duration = _projDuration;
+    }
+    setState(() {
+      _cineFocus = null;
+      _cineEvent = null;
+      _cineProj = null;
+      _cineImpact = null;
+    });
   }
   /// Advances to the result screen — now the ONLY way there once the
   /// match ends (see the game-over bar in build()). Previously this
@@ -1155,13 +1295,28 @@ class _BattleScreenState extends State<BattleScreen>
       targetSkin: _shipSkinFor(!e.byPlayer),
       targetTheme: _themeFor(!e.byPlayer),
     );
+    // The camera's cue: this is the frame the deciding shell arrives on.
+    // Everything after the impact — the shake, the hold, the pull-out —
+    // is measured from here.
+    final decidingShot = _cineEvent != null && identical(e, _cineEvent);
+    if (decidingShot) _cineImpactNow();
+
     // Screen shake, right as the ball actually lands — never on a miss
     // (there's nothing to "hit"). Sinking a ship shakes harder than a
-    // plain hit so a killing blow reads as more impactful.
+    // plain hit so a killing blow reads as more impactful, and the shot
+    // that ends the MATCH hits hardest of all: the camera is pushed all
+    // the way in on it, so the same wobble that reads as a knock at
+    // normal zoom barely registers at 1.75×.
     if (visualResult == ShotResult.sunk) {
-      _shake(_shakeSunkMagnitude);
+      _shake(decidingShot ? _shakeFinaleMagnitude : _shakeSunkMagnitude,
+          over: decidingShot
+              ? const Duration(milliseconds: _cineHoldMs)
+              : null);
     } else if (visualResult == ShotResult.hit) {
-      _shake(_shakeHitMagnitude);
+      _shake(decidingShot ? _shakeFinaleMagnitude : _shakeHitMagnitude,
+          over: decidingShot
+              ? const Duration(milliseconds: _cineHoldMs)
+              : null);
     }
     // BUGFIX (end-game timing): the match is only actually allowed to end
     // here, now that this shot's impact has been visually applied — see
@@ -1350,6 +1505,10 @@ class _BattleScreenState extends State<BattleScreen>
     }
     if (_turnTracked) _shotOutstanding = true;
     _launchBall(controller, byP1: byP1, r: r, c: c);
+    // Now that a shell is genuinely airborne, ask again whether it is the
+    // one that ends the match — see [_tryStartCinematic] for why once, in
+    // `_onUpdate`, was not enough.
+    _tryStartCinematic(controller);
   }
 
   /// Shared ball-launch used by the player's cannon tap. Deliberately does
@@ -2065,6 +2224,7 @@ class _BattleScreenState extends State<BattleScreen>
               return AnimatedBuilder(
                 animation: _shakeCtrl,
                 builder: (context, child) => Transform.translate(
+                  key: shakeKey,
                   offset: _shakeOffset(_shakeCtrl.value),
                   child: child,
                 ),
@@ -2147,7 +2307,16 @@ class _BattleScreenState extends State<BattleScreen>
                   // in — it replaces the old fixed 1.5s auto-navigate
                   // timer, so the reveal stays on screen for as long as
                   // the player wants until they tap CONTINUE. =====
-                  if (controller.phase == BattlePhase.finished)
+                  // FEEDBACK ("…then goes back to normal camera view AND
+                  // THE GAME IS OVER"): the match finishes the instant
+                  // the deciding shell lands, so this bar used to slide
+                  // up over the close-up — the result announced while the
+                  // camera was still pushed in on the explosion it was
+                  // announcing. It waits for the camera to be put away
+                  // now, so the order reads: impact, shake, pull back,
+                  // and only then "game over".
+                  if (controller.phase == BattlePhase.finished &&
+                      _cineEvent == null)
                     Positioned(
                       left: 0,
                       right: 0,
@@ -2297,11 +2466,24 @@ class _BattleScreenState extends State<BattleScreen>
               );
             }
 
+            // Faint motion-trail ghosts behind the ball, as many as the
+            // graphics setting asks for — each is a whole second copy of
+            // the shell art, so LOW dropping to none is a real saving and
+            // HIGH adding a third is a real cost. The lags, opacities and
+            // scales are the same series the two hardcoded ghosts used,
+            // extended by one; `shellTrailCount` picks how far down it to
+            // go (see its own note — this setting used to be ignored).
+            const trails = [
+              (0.11, 0.14, 0.72),
+              (0.055, 0.26, 0.84),
+              (0.165, 0.08, 0.62),
+            ];
             return Stack(
               children: [
-                // Faint motion-trail ghosts behind the ball.
-                ghost(0.11, 0.14, 0.72),
-                ghost(0.055, 0.26, 0.84),
+                for (var i = shellTrailCount.clamp(0, trails.length) - 1;
+                    i >= 0;
+                    i--)
+                  ghost(trails[i].$1, trails[i].$2, trails[i].$3),
                 Positioned(
                   left: pos.dx - d / 2,
                   top: pos.dy - d / 2,
@@ -2644,7 +2826,25 @@ class _BattleScreenState extends State<BattleScreen>
     // every ship on every grid (not just the sunk ones) as a final
     // "here's where everything was" recap before heading to the result
     // screen, instead of the empty-grid secrecy rule that applies mid-game.
-    final gameOver = controller.phase == BattlePhase.finished;
+    // PERF, and the answer to "the zoom lags and hangs".
+    //
+    // Measured: while the camera is pushed in, the MEDIAN frame is no
+    // worse than at rest (11.5ms against 10.2ms) — but one single frame
+    // in the middle of it cost 145ms, and it is always the same frame,
+    // the one where the match flips to finished. That is not the zoom at
+    // all. It is this line: the instant the phase changes, BOTH grids
+    // reveal every hull that was hidden, ten ship widgets mount at once,
+    // and `animateEntrance` starts an animation on each of them — all in
+    // the frame after the killing shell lands, which during a cinematic
+    // is the frame the player is staring at a close-up of.
+    //
+    // So the reveal waits for the camera to be put away. Nothing is
+    // dropped — it all still happens, about a second later, on a frame
+    // where the board is at rest and a long frame costs far less. It is
+    // also simply the right ORDER, and the one that was asked for: the
+    // camera comes back, and THEN the match is over.
+    final gameOver =
+        controller.phase == BattlePhase.finished && _cineEvent == null;
     final fleetSkin = look.skin;
 
     // Whether this half's fleet is drawn on the board at all.
@@ -2823,7 +3023,29 @@ class _BattleScreenState extends State<BattleScreen>
                     // ship already shown earlier — your own fleet, mid
                     // -match — simply keeps its already-settled place
                     // instead of replaying the entrance.
-                    animateEntrance: gameOver,
+                    // PERF: deliberately NOT `gameOver`.
+                    //
+                    // The end-of-match reveal mounts both fleets at once,
+                    // and with this on each of those ten hulls started a
+                    // `_ShipEntrance` — a `FadeTransition` wrapping a
+                    // `ScaleTransition`. A running fade is a `saveLayer`,
+                    // so that was ten simultaneous offscreen layers every
+                    // frame for 380ms, beginning on the heaviest frame of
+                    // the whole match.
+                    //
+                    // Honest about the evidence: removing it moved the
+                    // reveal frame from ~117ms to ~100ms in a widget
+                    // benchmark, which is inside that harness's own
+                    // run-to-run spread — so the BUILD-side saving is not
+                    // proven. The reason to do it anyway is the half that
+                    // harness cannot see: `flutter_test` never
+                    // rasterises, and ten concurrent saveLayers are a
+                    // raster-thread cost, not a build one.
+                    //
+                    // And a reveal is not an entrance. The fleets are
+                    // shown so the player can study where everything was;
+                    // they can do that from the first frame.
+                    animateEntrance: false,
                     destroyedShips:
                         (gameOver || (showOwnFleet && !ghostMode))
                             ? const []
@@ -3622,6 +3844,13 @@ class _VolleyShot {
 /// and bottom while it runs. A plain `AnimatedBuilder` over the entire
 /// screen would rebuild every widget on it each frame; this only rebuilds
 /// the transform, keeping the board itself as a passed-through `child`.
+/// The cinematic camera's own transform, so a test can tell it apart from
+/// every other `Transform` on the battle screen.
+const Key cameraKey = ValueKey('cinematic-camera');
+
+/// The board's shake transform, likewise.
+const Key shakeKey = ValueKey('screen-shake');
+
 class _CinematicCamera extends StatelessWidget {
   final Listenable listenable;
   final double Function() zoom;
@@ -3640,59 +3869,62 @@ class _CinematicCamera extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: listenable,
-      child: child,
-      builder: (context, inner) {
-        final t = zoom();
-        final at = focus();
-        if (t <= 0 || at == null) return inner!;
-        final scale = 1 + (_maxScale - 1) * t;
-        // Scaling about an arbitrary point: translate that point to the
-        // origin, scale, translate back. `Transform.scale`'s `origin`
-        // does the same thing but measured from the widget's centre,
-        // which is not where the shell is landing.
-        return ClipRect(
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Transform(
-                transform: Matrix4.identity()
-                  ..translateByDouble(at.dx, at.dy, 0, 1)
-                  ..scaleByDouble(scale, scale, 1, 1)
-                  ..translateByDouble(-at.dx, -at.dy, 0, 1),
-                child: inner,
-              ),
-              IgnorePointer(
-                child: _Letterbox(amount: t),
-              ),
-            ],
-          ),
-        );
-      },
+    // PERF. Three things matter here, and the old version got all three
+    // wrong in the same way — by only existing while the camera was
+    // actually moving:
+    //
+    //  1. The shape of this tree is now CONSTANT. It used to return the
+    //     bare child at rest and a `ClipRect > Stack > Transform` chain
+    //     once the zoom went above zero, which re-parents the entire
+    //     battle screen the moment the camera engages — every element
+    //     under it deactivated and rebuilt, in the one frame the player
+    //     is most likely to be looking at. Same widgets every frame now;
+    //     only the matrix changes.
+    //  2. The letterbox is gone (FEEDBACK: "remove the black bars, it
+    //     will only zoom"), and with it the `Stack` and the two
+    //     `Container`s that were being rebuilt on every tick of the
+    //     camera.
+    //  3. A `RepaintBoundary` sits ABOVE the clip, so the camera's own
+    //     per-frame repaint stops here instead of dirtying the scaffold
+    //     and everything beside it. Deliberately above and not below:
+    //     inside a `Transform`, a boundary's cached raster is resampled
+    //     to the new scale every frame, which is this codebase's standing
+    //     rule against them (blurry AND no cheaper) — see the note on
+    //     `WreckReveal`, which is the one deliberate exception.
+    return RepaintBoundary(
+      child: ClipRect(
+        child: AnimatedBuilder(
+          animation: listenable,
+          child: child,
+          builder: (context, inner) {
+            final t = zoom();
+            final at = focus();
+            // Scaling about an arbitrary point: translate that point to
+            // the origin, scale, translate back. `Transform.scale`'s
+            // `origin` does the same thing but measured from the widget's
+            // centre, which is not where the shell is landing.
+            final scale = (t <= 0 || at == null) ? 1.0 : 1 + (_maxScale - 1) * t;
+            final about = at ?? Offset.zero;
+            return Transform(
+              // Keyed so a test can pick the camera out from the dozens
+              // of other `Transform`s on this screen — the cannon's idle
+              // pulse alone is a uniform scale just above 1, which is
+              // indistinguishable from the start of a push-in by shape
+              // alone.
+              key: cameraKey,
+              transform: Matrix4.identity()
+                ..translateByDouble(about.dx, about.dy, 0, 1)
+                ..scaleByDouble(scale, scale, 1, 1)
+                ..translateByDouble(-about.dx, -about.dy, 0, 1),
+              child: inner,
+            );
+          },
+        ),
+      ),
     );
   }
 }
 
-/// Bars that close in from the top and bottom while the camera runs, so
-/// the moment reads as a cut to a different shot rather than the board
-/// simply growing.
-class _Letterbox extends StatelessWidget {
-  final double amount;
-  const _Letterbox({required this.amount});
-
-  @override
-  Widget build(BuildContext context) {
-    final h = 34.0 * amount;
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Container(height: h, color: AppColors.outline),
-        Container(height: h, color: AppColors.outline),
-      ],
-    );
-  }
-}
 class _Projectile {
   _Projectile({
     required this.byP1,

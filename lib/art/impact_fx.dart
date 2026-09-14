@@ -44,6 +44,26 @@ import 'package:flutter/material.dart';
 /// `ProfileStore.applyGraphics`.
 double fxDensity = 1.0;
 
+/// Whether an impact may shake the screen.
+///
+/// BUGFIX: `GraphicsQuality.screenShake` and `.shellTrails` both existed,
+/// both had per-quality values, and NEITHER was read anywhere in the app.
+/// Picking LOW graphics turned the particle density down and left the two
+/// other levers it promises — a whole-screen transform on every hit, and
+/// a full extra shell drawn per trail ghost — running at full cost. The
+/// setting did less than it said, and the two things it was not doing are
+/// exactly the per-frame work someone choosing LOW is trying to escape.
+///
+/// Lives here beside [fxDensity] for the same reason that does: this is
+/// the file the drawing code already reaches for, so there is one place a
+/// graphics setting lands rather than three.
+bool screenShakeEnabled = true;
+
+/// How many motion-trail ghosts follow a shell in flight. Each one is a
+/// complete second copy of the projectile art, so this is a real count,
+/// not a detail toggle.
+int shellTrailCount = 2;
+
 /// Scales a particle count by [fxDensity], never below one — an effect
 /// that drops to zero particles stops being that effect.
 int _n(int base) {

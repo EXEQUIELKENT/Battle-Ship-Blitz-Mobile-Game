@@ -180,6 +180,7 @@ class _FriendsScreenState extends State<FriendsScreen>
       cannonSkinId: profile.cannonSkinId,
       themeId: profile.gameplayThemeId,
       shipChosen: profile.shipSkinChosen,
+      wantsCinematic: profile.cinematicFinish,
     );
 
     final ok = await net.startRelayMatch(

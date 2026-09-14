@@ -76,6 +76,8 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     fxDensity = 1.0;
+    screenShakeEnabled = true;
+    shellTrailCount = 2;
   });
 
   group('settings persist and actually take effect', () {
@@ -115,6 +117,48 @@ void main() {
       expect(fxDensity, greaterThan(1.0));
       await p.setGraphics(GraphicsQuality.balanced);
       expect(fxDensity, 1.0);
+    });
+
+    test('every lever the quality setting claims is actually connected',
+        () async {
+      // BUGFIX: `screenShake` and `shellTrails` were declared on
+      // `GraphicsQuality`, given per-quality values, described in the
+      // setting's own blurb — and read by nothing at all. Choosing LOW
+      // turned the particles down and left both of the other two running
+      // at full cost, which is most of what that choice is FOR: the shake
+      // is a transform on the whole battle screen, and each trail ghost
+      // is a complete second copy of the shell.
+      //
+      // Asserted on the globals the drawing code actually reads, not on
+      // the enum's getters — the getters were never the broken part.
+      final p = await _profile();
+
+      await p.setGraphics(GraphicsQuality.low);
+      expect(screenShakeEnabled, isFalse,
+          reason: 'LOW promises no screen shake');
+      expect(shellTrailCount, 0, reason: 'LOW promises no shell trails');
+
+      await p.setGraphics(GraphicsQuality.balanced);
+      expect(screenShakeEnabled, isTrue);
+      expect(shellTrailCount, 2);
+
+      await p.setGraphics(GraphicsQuality.high);
+      expect(screenShakeEnabled, isTrue);
+      expect(shellTrailCount, greaterThan(2),
+          reason: 'HIGH promises more trail than balanced');
+    });
+
+    test('a reloaded profile pushes the quality levers out too', () async {
+      // Same trap as the volumes: persisting is not enough, the values
+      // have to reach the globals on load or a restart quietly comes back
+      // at full cost.
+      final p = await _profile();
+      await p.setGraphics(GraphicsQuality.low);
+      screenShakeEnabled = true;
+      shellTrailCount = 99;
+      await _profile();
+      expect(screenShakeEnabled, isFalse);
+      expect(shellTrailCount, 0);
     });
 
     test('loading a profile pushes its settings at the systems that read '
@@ -342,6 +386,59 @@ void main() {
       // page, which is correct — both are printing the card's own text.
       expect(find.text(offered.single.description), findsWidgets);
       await tester.pump(const Duration(seconds: 3));
+    });
+
+    test('every card in the deck can actually be dealt', () {
+      // "Make sure every power-up is usable" starts here: a card with no
+      // draw weight can never reach a player's hand at all, however well
+      // the rest of it is implemented. Checked against the real deck, so
+      // adding a card with a zero weight fails right here.
+      for (final def in PowerUps.deck) {
+        expect(def.weight, greaterThan(0), reason: '${def.name} is undrawable');
+      }
+      expect(PowerUps.deck.map((d) => d.card).toSet(),
+          hasLength(PowerUpCard.values.length),
+          reason: 'every PowerUpCard must have exactly one definition');
+    });
+
+    test('the guide can route every card to somewhere that does something',
+        () {
+      // The guide resolves a card down one of three paths, chosen by the
+      // card's OWN definition: untargeted cards resolve the moment they
+      // are tapped, and targeted ones wait for a square on either your
+      // water or theirs (see `_useCard` / `_resolveCardAt`).
+      //
+      // This pins the routing itself. It is what caught BARRAGE doing
+      // nothing: `needsTarget: false` sends it down the untargeted path,
+      // but its shots were only wired into the aimed one, so it resolved
+      // to the generic "spent" fallback and fired nothing at all.
+      final untargeted =
+          PowerUps.deck.where((d) => !d.needsTarget).map((d) => d.card);
+      final atTheirWater = PowerUps.deck
+          .where((d) => d.needsTarget && !d.targetsOwnGrid)
+          .map((d) => d.card);
+      final atOwnWater = PowerUps.deck
+          .where((d) => d.needsTarget && d.targetsOwnGrid)
+          .map((d) => d.card);
+
+      // Every card lands in exactly one bucket, and all 24 are covered.
+      expect(
+        {...untargeted, ...atTheirWater, ...atOwnWater},
+        hasLength(PowerUps.deck.length),
+      );
+      // The own-grid cards are the ones that used to be a dead end: they
+      // could be armed and then never spent, because only the enemy board
+      // took a tap. If this set ever grows, that path needs checking.
+      expect(
+        atOwnWater.toSet(),
+        {
+          PowerUpCard.hardTurn,
+          PowerUpCard.autoDodge,
+          PowerUpCard.armourPlate,
+          PowerUpCard.minefield,
+          PowerUpCard.trapLine,
+        },
+      );
     });
   });
 }

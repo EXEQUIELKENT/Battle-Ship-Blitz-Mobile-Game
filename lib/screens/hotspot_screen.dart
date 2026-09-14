@@ -98,6 +98,7 @@ class _HotspotScreenState extends State<HotspotScreen>
         cannonSkinId: profile.cannonSkinId,
         themeId: profile.gameplayThemeId,
         shipChosen: profile.shipSkinChosen,
+        wantsCinematic: profile.cinematicFinish,
       );
     });
   }

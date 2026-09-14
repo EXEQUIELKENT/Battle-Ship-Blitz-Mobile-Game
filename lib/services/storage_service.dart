@@ -632,6 +632,11 @@ class ProfileStore extends ChangeNotifier {
   /// from each setter.
   void applyGraphics() {
     fxDensity = graphics.fxDensity;
+    // These two were declared on `GraphicsQuality` and then never read by
+    // anything — see the note on `screenShakeEnabled`. Pushed out here
+    // with the density so one call applies the whole setting.
+    screenShakeEnabled = graphics.screenShake;
+    shellTrailCount = graphics.shellTrails;
   }
   Future<void> toggleSound() async {
     soundOn = !soundOn;
