@@ -28,6 +28,7 @@ enum PowerUpCard {
   repair,
   jam,
   spray,
+  hardTurn,
   // ---- uncommon ----
   salvo,
   depthCharge,
@@ -36,6 +37,8 @@ enum PowerUpCard {
   rapidFire,
   scramble,
   counterBattery,
+  autoDodge,
+  armourPlate,
   // ---- rare ----
   barrage,
   crossFire,
@@ -43,6 +46,7 @@ enum PowerUpCard {
   patchCrew,
   minefield,
   trapLine,
+  spyShip,
 }
 
 enum PowerUpRarity { common, uncommon, rare }
@@ -153,7 +157,19 @@ class PowerUps {
       needsTarget: true,
     ),
 
-    // ----------------------------------------------------- uncommon (7)
+    PowerUpDef(
+      card: PowerUpCard.hardTurn,
+      name: 'HARD TURN',
+      description: 'Swing one of your own hulls a quarter turn on the '
+          'spot.',
+      rarity: PowerUpRarity.common,
+      route: PowerUpRoute.localMirror,
+      weight: 7,
+      needsTarget: true,
+      targetsOwnGrid: true,
+    ),
+
+    // ----------------------------------------------------- uncommon (9)
     PowerUpDef(
       card: PowerUpCard.salvo,
       name: 'SALVO',
@@ -218,7 +234,29 @@ class PowerUps {
       weight: 5,
     ),
 
-    // ----------------------------------------------------------- rare (6)
+    PowerUpDef(
+      card: PowerUpCard.autoDodge,
+      name: 'AUTO DODGE',
+      description: 'Pick a hull: the next shot that would hit it misses '
+          'instead, and it slips to new water.',
+      rarity: PowerUpRarity.uncommon,
+      route: PowerUpRoute.defenderFlag,
+      weight: 5,
+      needsTarget: true,
+      targetsOwnGrid: true,
+    ),
+    PowerUpDef(
+      card: PowerUpCard.armourPlate,
+      name: 'ARMOUR PLATE',
+      description: 'Pick a hull: it shrugs off the next two hits.',
+      rarity: PowerUpRarity.uncommon,
+      route: PowerUpRoute.defenderFlag,
+      weight: 5,
+      needsTarget: true,
+      targetsOwnGrid: true,
+    ),
+
+    // ----------------------------------------------------------- rare (7)
     PowerUpDef(
       card: PowerUpCard.barrage,
       name: 'BARRAGE',
@@ -275,7 +313,25 @@ class PowerUps {
       needsTarget: true,
       targetsOwnGrid: true,
     ),
+    PowerUpDef(
+      card: PowerUpCard.spyShip,
+      name: 'SPY SHIP',
+      description: 'Plant a scout on their water. Each of your turns it '
+          'survives, it names one hull beside it.',
+      rarity: PowerUpRarity.rare,
+      route: PowerUpRoute.defenderFlag,
+      weight: 3,
+      needsTarget: true,
+    ),
   ];
+
+  /// The one cell a SPY SHIP occupies on the board it is planted on.
+  /// Small enough that a single shot clears it, which is what keeps it
+  /// answerable — see `GameController.scuttleEnemySpy`.
+  static const int spyShipSize = 1;
+
+  /// How many hits an [PowerUpCard.armourPlate] absorbs.
+  static const int armourPlates = 2;
 
   static final Map<PowerUpCard, PowerUpDef> _byCard = {
     for (final d in deck) d.card: d,

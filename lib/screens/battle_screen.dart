@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../art/family_shell_art.dart';
 import '../art/fleet_family.dart';
 import '../art/legacy_shell_art.dart';
+import '../art/power_up_icons.dart';
 import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
@@ -22,6 +23,7 @@ import '../widgets/cannon_widget.dart';
 import '../widgets/cartoon_confirm.dart';
 import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
+import '../widgets/power_up_dial.dart';
 import '../widgets/ship_painter.dart';
 import '../widgets/wreck_reveal.dart';
 import 'result_screen.dart';
@@ -220,6 +222,16 @@ class _BattleScreenState extends State<BattleScreen>
   bool _pickingPowerUpTarget = false;
   final List<(int, int)> _powerUpPicks = [];
 
+  // ----- POWER PLAY: the draw randomizer -----
+  //
+  // `_dialCard` is the card the spinning dial is currently revealing, or
+  // null when no draw is being announced. `_lastSeenPowerUp` is the
+  // edge-detector behind it, and `_powerUpSeeded` suppresses the very
+  // first observation — see `_syncPowerUpDial`.
+  PowerUpCard? _dialCard;
+  PowerUpCard? _lastSeenPowerUp;
+  bool _powerUpSeeded = false;
+
   /// How many lines of `GameController.combatLog` this screen has already
   /// turned into a banner — see `_maybePowerUpBanner`. Power Play routes
   /// its draws, opponent card-use announcements, and info-card answers
@@ -258,6 +270,83 @@ class _BattleScreenState extends State<BattleScreen>
   static const Duration _projDuration = kShellFlight;
   late final _Projectile _projP1; // fired by the bottom half's owner
   late final _Projectile _projP2; // fired by the top half's owner
+
+  /// How far each gun's barrel is swung off its rest heading, in radians.
+  ///
+  /// FEEDBACK ("the pointy part of the cannon will turn depending on where
+  /// the player and the AI fire on the deck"): both guns used to point
+  /// dead ahead for the whole match whatever they were shooting at, so a
+  /// shell aimed at the far corner still left a barrel pointing straight
+  /// across the middle.
+  ///
+  /// Held as a DELTA off rest rather than an absolute heading because the
+  /// two halves do not share a coordinate space — the top half is drawn
+  /// inside a 180° `RotatedBox` on a shared screen — and a delta survives
+  /// that untouched: a rotation maps every angle by the same constant, so
+  /// the difference between two of them is the same in both frames.
+  double _aimP1 = 0;
+  double _aimP2 = 0;
+
+  /// A barrel only ever swings this far off dead ahead. The target is
+  /// always on the opposite half so the geometry alone keeps the angle
+  /// modest, but a shot at a far corner while the gun is parked at its own
+  /// back edge can still reach past what a turret should plausibly do.
+  static const double _maxAimSwing = 0.85;
+
+
+
+  // ------------------------------------------------ CINEMATIC FINISH ---
+  //
+  // The slow, close-up camera on the shell that sinks a fleet's last hull.
+  // Off unless the player has turned it on in settings (see
+  // `ProfileStore.cinematicFinish`) — it deliberately interrupts the pace,
+  // and that is not something to do to someone who did not ask for it.
+  late final AnimationController _cineCtrl;
+
+  /// Screen point the camera pushes in on — the cell the last shell is
+  /// about to land on.
+  Offset? _cineFocus;
+
+  /// The event the current cinematic belongs to, so a second shot landing
+  /// nearby cannot restart it.
+  CombatEvent? _cineEvent;
+
+  /// How long the whole move runs: push in, hold through the impact, pull
+  /// back out.
+  static const Duration _cineDuration = Duration(milliseconds: 2600);
+
+  /// How much the shell's remaining flight is stretched once the camera
+  /// takes over. This is the "slow motion" — the effects layer runs off a
+  /// wall clock rather than a controller, so slowing the SHELL is what
+  /// actually reads as slow, and it is the shell everyone is watching.
+  static const double _cineFlightStretch = 3.2;
+  /// POWER PLAY — extra projectile slots, so a multi-shot card's shells
+  /// each get their own arc instead of appearing on the deck from nowhere.
+  ///
+  /// FEEDBACK ("the multiple shots just appeared out of no where on the
+  /// deck without any animation projectiles"). There are exactly two
+  /// permanent slots above — one gun, one ball — which is all a mode
+  /// where you fire a single shot per tap ever needs. A SALVO or a CROSS
+  /// FIRE sends three or five `fire`s in one go (see
+  /// `GameController._fireShotBatch`), and every one of them past the
+  /// first found the slot busy: the old fallback in [_onUpdate] resolved
+  /// those straight to their impact, so the marks simply blinked onto the
+  /// board with no shell ever crossing the water.
+  ///
+  /// These are created on demand, reused once their shell lands, and
+  /// capped — a volley is at most five cells, and a cap means a stuck
+  /// slot can never grow this without bound.
+  final List<_Projectile> _volley = [];
+  static const int _maxVolleySlots = 6;
+
+  /// Shots waiting for a slot, launched one every [_volleyStagger] so a
+  /// volley reads as a burst of separate shells rather than one blob
+  /// leaving the muzzle. Order is preserved, which matters: only the LAST
+  /// shot of a batch may pass the turn (see `CombatEvent.hold`), so it has
+  /// to be the last one to land as well.
+  final List<_VolleyShot> _volleyQueue = [];
+  Timer? _volleyTimer;
+  static const Duration _volleyStagger = Duration(milliseconds: 130);
 
   /// Screen-space geometry of each half, refreshed every layout pass.
   final Map<bool, _HalfGeom> _geom = {}; // key: isTopHalf
@@ -479,6 +568,22 @@ class _BattleScreenState extends State<BattleScreen>
       vsync: this,
       duration: const Duration(milliseconds: 380),
     );
+    _cineCtrl = AnimationController(vsync: this, duration: _cineDuration)
+      ..addStatusListener((s) {
+        if (s == AnimationStatus.completed && mounted) {
+          // Hand every slot its normal flight time back. The match is
+          // over by now, but the slots are reused and this screen
+          // outlives the shot — a stretched duration left behind would
+          // make the next match's shells crawl.
+          for (final p in _allProjectiles) {
+            p.ctrl.duration = _projDuration;
+          }
+          setState(() {
+            _cineFocus = null;
+            _cineEvent = null;
+          });
+        }
+      });
 
     _projP1 = _Projectile(byP1: true, vsync: this, duration: _projDuration);
     _projP2 = _Projectile(byP1: false, vsync: this, duration: _projDuration);
@@ -599,6 +704,10 @@ class _BattleScreenState extends State<BattleScreen>
             if (pending == null || pending[0] != e.row || pending[1] != e.col) {
               _resolveImpact(e);
             }
+          } else if (e.isRicochet) {
+            // Not fired from their cannon — it is our OWN shell coming
+            // back off their mine, so it flies from the mined cell.
+            _queueVolleyShot(e, false);
           } else {
             _launchOpponentBall(e);
           }
@@ -633,7 +742,14 @@ class _BattleScreenState extends State<BattleScreen>
           age < 200 &&
           mounted &&
           (pending == null || pending[0] != e.row || pending[1] != e.col)) {
-        _resolveImpact(e);
+        // FEEDBACK ("the multiple shots just appeared out of no where"):
+        // this used to resolve such a shot on the spot, which is exactly
+        // why every shell of a volley past the first landed with no
+        // flight at all. It gets its own slot now (see [_queueVolleyShot]);
+        // the queue falls back to resolving in place only when there is
+        // genuinely no slot or no geometry to fly through, so a shot can
+        // still never be dropped.
+        _queueVolleyShot(e, true);
       }
     }
     // BUGFIX (hotspot/online own-shot race): in hotspot/online mode,
@@ -648,8 +764,73 @@ class _BattleScreenState extends State<BattleScreen>
     // ball is still visibly in flight.
     _tryResolveImpact(_projP1);
     _tryResolveImpact(_projP2);
+    for (final p in _volley) {
+      _tryResolveImpact(p);
+    }
+    // The match-deciding shell gets the slow close-up, if it is switched
+    // on — while it is still in the air, not after it lands.
+    if (controller.hasPendingFinish) {
+      for (final e in controller.events.reversed) {
+        if (e.impactAt != null) continue;
+        _maybeStartCinematic(controller, e);
+        break;
+      }
+    }
   }
 
+
+  /// Starts the close-up on the shell that is about to end the match, if
+  /// the player has asked for it.
+  ///
+  /// Triggered while the shell is still in the AIR — the controller arms
+  /// its pending finish the moment the result lands, which over a network
+  /// is well before the 750ms flight is up — so the camera has something
+  /// to follow rather than arriving after the fact.
+  void _maybeStartCinematic(GameController controller, CombatEvent e) {
+    if (_cineEvent != null) return; // one is already running
+    if (!controller.isDecidingShot(e)) return;
+    if (!context.read<ProfileStore>().cinematicFinish) return;
+    final targetGeom = _geom[e.byPlayer];
+    if (targetGeom == null) return;
+    // Only worth doing while the shell is still crossing the water; a
+    // shot that already landed has nothing left to slow down.
+    final flying = _allProjectiles.where((p) {
+      final cell = p.pendingCell;
+      return p.visible &&
+          cell != null &&
+          cell[0] == e.row &&
+          cell[1] == e.col &&
+          p.byP1 == e.byPlayer;
+    }).toList();
+    if (flying.isEmpty) return;
+    for (final p in flying) {
+      // Stretching the duration mid-flight slows what is LEFT of the arc,
+      // which is exactly the part the camera is about to be watching.
+      p.ctrl.duration = _projDuration * _cineFlightStretch;
+      p.ctrl.forward();
+    }
+    setState(() {
+      _cineEvent = e;
+      _cineFocus = targetGeom.cellCenterScreen(e.row, e.col);
+    });
+    _cineCtrl.forward(from: 0);
+  }
+
+  /// Every projectile slot on the screen, permanent and volley alike.
+  Iterable<_Projectile> get _allProjectiles =>
+      [_projP1, _projP2, ..._volley];
+
+  /// The camera's push-in, 0 at rest and 1 at full close-up.
+  double get _cineZoom {
+    if (_cineFocus == null) return 0;
+    final t = _cineCtrl.value;
+    // In over the first third, hold through the impact, back out at the
+    // end — so the hold lands on the explosion rather than on the
+    // approach.
+    if (t < 0.30) return Curves.easeInOut.transform(t / 0.30);
+    if (t < 0.74) return 1;
+    return 1 - Curves.easeInOut.transform((t - 0.74) / 0.26);
+  }
   /// Advances to the result screen — now the ONLY way there once the
   /// match ends (see the game-over bar in build()). Previously this
   /// fired on its own 1.5s after `BattlePhase.finished`, which yanked
@@ -674,14 +855,14 @@ class _BattleScreenState extends State<BattleScreen>
     }
     if (!mounted || controller.phase != BattlePhase.battling) return;
 
-    if (!_flyIncomingBall(e.row, e.col)) {
-      // No flight was possible — either the halves haven't been laid out
-      // yet, or this gun's previous ball is somehow still airborne.
-      // Resolve the shot in place rather than dropping it: this used to
-      // just `return`, which left the event pending FOREVER, since
-      // `_onUpdate` only ever reconsiders events under 200ms old.
-      _resolveImpact(e);
-    }
+    if (_flyIncomingBall(e.row, e.col)) return;
+    // This gun's permanent slot is busy — which in POWER PLAY is the
+    // normal case for every shell of an opponent's volley past the
+    // first. Give it a slot of its own rather than letting it arrive
+    // with no flight (see [_volley]); the queue resolves it in place
+    // only if even that fails, so the shot can never be dropped and
+    // leave the turn hanging on an event that never lands.
+    _queueVolleyShot(e, false);
   }
 
   /// Flies an incoming shell that has NOT been scored yet — the dodge
@@ -702,20 +883,23 @@ class _BattleScreenState extends State<BattleScreen>
   /// shell is armed, and the scoring happens `kShellFlight` later against
   /// whatever the board looks like by then — see
   /// `GameController._armIncomingShell` and [_launchIncomingShell].
-  bool _flyIncomingBall(int row, int col) {
+  bool _flyIncomingBall(int row, int col, {_Projectile? into}) {
     final top = _geom[true];
     final bottom = _geom[false];
-    if (top == null || bottom == null || _projP2.visible) return false;
+    if (top == null || bottom == null) return false;
+    final proj = into ?? _projP2;
+    if (proj.visible || proj.pendingCell != null) return false;
     // The opponent's cannon may be slid out to its grid center (during its
     // turn) or parked at the back — fire from wherever it currently sits,
     // which `_slideFor` reports for every mode including chaos (where it
     // never leaves the back at all).
-    final from = _cannonMouth(top, _slideFor(false), false);
+    final swing = _aimAt(byP1: false, r: row, c: col);
+    final from = _cannonMouth(top, _slideFor(false), false, aim: swing);
     // Lands dead-center on the target cell — see `_launchBall` for why
     // this used to be nudged off-center.
     final to = bottom.cellCenterScreen(row, col);
     setState(() {
-      _projP2
+      proj
         ..pendingCell = [row, col]
         ..from = from
         ..to = to
@@ -726,10 +910,124 @@ class _BattleScreenState extends State<BattleScreen>
     // See the matching note in `_launchBall` — fires at launch now, next
     // to the sound, instead of (late, and hit-only) at impact.
     _cannon2Fire.add(null);
-    _projP2.ctrl.forward(from: 0);
+    proj.ctrl.forward(from: 0);
     return true;
   }
 
+
+  // ------------------------------------------------- POWER PLAY VOLLEY ---
+
+
+  /// Flies a MINEFIELD / TRAP LINE ricochet: the shell that sprang the
+  /// trap thrown off the mined cell and back into the firer's own fleet.
+  ///
+  /// Unlike every other flight on this screen it does not start at a
+  /// cannon muzzle — it starts on the OTHER grid, at the cell the mine
+  /// was in, which is what makes it read as a bounce rather than as a
+  /// second shot from somewhere. Both devices run this off the same
+  /// event, so both captains watch the same shell come back.
+  bool _flyRicochet(CombatEvent e, {_Projectile? into}) {
+    final top = _geom[true];
+    final bottom = _geom[false];
+    if (top == null || bottom == null) return false;
+    final from = e.bounceFrom;
+    if (from == null) return false;
+    final proj = into ?? _freeVolleySlot(e.byPlayer);
+    if (proj == null || proj.visible || proj.pendingCell != null) return false;
+    // `byPlayer` is whose SHOT this is from this device's point of view,
+    // and a ricochet lands on the fleet opposite that — so the grid it
+    // lands on is the same one an ordinary shot of theirs would hit, and
+    // the mined cell it came off is on the other.
+    final targetGeom = e.byPlayer ? top : bottom;
+    final sourceGeom = e.byPlayer ? bottom : top;
+    setState(() {
+      proj
+        ..pendingCell = [e.row, e.col]
+        ..from = sourceGeom.cellCenterScreen(from[0], from[1])
+        ..to = targetGeom.cellCenterScreen(e.row, e.col)
+        // A low, flat skip rather than a lobbed arc: the shell is being
+        // deflected off the water, not fired over it.
+        ..arcHeight = targetGeom.cell * 1.1
+        ..cell = targetGeom.cell
+        ..visible = true;
+    });
+    SoundService.instance.denied();
+    proj.ctrl.forward(from: 0);
+    return true;
+  }
+  /// A free projectile slot for [byP1]'s side, creating one if the pool
+  /// has room. Null means every slot is busy and the caller should fall
+  /// back to resolving the shot without a flight.
+  _Projectile? _freeVolleySlot(bool byP1) {
+    for (final p in _volley) {
+      if (p.byP1 == byP1 && !p.visible && p.pendingCell == null) return p;
+    }
+    // Counted per side: the two fleets can each have a volley in the air
+    // at once in a mode without strict turns, and a shared cap would let
+    // one side starve the other of slots.
+    final mine = _volley.where((p) => p.byP1 == byP1).length;
+    if (mine >= _maxVolleySlots) return null;
+    final p = _Projectile(byP1: byP1, vsync: this, duration: _projDuration);
+    p.ctrl.addStatusListener((s) {
+      if (s == AnimationStatus.completed && mounted) {
+        setState(() => p.visible = false);
+        _tryResolveImpact(p);
+      }
+    });
+    _volley.add(p);
+    return p;
+  }
+
+  /// Queues [e] for its own shell rather than resolving it on the spot.
+  ///
+  /// The queue is what staggers a volley: the first shell goes straight
+  /// out so the card feels instant, and the rest follow one per
+  /// [_volleyStagger] in the order they were queued.
+  void _queueVolleyShot(CombatEvent e, bool byP1) {
+    // `_onUpdate` re-walks recent events on every controller notification,
+    // and an event stays unresolved for as long as its shell is in the
+    // air — comfortably longer than the 200ms window that admits it here.
+    // Without this it would be queued again on the next notification and
+    // fly a second, duplicate shell at the same cell.
+    if (_volleyQueue.any((s) => identical(s.event, e))) return;
+    for (final p in _volley) {
+      final cell = p.pendingCell;
+      if (cell != null && cell[0] == e.row && cell[1] == e.col) return;
+    }
+    _volleyQueue.add(_VolleyShot(e, byP1));
+    _volleyTimer ??= Timer.periodic(_volleyStagger, (_) => _drainVolley());
+    // Fire the first one right away; the timer handles the rest.
+    if (_volleyQueue.length == 1) _drainVolley();
+  }
+
+  /// Sends the next queued shot on its way, or stops the clock when there
+  /// is nothing left to send.
+  void _drainVolley() {
+    if (!mounted) return;
+    if (_volleyQueue.isEmpty) {
+      _volleyTimer?.cancel();
+      _volleyTimer = null;
+      return;
+    }
+    final shot = _volleyQueue.first;
+    // Already resolved by some other path while it waited — drop it.
+    if (shot.event.impactAt != null) {
+      _volleyQueue.removeAt(0);
+      return;
+    }
+    final slot = _freeVolleySlot(shot.byP1);
+    if (slot == null) return; // every slot busy; try again next tick
+    _volleyQueue.removeAt(0);
+    final launched = shot.event.isRicochet
+        ? _flyRicochet(shot.event, into: slot)
+        : shot.byP1
+            ? _launchBall(context.read<GameController>(),
+                byP1: true, r: shot.event.row, c: shot.event.col, into: slot)
+            : _flyIncomingBall(shot.event.row, shot.event.col, into: slot);
+    // Geometry not laid out yet, or some other refusal — the shot must
+    // still land, or the turn can hang waiting on it forever.
+    if (!launched) _resolveImpact(shot.event);
+  }
   /// Resolves the currently pending shot (`_pendingImpact`/`_pendingByP1`)
   /// against `controller.events` — but ONLY once both (a) the projectile
   /// has visibly finished traveling (`_showProjectile == false`) and (b)
@@ -893,13 +1191,20 @@ class _BattleScreenState extends State<BattleScreen>
     // must never pass the turn even on a miss. See `CombatEvent`'s doc.
     if (!e.forcePass) {
       if (e.hold) {
-        // No pass coming — the same shooter's turn continues right away,
+        // No pass coming — the same shooter.s turn continues right away,
         // so `_shotOutstanding` (see its own doc) has nothing left to
         // protect against for THIS shot.
         _shotOutstanding = false;
         return;
       }
       if (e.result != ShotResult.miss) {
+        _shotOutstanding = false;
+        return;
+      }
+      // A multi-shot card that landed ANY of its shells keeps the guns,
+      // even when the last shell of the volley was the one that missed —
+      // see `GameController.volleyScoredHit`.
+      if (context.read<GameController>().volleyScoredHit(e)) {
         _shotOutstanding = false;
         return;
       }
@@ -935,7 +1240,22 @@ class _BattleScreenState extends State<BattleScreen>
     // beginning — P2 is the top half (`halfIsP1 == false`, see
     // `_loadoutFor`) — so each captain's board announces its own handoff.
     SoundService.instance.turnPass(themeId: _themeFor(!toP2).id);
-    setState(() => _p2Active = toP2);
+    // FEEDBACK ("in turn-based modes the barrel resets to its position"):
+    // a gun used to keep whatever heading its last shot left it on, so a
+    // captain came back to a turret still trained on a square they had
+    // already fired at — and one that had been sitting there, frozen at
+    // full swing, for the whole of the opponent's turn. Both barrels
+    // stand down to rest here instead, and the widget's own 150ms
+    // traverse animates them back rather than snapping.
+    //
+    // This is deliberately in `_passTurn` and not in the firing path:
+    // CHAOS never passes a turn, so its guns keep tracking continuously,
+    // which is the right behaviour for a mode with no turns to reset on.
+    setState(() {
+      _p2Active = toP2;
+      _aimP1 = 0;
+      _aimP2 = 0;
+    });
     // Keep the controller's mirror current: it's what a resume snapshot
     // reads to tell a reconnecting player whose turn they came back to.
     final controller = context.read<GameController>();
@@ -1039,21 +1359,30 @@ class _BattleScreenState extends State<BattleScreen>
   /// resolving what actually happened is left entirely to
   /// `_tryResolveImpact`, which looks it up from `controller.events` once
   /// it's actually known instead of trusting a guess made at tap time.
-  void _launchBall(
+  /// Returns whether a shell actually left the muzzle. [into] overrides
+  /// which slot flies it, so a POWER PLAY volley can put several in the
+  /// air at once instead of queueing behind this gun's one permanent
+  /// slot — see [_volley].
+  bool _launchBall(
     GameController controller, {
     required bool byP1,
     required int r,
     required int c,
+    _Projectile? into,
   }) {
     final top = _geom[true];
     final bottom = _geom[false];
-    if (top == null || bottom == null) return;
+    if (top == null || bottom == null) return false;
     // The shooter fires from wherever its cannon currently sits (slid out
     // to its grid center during its turn). The ball arcs toward the aimed
     // cell on the OPPONENT's grid.
     final shooterGeom = byP1 ? bottom : top;
     final targetGeom = byP1 ? top : bottom;
-    final from = _cannonMouth(shooterGeom, _slideFor(byP1), byP1);
+    // Bring the barrel round first, then take the muzzle from where it
+    // ends up — the shell leaves the tip of a gun that is pointing at
+    // what it is shooting at.
+    final swing = _aimAt(byP1: byP1, r: r, c: c);
+    final from = _cannonMouth(shooterGeom, _slideFor(byP1), byP1, aim: swing);
     // BUGFIX (ball landing off-center): this used to add
     // `_mouthDir(targetGeom) * (targetGeom.cannonSize * 0.25)` on top of
     // the cell's true center — cannonSize is ~24% of the grid's side, so
@@ -1065,7 +1394,7 @@ class _BattleScreenState extends State<BattleScreen>
     // impact. `cellCenterScreen` already returns the exact cell center,
     // so no extra nudge belongs here at all.
     final to = targetGeom.cellCenterScreen(r, c);
-    final proj = byP1 ? _projP1 : _projP2;
+    final proj = into ?? (byP1 ? _projP1 : _projP2);
     // Adaptive lob: keep the classic 3-cell peak as a floor, but grow it
     // when the shot spans a long vertical gap so the shell still arrives
     // dipping downwards (up-then-down) instead of flat. Without this a
@@ -1116,6 +1445,7 @@ class _BattleScreenState extends State<BattleScreen>
     // right alongside the sound it was already desynced from.
     (byP1 ? _cannon1Fire : _cannon2Fire).add(null);
     proj.ctrl.forward(from: 0);
+    return true;
   }
 
   // ----------------------------------------------------- CANNON SLIDE ---
@@ -1409,6 +1739,18 @@ class _BattleScreenState extends State<BattleScreen>
   Widget _powerUpOverlay(GameController controller) {
     final card = controller.myPowerUp;
     final myTurn = !controller.peerHasTurn;
+    final def = card == null ? null : PowerUps.of(card);
+    // What tapping the badge would do right now, in the design's own
+    // wording — this replaces the sentence the old text chip carried.
+    final tag = card == null
+        ? (controller.powerUpJammedThisTurn ? 'JAMMED' : 'EMPTY')
+        : !myTurn
+            ? 'THEIR TURN'
+            : _pickingPowerUpTarget
+                ? 'TAP TO CANCEL'
+                : def!.needsTarget
+                    ? (def.targetsOwnGrid ? 'TAP TO PLACE' : 'TAP TO AIM')
+                    : 'TAP TO USE';
     return Positioned(
       right: 12,
       bottom: 16,
@@ -1435,15 +1777,65 @@ class _BattleScreenState extends State<BattleScreen>
                 ),
               ),
             ),
-          if (card != null)
-            _PowerUpCardChip(
-              card: card,
-              usable: myTurn && !_pickingPowerUpTarget,
-              onTap: () => _onPowerUpCardTap(controller),
-            ),
+          // The badge shows even on an EMPTY hand now — that is what
+          // carries the JAM tell, and an always-present slot is steadier
+          // to aim at than one that appears and vanishes each turn.
+          _PowerUpBadge(
+            card: card,
+            jammed: controller.powerUpJammedThisTurn,
+            usable: card != null && myTurn && !_pickingPowerUpTarget,
+            armed: _pickingPowerUpTarget,
+            onTap: () => _onPowerUpCardTap(controller),
+          ),
+          const SizedBox(height: 4),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: cartoonBox(AppColors.navyDark, radius: 7),
+            child: Text(tag, style: AppText.label(size: 8)),
+          ),
         ],
       ),
     );
+  }
+
+  /// The randomizer, shown over everything while a freshly drawn card is
+  /// being revealed. See [PowerUpDial]; `_dialCard` is what
+  /// [_syncPowerUpDial] latched when the hand went from empty to holding.
+  Widget _powerUpDialOverlay() => PowerUpDial(
+        card: _dialCard!,
+        onDone: () {
+          if (mounted) setState(() => _dialCard = null);
+        },
+      );
+
+  /// Notices the moment the controller puts a NEW card in hand and starts
+  /// the randomizer for it.
+  ///
+  /// Driven off a rebuild rather than a callback because that is how every
+  /// other piece of this screen already learns about controller state, and
+  /// because the draw can arrive from three different places (your own
+  /// turn starting, a restored match snapshot, the AI's loopback turn).
+  /// `_lastSeenPowerUp` is what makes it edge-triggered: only a transition
+  /// INTO holding a card spins the dial, so an ordinary rebuild while
+  /// holding one does not restart it.
+  void _syncPowerUpDial(GameController controller) {
+    if (!controller.isPowerUpBattle) return;
+    final card = controller.myPowerUp;
+    // The first observation only seeds the detector. Without this, a card
+    // restored from a snapshot on reconnect — one the player has been
+    // holding since before they dropped — would spin the dial as though it
+    // had just been drawn, announcing a draw that never happened.
+    if (!_powerUpSeeded) {
+      _powerUpSeeded = true;
+      _lastSeenPowerUp = card;
+      return;
+    }
+    if (card == _lastSeenPowerUp) return;
+    final isFreshDraw = card != null && _lastSeenPowerUp == null;
+    _lastSeenPowerUp = card;
+    // Never mid-countdown: the dial would fight the 3-2-1 for the screen.
+    if (!isFreshDraw || _countingDown || !controller.battling) return;
+    _dialCard = card;
   }
 
   /// How far a half's cannon has slid out of its parked position: 0 =
@@ -1489,13 +1881,64 @@ class _BattleScreenState extends State<BattleScreen>
   Offset _cannonCenterLocal(_HalfGeom g, double t) => Offset.lerp(
       g.cannonCenter, g.gridCenterLocal, Curves.easeOutBack.transform(t.clamp(0.0, 1.0)))!;
 
+
+  /// Swings [byP1]'s barrel round to bear on (r, c) of the grid it is
+  /// firing at, and reports the delta it settled on.
+  ///
+  /// Returns the angle rather than only storing it because the muzzle
+  /// moves with the barrel: the shell has to be born at the ROTATED tip,
+  /// or it appears out of thin air beside a gun pointing somewhere else.
+  double _aimAt({required bool byP1, required int r, required int c}) {
+    final top = _geom[true];
+    final bottom = _geom[false];
+    if (top == null || bottom == null) return byP1 ? _aimP1 : _aimP2;
+    final shooterGeom = byP1 ? bottom : top;
+    final targetGeom = byP1 ? top : bottom;
+    final slide = _slideFor(byP1);
+    final pivot = _cannonPivot(shooterGeom, slide);
+    // Rest heading is wherever this gun's own muzzle already points, which
+    // already accounts for `muzzleLocalDir` and the half's rotation.
+    final rest = _cannonMouth(shooterGeom, slide, byP1, aim: 0) - pivot;
+    final aim = targetGeom.cellCenterScreen(r, c) - pivot;
+    if (rest.distance < 0.01 || aim.distance < 0.01) return 0;
+    var delta = aim.direction - rest.direction;
+    // Normalise into (-pi, pi] so a swing never takes the long way round.
+    while (delta > math.pi) {
+      delta -= 2 * math.pi;
+    }
+    while (delta <= -math.pi) {
+      delta += 2 * math.pi;
+    }
+    delta = delta.clamp(-_maxAimSwing, _maxAimSwing);
+    setState(() {
+      if (byP1) {
+        _aimP1 = delta;
+      } else {
+        _aimP2 = delta;
+      }
+    });
+    return delta;
+  }
+
+  /// The point a gun's barrel swings about — its own centre, which is
+  /// also what `Transform.rotate` turns the widget around.
+  Offset _cannonPivot(_HalfGeom g, double t) {
+    final c = _cannonCenterLocal(g, t);
+    if (g.rotated) {
+      return Offset(g.halfW - c.dx, g.halfTopY + (g.halfH - c.dy));
+    }
+    return Offset(c.dx, g.halfTopY + c.dy);
+  }
   /// Absolute screen position of a half's cannon MOUTH, accounting for the
   /// 180° rotation of the top half, given the cannon's slide amount [t].
   /// Uses `CannonWidget.muzzleFraction` — the SAME constant the redesigned,
   /// longer barrel is actually drawn out to — so the cannonball always
   /// visibly launches from the real muzzle tip instead of a stale offset
   /// left over from the old, much shorter cannon.
-  Offset _cannonMouth(_HalfGeom g, double t, bool halfIsP1) {
+  /// [aim] is the barrel's swing off its rest heading (see [_aimAt]).
+  /// The muzzle turns with the barrel, so the shell is born at the tip of
+  /// a gun that is actually pointing at what it is shooting at.
+  Offset _cannonMouth(_HalfGeom g, double t, bool halfIsP1, {double? aim}) {
     final c = _cannonCenterLocal(g, t);
     final lx = c.dx;
     // Per-gun, not per-game: the thematic families each have their own
@@ -1512,10 +1955,18 @@ class _BattleScreenState extends State<BattleScreen>
         g.muzzleLocalDir *
             g.cannonRenderSize *
             CannonWidget.muzzleFractionOf(_cannonSkinFor(halfIsP1));
-    if (g.rotated) {
-      return Offset(g.halfW - lx, g.halfTopY + (g.halfH - ly));
-    }
-    return Offset(lx, g.halfTopY + ly);
+    final rest = g.rotated
+        ? Offset(g.halfW - lx, g.halfTopY + (g.halfH - ly))
+        : Offset(lx, g.halfTopY + ly);
+    final swing = aim ?? (halfIsP1 ? _aimP1 : _aimP2);
+    if (swing == 0) return rest;
+    // Rotate the rest muzzle about the gun's own pivot by the same angle
+    // the widget is drawn rotated by, so the two cannot disagree.
+    final pivot = _cannonPivot(g, t);
+    final v = rest - pivot;
+    final cos = math.cos(swing), sin = math.sin(swing);
+    return pivot +
+        Offset(v.dx * cos - v.dy * sin, v.dx * sin + v.dy * cos);
   }
 
   @override
@@ -1526,8 +1977,13 @@ class _BattleScreenState extends State<BattleScreen>
     _cannon2Ready.close();
     _projP1.dispose();
     _projP2.dispose();
+    _volleyTimer?.cancel();
+    for (final p in _volley) {
+      p.dispose();
+    }
     _slideCtrl.dispose();
     _shakeCtrl.dispose();
+    _cineCtrl.dispose();
     super.dispose();
   }
 
@@ -1538,7 +1994,10 @@ class _BattleScreenState extends State<BattleScreen>
     final controller = context.watch<GameController>();
     final profile = context.watch<ProfileStore>();
     _refreshDerivedCache(controller);
-    if (controller.isPowerUpBattle) _maybePowerUpBanner(controller);
+    if (controller.isPowerUpBattle) {
+      _maybePowerUpBanner(controller);
+      _syncPowerUpDial(controller);
+    }
     // The halves NEVER swap sides: the bottom one is always "P1" (in a LAN
     // match, always THIS device's own fleet) and the top one always "P2"
     // (the opponent). Only the "whose turn" flag changes. Whether the top
@@ -1574,7 +2033,15 @@ class _BattleScreenState extends State<BattleScreen>
       // both battle grids the instant the chat panel's keyboard opens,
       // even though the panel already insets itself independently.
       resizeToAvoidBottomInset: false,
-      body: Stack(
+      // The cinematic finish pushes the whole board in on the cell the
+      // last shell is landing on. Wrapping the ENTIRE screen keeps the
+      // two halves, the middle band and every overlay moving together as
+      // one camera rather than as a zoom on one widget.
+      body: _CinematicCamera(
+        listenable: _cineCtrl,
+        zoom: () => _cineZoom,
+        focus: () => _cineFocus,
+        child: Stack(
         children: [
           Positioned.fill(
             child: Column(
@@ -1656,6 +2123,9 @@ class _BattleScreenState extends State<BattleScreen>
                   // mode. Each only mounts while its own ball is flying.
                   if (_projP1.visible) _projectileLayer(_projP1),
                   if (_projP2.visible) _projectileLayer(_projP2),
+                  // POWER PLAY volley shells, each on its own arc.
+                  for (final p in _volley)
+                    if (p.visible) _projectileLayer(p),
 
                   // ===== Countdown overlay (mirrored) =====
                   if (_countingDown) _countdownOverlay(bandH),
@@ -1665,6 +2135,11 @@ class _BattleScreenState extends State<BattleScreen>
                       controller.phase == BattlePhase.battling &&
                       !_countingDown)
                     _powerUpOverlay(controller),
+
+                  // ===== POWER PLAY: the draw randomizer. Above the HUD
+                  // badge it docks into, below the reconnect overlay —
+                  // a dropped opponent outranks a card reveal. =====
+                  if (_dialCard != null) _powerUpDialOverlay(),
 
                   // ===== Game-over bar: both grids reveal every ship the
                   // instant the match ends (see `gameOver` in _buildHalf),
@@ -1694,6 +2169,7 @@ class _BattleScreenState extends State<BattleScreen>
         ),
       ),
         ],
+      ),
       ),
     );
   }
@@ -2357,6 +2833,34 @@ class _BattleScreenState extends State<BattleScreen>
                     // wreck plays. `skin` above can't serve: it is null
                     // for the whole match on the enemy's half.
                     wreckShipSkinId: fleetSkin.id,
+                    // POWER PLAY tells, each on the half it belongs to:
+                    // what SPOTTER found sits on the water you are firing
+                    // INTO, and your own armed traps sit on your own.
+                    // `halfIsP1` is this device's own side (see
+                    // `showOwnFleet`), so the enemy half is the other one.
+                    spottedCells: controller.isPowerUpBattle && !halfIsP1
+                        ? controller.spottedEnemyCells
+                        : const {},
+                    minedCells: controller.isPowerUpBattle && halfIsP1
+                        ? controller.myTrapCells
+                        : const {},
+                    // A scout shows on whichever board it is sitting in:
+                    // ours, so its owner can steer a hull over it, or
+                    // theirs, so we can see where we planted it.
+                    spyCell: !controller.isPowerUpBattle
+                        ? null
+                        : halfIsP1
+                            ? controller.enemySpyCell
+                            : controller.mySpyCell,
+                    // Plating and a primed dodge are our own business —
+                    // only ever drawn on our own fleet.
+                    armourByKind:
+                        controller.isPowerUpBattle && halfIsP1
+                            ? controller.armourByKind
+                            : const {},
+                    dodgeKind: controller.isPowerUpBattle && halfIsP1
+                        ? controller.dodgeKind
+                        : null,
                     // `enabled` is what actually lets `onTapCell` fire (see
                     // `_BattleGridState._onTap`) — extended here so a
                     // MINEFIELD/TRAP LINE pick on your OWN grid, which
@@ -2546,6 +3050,11 @@ class _BattleScreenState extends State<BattleScreen>
                               fireTrigger: cannonStream.stream,
                               readyTrigger: readyStream.stream,
                               accentOverride: accent,
+                              // Only the BARREL turns — the carriage and
+                              // mount stay square to the deck. Handed to
+                              // the gun rather than wrapped in a rotation
+                              // out here, which would swing the whole thing.
+                              barrelAim: halfIsP1 ? _aimP1 : _aimP2,
                               // Firing happens with a single tap on the
                               // enemy grid cell (see gridFirable /
                               // onTapCell above); the cannon itself just
@@ -2669,8 +3178,10 @@ class _BattleScreenState extends State<BattleScreen>
     // of a flat guess: local/vs-AI matches have no chat tab, so they only
     // need to clear the dots badge; the right side never needs more than
     // the exit pill's own width on any mode.
-    final leftInset = _hasRemotePeer ? 56.0 : 40.0;
-    const rightInset = 40.0;
+    // Both edge tabs grew slightly in the redesign (38 and 36 wide, plus
+    // their outlines and shadows), so the strips clear a little more.
+    final leftInset = _hasRemotePeer ? 60.0 : 44.0;
+    const rightInset = 42.0;
 
     Widget row(Board board, bool isP1Fleet, Color deck) => Expanded(
           child: Container(
@@ -2722,7 +3233,9 @@ class _BattleScreenState extends State<BattleScreen>
           // resize when it opens.
           if (_hasRemotePeer)
             Positioned(
-              left: 34,
+              // Clears the fleet-count badge, which is now 38 wide with a
+              // 2.5px outline and sits 2px off the edge.
+              left: 38,
               top: (bandH - 34) / 2,
               child: MatchChatReveal(size: 34),
             ),
@@ -3094,6 +3607,92 @@ class _CannonballDetailPainter extends CustomPainter {
 /// One airborne cannonball. There is one of these per SHOOTER (see
 /// `_projP1`/`_projP2`), so both sides can have a shot in the air at the
 /// same time — the normal case in chaos mode.
+
+/// One shot queued for a volley slot — see `_BattleScreenState._volley`.
+class _VolleyShot {
+  final CombatEvent event;
+  final bool byP1;
+  const _VolleyShot(this.event, this.byP1);
+}
+
+/// The camera the cinematic finish moves.
+///
+/// Scales the whole battle screen about a fixed screen point — the cell
+/// the final shell is landing on — and lays letterbox bars over the top
+/// and bottom while it runs. A plain `AnimatedBuilder` over the entire
+/// screen would rebuild every widget on it each frame; this only rebuilds
+/// the transform, keeping the board itself as a passed-through `child`.
+class _CinematicCamera extends StatelessWidget {
+  final Listenable listenable;
+  final double Function() zoom;
+  final Offset? Function() focus;
+  final Widget child;
+
+  const _CinematicCamera({
+    required this.listenable,
+    required this.zoom,
+    required this.focus,
+    required this.child,
+  });
+
+  /// How far in the camera pushes at full zoom.
+  static const double _maxScale = 1.75;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: listenable,
+      child: child,
+      builder: (context, inner) {
+        final t = zoom();
+        final at = focus();
+        if (t <= 0 || at == null) return inner!;
+        final scale = 1 + (_maxScale - 1) * t;
+        // Scaling about an arbitrary point: translate that point to the
+        // origin, scale, translate back. `Transform.scale`'s `origin`
+        // does the same thing but measured from the widget's centre,
+        // which is not where the shell is landing.
+        return ClipRect(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Transform(
+                transform: Matrix4.identity()
+                  ..translateByDouble(at.dx, at.dy, 0, 1)
+                  ..scaleByDouble(scale, scale, 1, 1)
+                  ..translateByDouble(-at.dx, -at.dy, 0, 1),
+                child: inner,
+              ),
+              IgnorePointer(
+                child: _Letterbox(amount: t),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Bars that close in from the top and bottom while the camera runs, so
+/// the moment reads as a cut to a different shot rather than the board
+/// simply growing.
+class _Letterbox extends StatelessWidget {
+  final double amount;
+  const _Letterbox({required this.amount});
+
+  @override
+  Widget build(BuildContext context) {
+    final h = 34.0 * amount;
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Container(height: h, color: AppColors.outline),
+        Container(height: h, color: AppColors.outline),
+      ],
+    );
+  }
+}
 class _Projectile {
   _Projectile({
     required this.byP1,
@@ -3202,61 +3801,68 @@ class _DotsBadge extends StatelessWidget {
     required this.bottomColor,
   });
 
-  // The ring and the digit inside it are both painted straight in the
-  // fleet's colour, sitting on the badge's fixed AppColors.cream disc.
-  // That reads fine for the dark/mid-tone skins (Crimson Armada, Abyss
-  // Ghost, Midnight Ops, the family sets, the red/blue side fallback…)
-  // but Arctic Storm and Rime Wardens are near-white hulls, and a
-  // near-white ring around a near-white number on a near-white disc is
-  // effectively invisible — exactly the same failure the name chips
-  // and vote badges had before [FleetLook.ink] started picking ink off
-  // the hull's own luminance instead of trusting every hull to be dark
-  // enough to read. Same fix here: past the luminance cutoff where a
-  // hull stops contrasting with the cream disc, fall back to the fixed
-  // dark outline colour instead of the washed-out hull tone.
-  Color _legibleOn(Color color) =>
-      color.computeLuminance() > 0.5 ? AppColors.outline : color;
+  // The chip is filled with the fleet's own colour, so the digit on top
+  // of it needs ink chosen against THAT rather than a fixed cream. Arctic
+  // Storm and Rime Wardens are near-white hulls — cream on cream is
+  // invisible — which is the same failure the name chips and vote badges
+  // fix by picking ink off the hull's own luminance.
+  Color _inkOn(Color fill) =>
+      fill.computeLuminance() > 0.55 ? AppColors.outline : AppColors.cream;
 
   @override
   Widget build(BuildContext context) {
-    Widget dot(Color color, int count) {
-      final ink = _legibleOn(color);
+    // One fleet's remaining-hull count. A filled chip in that fleet's own
+    // colour rather than the old cream disc with a coloured ring: the
+    // colour is the thing that says WHOSE count this is, and a filled
+    // chip carries it at this size where a 3px ring did not.
+    Widget chip(Color color, int count) {
       return Container(
-        width: 16,
-        height: 16,
+        width: 30,
+        height: 20,
         decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: AppColors.cream,
-          border: Border.all(color: ink, width: 3),
+          color: color,
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(color: AppColors.outline, width: 2),
         ),
-        child: Center(
-          child: Text(
-            '$count',
-            style: TextStyle(
-              fontSize: 8.5,
-              fontWeight: FontWeight.w900,
-              color: ink,
-              height: 1,
-            ),
+        alignment: Alignment.center,
+        child: Text(
+          '$count',
+          style: TextStyle(
+            // Was 8.5px inside a 16px disc — legible on a desk, not on a
+            // phone held at arm's length mid-match.
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+            color: _inkOn(color),
+            height: 1,
           ),
         ),
       );
     }
 
     return Container(
-      width: 34,
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      width: 38,
+      // No vertical padding: the badge gets 50px from the band, the
+      // 2.5px outlines eat 5 of it, and two 20px chips plus breathing
+      // room is exactly what is left. Padding on top of that overflowed.
+      padding: const EdgeInsets.only(left: 2),
       decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.horizontal(right: Radius.circular(18)),
-        boxShadow: [BoxShadow(color: Color(0x33000000), offset: Offset(2, 2))],
+        // Dark and outlined, like every other chunky element on this
+        // screen — the flat white tab it replaced was the one piece of
+        // chrome that did not belong to the game's own cartoon style.
+        color: AppColors.navyDeep,
+        borderRadius: BorderRadius.horizontal(right: Radius.circular(19)),
+        border: Border(
+          top: BorderSide(color: AppColors.outline, width: 2.5),
+          right: BorderSide(color: AppColors.outline, width: 2.5),
+          bottom: BorderSide(color: AppColors.outline, width: 2.5),
+        ),
+        boxShadow: [BoxShadow(color: Color(0x55000000), offset: Offset(2, 3))],
       ),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          dot(topColor, topLeft),
-          const SizedBox(height: 5),
-          dot(bottomColor, bottomLeft),
+          chip(topColor, topLeft),
+          chip(bottomColor, bottomLeft),
         ],
       ),
     );
@@ -3264,6 +3870,16 @@ class _DotsBadge extends StatelessWidget {
 }
 
 /// Tall vertical EXIT pill pinned to the right edge of the status band.
+///
+/// Matched to the fleet-count badge on the opposite edge (see
+/// [_DotsBadge]): both were flat white tabs with no outline, the only two
+/// pieces of chrome on this screen that did not wear the game's own
+/// chunky cartoon styling. Both are now dark, outlined and drop-shadowed.
+///
+/// This one also stops being silent about what it does. It is not a
+/// "close the screen" button — it surrenders the match — so it carries a
+/// door-out icon and a red key line, enough to make a player break stride
+/// before tapping it without shouting at them the whole match.
 class _ExitPill extends StatelessWidget {
   final VoidCallback onTap;
   const _ExitPill({required this.onTap});
@@ -3276,102 +3892,307 @@ class _ExitPill extends StatelessWidget {
         onTap();
       },
       child: Container(
-        width: 34,
+        width: 36,
         decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.horizontal(left: Radius.circular(18)),
-          boxShadow: [BoxShadow(color: Color(0x33000000), offset: Offset(-2, 2))],
+          color: AppColors.navyDeep,
+          borderRadius: BorderRadius.horizontal(left: Radius.circular(19)),
+          border: Border(
+            top: BorderSide(color: AppColors.outline, width: 2.5),
+            left: BorderSide(color: AppColors.outline, width: 2.5),
+            bottom: BorderSide(color: AppColors.outline, width: 2.5),
+          ),
+          boxShadow: [
+            BoxShadow(color: Color(0x55000000), offset: Offset(-2, 3)),
+          ],
         ),
-        child: const Center(
-          child: RotatedBox(
-            quarterTurns: 1,
-            child: Text(
-              'EXIT',
-              style: TextStyle(
-                fontWeight: FontWeight.w900,
-                fontSize: 12,
-                letterSpacing: 2,
-                color: AppColors.outline,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.logout, size: 14, color: AppColors.hit),
+            const SizedBox(height: 2),
+            // Scales itself down rather than trusting the label to fit:
+            // rotated, the word's WIDTH becomes its height, and icon plus
+            // word came to more than the band's 49px of usable room.
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: RotatedBox(
+                  quarterTurns: 1,
+                  child: Text(
+                    'EXIT',
+                    style: AppText.label(size: 10, color: AppColors.cream),
+                  ),
+                ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
   }
 }
 
-/// POWER PLAY's floating card slot. Purely a display + tap target — every
-/// decision about what tapping it DOES lives in
-/// `_BattleScreenState._onPowerUpCardTap`, so this widget only needs to
-/// know what card it's showing and whether it's currently tappable.
-class _PowerUpCardChip extends StatelessWidget {
-  final PowerUpCard card;
+/// POWER PLAY's HUD badge — the power-up in hand, and the one control for
+/// spending it. Purely a display + tap target: every decision about what
+/// tapping it DOES lives in `_BattleScreenState._onPowerUpCardTap`.
+///
+/// FEEDBACK ("add all of the power play designs, icons, effects"): this
+/// was a text chip — the card's name over "TAP TO AIM" — which made all
+/// twenty cards read the same until you stopped and read one. The design
+/// replaces it with the card's own painted badge (see
+/// `power_up_icons.dart`), so the power-up is recognised at a glance, and
+/// puts the state on the badge itself rather than in prose:
+///
+///  * a **rarity-coloured halo** that breathes while the card is ready to
+///    use, and goes still the moment it is armed or the turn is not yours;
+///  * a **flag** in the rarity colour on the shoulder, so a held card is
+///    obvious even in peripheral vision;
+///  * a **crackling bolt** in place of the icon when the opponent's JAM
+///    has cost you this turn's draw — the design's own "tell" for a card
+///    that never arrived.
+class _PowerUpBadge extends StatefulWidget {
+  /// The card in hand, or null for an empty hand.
+  final PowerUpCard? card;
+
+  /// True when the hand is empty BECAUSE the opponent jammed this turn,
+  /// rather than merely having nothing yet.
+  final bool jammed;
+
+  /// Whether tapping does anything right now.
   final bool usable;
+
+  /// True while this card is armed and waiting for a target pick.
+  final bool armed;
+
   final VoidCallback onTap;
 
-  const _PowerUpCardChip({
+  const _PowerUpBadge({
     required this.card,
+    required this.jammed,
     required this.usable,
+    required this.armed,
     required this.onTap,
   });
 
-  /// Rarity reads as colour, the same shorthand the deck's own descriptions
-  /// already use (common/uncommon/rare) — nothing else in the app has
-  /// needed a rarity palette before this card.
-  Color _rarityColor(PowerUpRarity r) => switch (r) {
-        PowerUpRarity.common => AppColors.steel,
-        PowerUpRarity.uncommon => AppColors.blue,
-        PowerUpRarity.rare => AppColors.gold,
-      };
+  @override
+  State<_PowerUpBadge> createState() => _PowerUpBadgeState();
+}
+
+class _PowerUpBadgeState extends State<_PowerUpBadge>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    );
+    _syncPulse();
+  }
+
+  /// The halo only ticks while it is actually visible. A battle screen
+  /// rebuilds constantly, and an always-running controller on the HUD
+  /// would repaint this corner every frame for the whole match.
+  void _syncPulse() {
+    final wants = widget.usable && !widget.armed && widget.card != null;
+    if (wants && !_pulse.isAnimating) {
+      _pulse.repeat();
+    } else if (!wants && _pulse.isAnimating) {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  @override
+  void didUpdateWidget(_PowerUpBadge old) {
+    super.didUpdateWidget(old);
+    _syncPulse();
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final def = PowerUps.of(card);
-    final accent = _rarityColor(def.rarity);
+    final card = widget.card;
+    final accent = powerUpAccent(card);
     return GestureDetector(
-      onTap: usable ? onTap : null,
-      child: Opacity(
-        opacity: usable ? 1 : 0.55,
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 170),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: cartoonBox(AppColors.navy, radius: 14, border: accent),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration:
-                        BoxDecoration(color: accent, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      def.name,
-                      style: AppText.heading(size: 13),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
+      onTap: widget.usable ? widget.onTap : null,
+      child: SizedBox(
+        width: 74,
+        height: 74,
+        child: Stack(
+          alignment: Alignment.center,
+          clipBehavior: Clip.none,
+          children: [
+            // The breathing halo. Painted rather than done with a
+            // `BoxShadow` so it can fade out to nothing at full radius the
+            // way the design's `pulseRing` keyframes do.
+            AnimatedBuilder(
+              animation: _pulse,
+              builder: (context, _) => CustomPaint(
+                size: const Size(74, 74),
+                painter: _PulseHaloPainter(
+                  t: _pulse.value,
+                  color: accent,
+                  visible: _pulse.isAnimating,
+                ),
               ),
-              const SizedBox(height: 3),
-              Text(
-                usable
-                    ? (def.needsTarget ? 'TAP TO AIM' : 'TAP TO USE')
-                    : 'WAIT FOR YOUR TURN',
-                style: AppText.label(size: 9, color: AppColors.mist),
+            ),
+            Opacity(
+              opacity: widget.usable || widget.armed ? 1 : 0.55,
+              child: Container(
+                width: 54,
+                height: 54,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.navy,
+                  border: Border.all(
+                    color: widget.armed ? accent : AppColors.outline,
+                    width: 3,
+                  ),
+                ),
+                alignment: Alignment.center,
+                child: card != null
+                    ? PowerUpIcon(card: card, size: 44)
+                    : (widget.jammed
+                        ? const _JamCrackle()
+                        : Text('—',
+                            style: AppText.label(
+                                size: 12, color: AppColors.mist))),
               ),
-            ],
-          ),
+            ),
+            // The held-card flag.
+            if (card != null)
+              Positioned(
+                top: 6,
+                right: 2,
+                child: CustomPaint(
+                  size: const Size(16, 18),
+                  painter: _FlagPainter(accent),
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
+}
+
+/// The design's `pulseRing` — a ring that expands out of the badge and
+/// fades as it goes.
+class _PulseHaloPainter extends CustomPainter {
+  final double t;
+  final Color color;
+  final bool visible;
+
+  const _PulseHaloPainter({
+    required this.t,
+    required this.color,
+    required this.visible,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (!visible) return;
+    // One full breath per cycle: out and gone by the halfway point, so the
+    // ring reads as a pulse rather than a continuous ripple.
+    final phase = (t * 2).clamp(0.0, 1.0);
+    final alpha = (1 - phase) * 0.5;
+    if (alpha <= 0) return;
+    canvas.drawCircle(
+      size.center(Offset.zero),
+      27 + 9 * phase,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..color = color.withValues(alpha: alpha),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_PulseHaloPainter old) =>
+      old.t != t || old.color != color || old.visible != visible;
+}
+
+/// The little pennant on a held card's shoulder.
+class _FlagPainter extends CustomPainter {
+  final Color color;
+  const _FlagPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()
+      ..moveTo(0, 0)
+      ..lineTo(size.width, size.height / 2)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(path, Paint()..color = color);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = AppColors.outline,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_FlagPainter old) => old.color != color;
+}
+
+/// The design's `crackle` — a bolt guttering in and out, shown where the
+/// icon would be when JAM has eaten this turn's draw.
+class _JamCrackle extends StatefulWidget {
+  const _JamCrackle();
+
+  @override
+  State<_JamCrackle> createState() => _JamCrackleState();
+}
+
+class _JamCrackleState extends State<_JamCrackle>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  /// The design's keyframes: full, then a hard drop to 25% at 40%, back up
+  /// to 75%, down to 15% at 72%, and back to full — a bad connection, not
+  /// a smooth fade.
+  double _alpha(double t) {
+    if (t < 0.40) return 1.0;
+    if (t < 0.55) return 0.25;
+    if (t < 0.72) return 0.75;
+    if (t < 0.85) return 0.15;
+    return 1.0;
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: _ctrl,
+        builder: (context, _) => Opacity(
+          opacity: _alpha(_ctrl.value),
+          child: const Icon(Icons.bolt, size: 26, color: AppColors.gold),
+        ),
+      );
 }
 
 /// Shown over a live battle when the opponent's connection drops.

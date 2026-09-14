@@ -21,12 +21,38 @@ const Rect _gunBox = Rect.fromLTWH(-40, -108, 220, 216);
 /// correctly (the design's own `boxW`/`boxH` maths).
 const double kGunBoxAspect = 220 / 216;
 
+/// Where each family's barrel is hinged, in the art's own design units.
+///
+/// The barrel turns about this point (see `FamilyCanvas.rotatedAbout` in
+/// each gun below) — and so must everything drawn to look like it CAME
+/// OUT of that barrel: the muzzle flash, the exhaust, the sparks. Those
+/// are painted by `CannonPainter`, not here, so the hinge lives in one
+/// table both sides read rather than being written down twice and
+/// quietly drifting apart the first time a gun is redrawn.
+///
+/// Every gun is hinged on the centre line, so only the height varies.
+const Map<FleetFamilyId, double> kFamilyBarrelPivotY = {
+  FleetFamilyId.pirate: 34,
+  FleetFamilyId.naval: 40,
+  FleetFamilyId.steam: 36,
+  FleetFamilyId.arctic: 42,
+  FleetFamilyId.volcanic: 40,
+  FleetFamilyId.scifi: 44,
+};
+
+/// X of that hinge — the same for all six.
+const double kFamilyBarrelPivotX = 70;
+
+/// [barrelAim] swings the gun's BARREL — and only its barrel — off its
+/// rest heading, in radians. The carriage, mount and wheels stay put, the
+/// way a real turret works; see `FamilyCanvas.rotatedAbout`.
 void paintFamilyCannon(
   Canvas canvas,
   Size size,
   FleetFamily family, {
   GunPalette? paletteOverride,
   bool shadow = true,
+  double barrelAim = 0,
 }) {
   final p = paletteOverride ?? family.gun;
   final c = FamilyCanvas.fit(canvas, size, _gunBox);
@@ -60,28 +86,30 @@ void paintFamilyCannon(
   }
   switch (family.id) {
     case FleetFamilyId.pirate:
-      _pirate(c, p);
+      _pirate(c, p, barrelAim);
       break;
     case FleetFamilyId.naval:
-      _naval(c, p);
+      _naval(c, p, barrelAim);
       break;
     case FleetFamilyId.steam:
-      _steam(c, p);
+      _steam(c, p, barrelAim);
       break;
     case FleetFamilyId.arctic:
-      _arctic(c, p);
+      _arctic(c, p, barrelAim);
       break;
     case FleetFamilyId.volcanic:
-      _volcanic(c, p);
+      _volcanic(c, p, barrelAim);
       break;
     case FleetFamilyId.scifi:
-      _scifi(c, p);
+      _scifi(c, p, barrelAim);
       break;
   }
 }
 
 // Bell-Mouth Broadside — timber carriage between two spoked wheels.
-void _pirate(FamilyCanvas c, GunPalette p) {
+void _pirate(FamilyCanvas c, GunPalette p, double aim) {
+  final bar = c.rotatedAbout(
+      kFamilyBarrelPivotX, kFamilyBarrelPivotY[FleetFamilyId.pirate]!, aim);
   c.shape('M-16,26 L156,26 L142,84 L-2,84 Z',
       fillColor: p.deck, inkColor: p.ink, inkWidth: p.inkW);
   c.rect(8, -6, 124, 40,
@@ -95,25 +123,28 @@ void _pirate(FamilyCanvas c, GunPalette p) {
   c.circle(70, 34, 62, fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
   c.circle(70, 34, 46,
       fillColor: p.trim, inkColor: p.ink, inkWidth: 3, inkOpacity: 0.5);
-  c.shape('M40,30 L100,30 L92,-58 L48,-58 Z',
+  // ---- Barrel: everything from here up swings with the aim. ----
+  bar.shape('M40,30 L100,30 L92,-58 L48,-58 Z',
       fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
   // The bell.
-  c.shape('M46,-58 L94,-58 L104,-84 L36,-84 Z',
+  bar.shape('M46,-58 L94,-58 L104,-84 L36,-84 Z',
       fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
-  c.rect(42, -16, 56, 12,
+  bar.rect(42, -16, 56, 12,
       r: 4, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
-  c.rect(44, -44, 52, 11,
+  bar.rect(44, -44, 52, 11,
       r: 4, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
-  c.ellipse(70, -84, 34, 11, fillColor: p.ink);
-  c.ellipse(70, -86, 24, 7, fillColor: const Color(0xFF0B0906));
-  c.stroke('M52,-26 q18,-8 36,0', p.glow, 4,
+  bar.ellipse(70, -84, 34, 11, fillColor: p.ink);
+  bar.ellipse(70, -86, 24, 7, fillColor: const Color(0xFF0B0906));
+  bar.stroke('M52,-26 q18,-8 36,0', p.glow, 4,
       opacity: 0.45, cap: StrokeCap.round);
   c.circle(16, 6, 13, inkColor: p.trim, inkWidth: 7);
   c.circle(124, 6, 13, inkColor: p.trim, inkWidth: 7);
 }
 
 // MK-IV Autoloader — long thin barrel, slotted muzzle brake.
-void _naval(FamilyCanvas c, GunPalette p) {
+void _naval(FamilyCanvas c, GunPalette p, double aim) {
+  final bar = c.rotatedAbout(
+      kFamilyBarrelPivotX, kFamilyBarrelPivotY[FleetFamilyId.naval]!, aim);
   c.shape('M-14,34 L28,12 L112,12 L154,34 L154,74 L112,92 L28,92 L-14,74 Z',
       fillColor: p.deck, inkColor: p.ink, inkWidth: p.inkW);
   for (final b in const [
@@ -134,21 +165,24 @@ void _naval(FamilyCanvas c, GunPalette p) {
       inkColor: p.ink,
       inkWidth: 2,
       inkOpacity: 0.4);
-  c.shape('M54,24 L86,24 L82,-70 L58,-70 Z',
+  // ---- Barrel: everything from here up swings with the aim. ----
+  bar.shape('M54,24 L86,24 L82,-70 L58,-70 Z',
       fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
-  c.rect(48, -6, 44, 10, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
-  c.rect(50, -40, 40, 9, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
+  bar.rect(48, -6, 44, 10, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
+  bar.rect(50, -40, 40, 9, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
   // Muzzle brake.
-  c.shape('M56,-70 L84,-70 L86,-96 L54,-96 Z',
+  bar.shape('M56,-70 L84,-70 L86,-96 L54,-96 Z',
       fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
-  c.line(54, -80, 86, -80, p.ink, p.inkW);
-  c.line(55, -89, 85, -89, p.ink, p.inkW);
-  c.rect(60, -99, 20, 8, r: 2, fillColor: p.ink);
-  c.line(70, -8, 70, -66, p.glow, 4, opacity: 0.35);
+  bar.line(54, -80, 86, -80, p.ink, p.inkW);
+  bar.line(55, -89, 85, -89, p.ink, p.inkW);
+  bar.rect(60, -99, 20, 8, r: 2, fillColor: p.ink);
+  bar.line(70, -8, 70, -66, p.glow, 4, opacity: 0.35);
 }
 
 // Pressure Battery — three boiler drums, bypass pipe, live gauge.
-void _steam(FamilyCanvas c, GunPalette p) {
+void _steam(FamilyCanvas c, GunPalette p, double aim) {
+  final bar = c.rotatedAbout(
+      kFamilyBarrelPivotX, kFamilyBarrelPivotY[FleetFamilyId.steam]!, aim);
   c.rect(-16, 20, 172, 62,
       r: 10, fillColor: p.deck, inkColor: p.ink, inkWidth: p.inkW);
   for (final x in const [-4.0, 144.0]) {
@@ -161,14 +195,15 @@ void _steam(FamilyCanvas c, GunPalette p) {
   c.circle(70, 36, 58, fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
   c.circle(70, 36, 42,
       fillColor: p.trim, inkColor: p.ink, inkWidth: 3, inkOpacity: 0.45);
+  // ---- Barrel: everything from here up swings with the aim. ----
   // Three stacked drums instead of one taper.
-  c.rect(42, -18, 56, 48,
+  bar.rect(42, -18, 56, 48,
       r: 8, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
-  c.rect(46, -52, 48, 38,
+  bar.rect(46, -52, 48, 38,
       r: 6, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
-  c.rect(50, -82, 40, 32,
+  bar.rect(50, -82, 40, 32,
       r: 5, fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
-  c.shape('M44,-82 L96,-82 L104,-96 L36,-96 Z',
+  bar.shape('M44,-82 L96,-82 L104,-96 L36,-96 Z',
       fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
   for (final r in const [
     [48.0, -12.0],
@@ -178,14 +213,14 @@ void _steam(FamilyCanvas c, GunPalette p) {
     [56.0, -76.0],
     [84.0, -76.0],
   ]) {
-    c.circle(r[0], r[1], 3.4, fillColor: p.ink, fillOpacity: 0.55);
+    bar.circle(r[0], r[1], 3.4, fillColor: p.ink, fillOpacity: 0.55);
   }
   // Bypass pipe.
-  c.stroke('M100,20 q30,-6 26,-40 q-3,-30 -22,-44', p.trim, 10,
+  bar.stroke('M100,20 q30,-6 26,-40 q-3,-30 -22,-44', p.trim, 10,
       cap: StrokeCap.round);
-  c.stroke('M100,20 q30,-6 26,-40 q-3,-30 -22,-44', p.ink, 2, opacity: 0.5);
-  c.ellipse(70, -96, 34, 10, fillColor: p.ink);
-  c.ellipse(70, -98, 23, 6, fillColor: const Color(0xFF0C0805));
+  bar.stroke('M100,20 q30,-6 26,-40 q-3,-30 -22,-44', p.ink, 2, opacity: 0.5);
+  bar.ellipse(70, -96, 34, 10, fillColor: p.ink);
+  bar.ellipse(70, -98, 23, 6, fillColor: const Color(0xFF0C0805));
   // The gauge — the needle leads the shot.
   c.circle(26, -4, 17, fillColor: p.glow, inkColor: p.ink, inkWidth: p.inkW);
   c.line(26, -4, 26, -15, p.ink, 3, cap: StrokeCap.round);
@@ -193,7 +228,9 @@ void _steam(FamilyCanvas c, GunPalette p) {
 }
 
 // Icebreaker Mortar — stubby two-stage barrel behind a crystal collar.
-void _arctic(FamilyCanvas c, GunPalette p) {
+void _arctic(FamilyCanvas c, GunPalette p, double aim) {
+  final bar = c.rotatedAbout(
+      kFamilyBarrelPivotX, kFamilyBarrelPivotY[FleetFamilyId.arctic]!, aim);
   c.shape('M-18,40 L18,18 L122,18 L158,40 L150,86 L-10,86 Z',
       fillColor: p.deck, inkColor: p.ink, inkWidth: p.inkW);
   for (final s in const [
@@ -207,9 +244,10 @@ void _arctic(FamilyCanvas c, GunPalette p) {
   c.circle(70, 42, 58, fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
   c.circle(70, 42, 41,
       fillColor: p.trim, inkColor: p.ink, inkWidth: 3, inkOpacity: 0.4);
-  c.shape('M40,26 L100,26 L94,-30 L46,-30 Z',
+  // ---- Barrel: everything from here up swings with the aim. ----
+  bar.shape('M40,26 L100,26 L94,-30 L46,-30 Z',
       fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
-  c.shape('M46,-30 L94,-30 L88,-62 L52,-62 Z',
+  bar.shape('M46,-30 L94,-30 L88,-62 L52,-62 Z',
       fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
   for (final s in const [
     'M38,-6 L46,-22 L52,-2 Z',
@@ -217,16 +255,18 @@ void _arctic(FamilyCanvas c, GunPalette p) {
     'M52,-62 L60,-88 L68,-62 Z',
     'M72,-62 L80,-82 L88,-62 Z',
   ]) {
-    c.shape(s, fillColor: p.glow, inkColor: p.ink, inkWidth: 2.5);
+    bar.shape(s, fillColor: p.glow, inkColor: p.ink, inkWidth: 2.5);
   }
-  c.ellipse(70, -62, 20, 8, fillColor: p.ink);
-  c.ellipse(70, -64, 13, 5, fillColor: const Color(0xFF0E1A22));
+  bar.ellipse(70, -62, 20, 8, fillColor: p.ink);
+  bar.ellipse(70, -64, 13, 5, fillColor: const Color(0xFF0E1A22));
   c.fill('M22,20 q14,-9 28,-2 q-14,5 -28,2 Z', Colors.white, opacity: 0.85);
   c.fill('M92,18 q14,-8 26,0 q-13,5 -26,0 Z', Colors.white, opacity: 0.85);
 }
 
 // Magma Bombard — wide short mortar on a rock-slab collar.
-void _volcanic(FamilyCanvas c, GunPalette p) {
+void _volcanic(FamilyCanvas c, GunPalette p, double aim) {
+  final bar = c.rotatedAbout(
+      kFamilyBarrelPivotX, kFamilyBarrelPivotY[FleetFamilyId.volcanic]!, aim);
   c.shape(
       'M-22,44 L-4,14 L44,26 L100,10 L150,32 L162,66 '
       'L128,90 L58,82 L6,92 L-16,70 Z',
@@ -241,21 +281,24 @@ void _volcanic(FamilyCanvas c, GunPalette p) {
       fillColor: p.trim, inkColor: p.ink, inkWidth: p.inkW);
   c.stroke('M40,66 L58,44 L52,26', p.glow, 4, cap: StrokeCap.round);
   c.stroke('M98,64 L84,46 L92,28', p.glow, 4, cap: StrokeCap.round);
-  c.shape('M34,22 L106,22 L96,-42 L44,-42 Z',
+  // ---- Barrel: everything from here up swings with the aim. ----
+  bar.shape('M34,22 L106,22 L96,-42 L44,-42 Z',
       fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
-  c.shape('M44,-42 L96,-42 L112,-78 L28,-78 Z',
+  bar.shape('M44,-42 L96,-42 L112,-78 L28,-78 Z',
       fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
   // Molten seams running the length of the body.
-  c.stroke('M52,16 L64,-14 L58,-38', p.glow, 5, cap: StrokeCap.round);
-  c.stroke('M88,14 L78,-16 L86,-40', p.glow, 5, cap: StrokeCap.round);
-  c.stroke('M62,-52 L70,-70', p.glow, 5, cap: StrokeCap.round);
-  c.ellipse(70, -78, 42, 13, fillColor: p.ink);
-  c.ellipse(70, -80, 31, 9, fillColor: p.glow, fillOpacity: 0.9);
-  c.ellipse(70, -81, 17, 5, fillColor: const Color(0xFFFFF0C8));
+  bar.stroke('M52,16 L64,-14 L58,-38', p.glow, 5, cap: StrokeCap.round);
+  bar.stroke('M88,14 L78,-16 L86,-40', p.glow, 5, cap: StrokeCap.round);
+  bar.stroke('M62,-52 L70,-70', p.glow, 5, cap: StrokeCap.round);
+  bar.ellipse(70, -78, 42, 13, fillColor: p.ink);
+  bar.ellipse(70, -80, 31, 9, fillColor: p.glow, fillOpacity: 0.9);
+  bar.ellipse(70, -81, 17, 5, fillColor: const Color(0xFFFFF0C8));
 }
 
 // Ion Lance — three detached segments, forked emitter, core in the ring.
-void _scifi(FamilyCanvas c, GunPalette p) {
+void _scifi(FamilyCanvas c, GunPalette p, double aim) {
+  final bar = c.rotatedAbout(
+      kFamilyBarrelPivotX, kFamilyBarrelPivotY[FleetFamilyId.scifi]!, aim);
   c.shape('M-20,52 L20,24 L120,24 L160,52 L120,80 L20,80 Z',
       fillColor: p.deck, inkColor: p.trim, inkWidth: 2.5);
   c.stroke('M-12,52 L16,32', p.glow, 2.5, cap: StrokeCap.round);
@@ -268,18 +311,19 @@ void _scifi(FamilyCanvas c, GunPalette p) {
       fillColor: p.deck, inkColor: p.glow, inkWidth: 3);
   c.circle(70, 44, 15, fillColor: p.glow);
   c.circle(70, 44, 7, fillColor: Colors.white);
+  // ---- Barrel: everything from here up swings with the aim. ----
   // Three barrel segments with visible energy gaps.
-  c.shape('M50,10 L90,10 L86,-14 L54,-14 Z',
+  bar.shape('M50,10 L90,10 L86,-14 L54,-14 Z',
       fillColor: p.hull, inkColor: p.trim, inkWidth: 2.5);
-  c.shape('M52,-26 L88,-26 L84,-52 L56,-52 Z',
+  bar.shape('M52,-26 L88,-26 L84,-52 L56,-52 Z',
       fillColor: p.hull, inkColor: p.trim, inkWidth: 2.5);
-  c.shape('M56,-64 L84,-64 L80,-88 L60,-88 Z',
+  bar.shape('M56,-64 L84,-64 L80,-88 L60,-88 Z',
       fillColor: p.hull, inkColor: p.trim, inkWidth: 2.5);
-  c.line(70, -14, 70, -26, p.glow, 4, cap: StrokeCap.round);
-  c.line(70, -52, 70, -64, p.glow, 4, cap: StrokeCap.round);
+  bar.line(70, -14, 70, -26, p.glow, 4, cap: StrokeCap.round);
+  bar.line(70, -52, 70, -64, p.glow, 4, cap: StrokeCap.round);
   // Forked emitter.
-  c.line(60, -88, 52, -104, p.trim, 5, cap: StrokeCap.round);
-  c.line(80, -88, 88, -104, p.trim, 5, cap: StrokeCap.round);
-  c.circle(70, -94, 9, fillColor: p.glow, fillOpacity: 0.95);
-  c.circle(70, -94, 17, fillColor: p.glow, fillOpacity: 0.25);
+  bar.line(60, -88, 52, -104, p.trim, 5, cap: StrokeCap.round);
+  bar.line(80, -88, 88, -104, p.trim, 5, cap: StrokeCap.round);
+  bar.circle(70, -94, 9, fillColor: p.glow, fillOpacity: 0.95);
+  bar.circle(70, -94, 17, fillColor: p.glow, fillOpacity: 0.25);
 }

@@ -71,6 +71,34 @@ class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
 
+
+  /// Master effect volume, 0..1, multiplied into every cue's own level.
+  ///
+  /// Applied to live players as well as future ones: the pools hold real
+  /// native players that were built with the old level baked in, so a
+  /// slider dragged mid-match would otherwise not be heard until each
+  /// pool happened to be rebuilt.
+  double _sfxVolume = 1.0;
+  double get sfxVolume => _sfxVolume;
+  set sfxVolume(double v) {
+    final next = v.clamp(0.0, 1.0);
+    if (_sfxVolume == next) return;
+    _sfxVolume = next;
+    for (final pool in _pools.values) {
+      pool.applyVolumeScale(next);
+    }
+  }
+
+  /// Menu-music volume, 0..1.
+  double _musicVolume = 0.82;
+  double get musicVolume => _musicVolume;
+  set musicVolume(double v) {
+    final next = v.clamp(0.0, 1.0);
+    if (_musicVolume == next) return;
+    _musicVolume = next;
+    final player = _menuMusicPlayer;
+    if (player != null) unawaited(player.setVolume(next));
+  }
   bool _enabled = true;
   bool get enabled => _enabled;
 
@@ -402,6 +430,9 @@ class SoundService {
   /// UI click is quieter than full, and a volume that never changes has
   /// no business costing a platform round trip on every shot — see the
   /// note on [_ManagedPool.play].
+  /// A cue's own AUTHORED level. The player's master effect volume is
+  /// applied on top by the pool (see ), which is also what
+  /// lets a live pool be rescaled without losing this base level.
   static double _volumeFor(String key) => key == 'click' ? 0.9 : 1.0;
 
   static Duration _safetyTimeoutFor(String key) {
@@ -878,7 +909,7 @@ class SoundService {
       player.positionUpdater = null;
       await player.setAudioContext(_sfxAudioContext);
       await player.setReleaseMode(ReleaseMode.loop);
-      await player.setVolume(0.82);
+      await player.setVolume(musicVolume);
       await player.play(AssetSource(_menuMusicAsset), volume: 0.82);
     } catch (e) {
       if (kDebugMode) debugPrint('SoundService: menu music play failed ($e)');
@@ -1255,15 +1286,36 @@ class _ManagedPool {
     required this.size,
     required this.audioContext,
     required this.safetyTimeout,
-    required this.volume,
-  });
+    required double volume,
+  })  : _authoredVolume = volume,
+        volume = volume * SoundService.instance.sfxVolume;
+
+  /// The level this effect was created with, before any master-volume
+  /// scaling — so rescaling stays lossless however many times it happens.
+  final double _authoredVolume;
 
   final String asset;
   final int size;
   final AudioContext audioContext;
 
+
   /// This effect's playback volume, applied once when a player is built.
-  final double volume;
+  ///
+  /// Not final any more: the master effect volume is a live setting, and
+  /// pools hold real native players built with the old level baked in —
+  /// without this a slider dragged mid-match would not be heard until the
+  /// pool happened to be rebuilt for some unrelated reason.
+  double volume;
+
+  /// Rescales this pool's level to a new master volume and pushes it at
+  /// every player it currently holds.
+  void applyVolumeScale(double master) {
+    final base = _authoredVolume;
+    volume = base * master;
+    for (final p in players) {
+      unawaited(p.setVolume(volume).catchError((_) {}));
+    }
+  }
 
   /// Players known to be sitting at position zero, so the next play can
   /// skip rewinding them.

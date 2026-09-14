@@ -63,6 +63,18 @@ class ShipPainter extends CustomPainter {
   /// need to change.
   final String? shooterCannonId;
 
+  /// POWER PLAY — ARMOUR PLATE: how many plates this hull still has, 0
+  /// for none. Drawn as bolted bands over the hull, one band per plate,
+  /// so the protection is visible from across the board AND you can see
+  /// it wearing down as shells are turned aside. Only ever non-zero on
+  /// your own fleet: plating is your own business, and telling the
+  /// attacker which hull is armoured would hand them free information.
+  final int armourPlates;
+
+  /// POWER PLAY — AUTO DODGE: whether this hull is primed to slip the
+  /// next shot that would hit it. Drawn as a pair of wake chevrons.
+  final bool dodgePrimed;
+
   ShipPainter({
     required this.spec,
     required this.skin,
@@ -71,6 +83,8 @@ class ShipPainter extends CustomPainter {
     this.hitCount = 0,
     Set<int>? hitIndices,
     this.shooterCannonId,
+    this.armourPlates = 0,
+    this.dodgePrimed = false,
   }) : hitIndices = hitIndices ?? (hitCount > 0
             ? Set<int>.from(List.generate(hitCount, (i) => i))
             : const <int>{});
@@ -178,7 +192,75 @@ class ShipPainter extends CustomPainter {
         canvas.drawCircle(Offset(sx, sy), sr, smoke);
       }
     }
+    // POWER PLAY fittings go on last, over everything including the
+    // damage: they are bolted ON to the hull, not part of its artwork,
+    // and a plate covering a crater is exactly what it should look like.
+    if (!sunk) _paintPowerUpFittings(canvas, w, h);
     canvas.restore();
+  }
+
+  /// ARMOUR PLATE's bands and AUTO DODGE's wake chevrons.
+  ///
+  /// Deliberately drawn in one shared, skin-agnostic steel rather than in
+  /// each fleet's own palette: these are field-fitted, they are meant to
+  /// read as "this hull has something bolted to it" at a glance from the
+  /// far side of the board, and a Rime Warden's pale hull would swallow
+  /// pale plating entirely. The dark outline is what carries them across
+  /// all fifteen skins.
+  void _paintPowerUpFittings(Canvas canvas, double w, double h) {
+    if (armourPlates <= 0 && !dodgePrimed) return;
+    final ink = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(1.2, h * 0.055)
+      ..color = const Color(0xFF1E2A36);
+
+    if (armourPlates > 0) {
+      final plate = Paint()..color = const Color(0xFFB9C6CE);
+      final rivet = Paint()..color = const Color(0xFF1E2A36);
+      // One band per remaining plate, spread along the hull so two plates
+      // read as visibly more armour than one.
+      final bandW = w * 0.13;
+      for (var i = 0; i < armourPlates; i++) {
+        final cx = w * (0.34 + 0.32 * i / math.max(1, armourPlates - 1));
+        final rect = RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(armourPlates == 1 ? w * 0.5 : cx, h * 0.5),
+            width: bandW,
+            height: h * 0.86,
+          ),
+          Radius.circular(h * 0.12),
+        );
+        canvas.drawRRect(rect, plate);
+        canvas.drawRRect(rect, ink);
+        for (final fy in [0.28, 0.72]) {
+          canvas.drawCircle(
+            Offset(rect.center.dx, h * fy),
+            math.max(0.8, h * 0.07),
+            rivet,
+          );
+        }
+      }
+    }
+
+    if (dodgePrimed) {
+      // Two chevrons off the stern — the hull already leaning away.
+      final wake = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.0, h * 0.09)
+        ..strokeCap = StrokeCap.round
+        ..color = const Color(0xFF4FC3C7);
+      for (var i = 0; i < 2; i++) {
+        final x = w * 0.10 - i * w * 0.055;
+        if (x < 0) break;
+        canvas.drawPath(
+          Path()
+            ..moveTo(x + w * 0.04, h * 0.22)
+            ..lineTo(x, h * 0.5)
+            ..lineTo(x + w * 0.04, h * 0.78),
+          wake,
+        );
+      }
+    }
   }
 
   /// The same authored wound the legacy hulls get — see `paintShipDamage`
@@ -389,6 +471,8 @@ class ShipPainter extends CustomPainter {
       // painter reused across a loadout change would otherwise keep
       // drawing the previous gun's wound.
       oldDelegate.shooterCannonId != shooterCannonId ||
+      oldDelegate.armourPlates != armourPlates ||
+      oldDelegate.dodgePrimed != dodgePrimed ||
       oldDelegate.skin.hull != skin.hull;
 
   static bool _setEquals(Set<int> a, Set<int> b) {

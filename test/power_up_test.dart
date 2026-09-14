@@ -11,10 +11,17 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('the deck itself', () {
-    test('exactly twenty cards, one definition each, no duplicates', () {
-      expect(PowerUps.deck, hasLength(20));
-      expect(PowerUps.deck.map((d) => d.card).toSet(), hasLength(20));
-      expect(PowerUps.deck.map((d) => d.name).toSet(), hasLength(20),
+    test('one definition per card, no duplicates, no orphans', () {
+      // Sized off the enum rather than a literal: the deck has grown once
+      // already (HARD TURN, AUTO DODGE, ARMOUR PLATE and SPY SHIP joined
+      // the original twenty) and a hardcoded count only ever fails the
+      // next time it grows, which tells nobody anything useful. What
+      // actually matters is that every enum value has exactly one
+      // definition and its own name.
+      final n = PowerUpCard.values.length;
+      expect(PowerUps.deck, hasLength(n));
+      expect(PowerUps.deck.map((d) => d.card).toSet(), hasLength(n));
+      expect(PowerUps.deck.map((d) => d.name).toSet(), hasLength(n),
           reason: 'every card needs its own name for the UI banner');
     });
 
@@ -49,7 +56,8 @@ void main() {
       for (var i = 0; i < 2000; i++) {
         seen.add(PowerUps.draw(rng));
       }
-      expect(seen.length, 20, reason: '2000 draws should see every card');
+      expect(seen.length, PowerUpCard.values.length,
+          reason: '2000 draws should see every card');
     });
 
     test('draw() is weighted — commons come up far more than rares', () {

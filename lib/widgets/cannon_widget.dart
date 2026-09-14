@@ -8,6 +8,7 @@ import '../art/family_cannon_art.dart';
 import '../art/fleet_family.dart';
 import '../art/legacy_cannon_art.dart';
 import '../art/legacy_shell_art.dart';
+import '../art/muzzle_particles.dart';
 import '../core/theme.dart';
 import '../services/storage_service.dart';
 import 'ambient_loop.dart';
@@ -31,6 +32,19 @@ class CannonWidget extends StatefulWidget {
   /// Emits when this cannon should flash "ready" (turn handoff cue).
   final Stream<void>? readyTrigger;
 
+  /// Where this gun.s BARREL is pointing, in radians off dead ahead.
+  ///
+  /// FEEDBACK ("only the barrels where the projectile is being fired will
+  /// turn, not the cannon itself"): this used to be a rotation on the
+  /// whole widget, which swung the carriage, the wheels and the mount
+  /// round with it — a gun sliding sideways rather than a turret
+  /// traversing. It is handed to the PAINTER now, which turns the barrel
+  /// alone about the mount.
+  ///
+  /// Animated internally rather than by the caller so the swing lives
+  /// with the gun that is doing it.
+  final double barrelAim;
+
   const CannonWidget({
     super.key,
     required this.skin,
@@ -42,6 +56,7 @@ class CannonWidget extends StatefulWidget {
     this.fireTrigger,
     this.accentOverride,
     this.readyTrigger,
+    this.barrelAim = 0,
   });
 
   /// Distance from the cannon's center to its muzzle tip, as a fraction of
@@ -97,6 +112,17 @@ class _CannonWidgetState extends State<CannonWidget>
 
   late final AnimationController _recoil;
 
+  /// The barrel's own traverse, so the swing lives with the gun rather
+  /// than with whoever set the aim.
+  ///
+  /// Short on purpose: the shell is spawned at the barrel's FINAL aimed
+  /// tip the instant it is fired (see `BattleScreen._cannonMouth`), so a
+  /// long, luxurious traverse would leave the shell leaving a barrel that
+  /// has not arrived yet. 150ms is fast enough that the gap never reads.
+  late final AnimationController _aimCtrl;
+  late Animation<double> _aim;
+  static const Duration _aimSwing = Duration(milliseconds: 150);
+
   /// The idle "ready" breathing pulse. Deliberately NOT an
   /// [AnimationController]: a controller's ticker asks for a frame on
   /// every vsync, and on a 120Hz phone this one loop — running whenever a
@@ -149,6 +175,8 @@ class _CannonWidgetState extends State<CannonWidget>
   void initState() {
     super.initState();
     _profile = fireProfileFor(widget.skin);
+    _aimCtrl = AnimationController(vsync: this, duration: _aimSwing);
+    _aim = AlwaysStoppedAnimation(widget.barrelAim);
     _recoil = AnimationController(
       vsync: this,
       duration: _profile.recoilDuration,
@@ -176,6 +204,7 @@ class _CannonWidgetState extends State<CannonWidget>
     _smoke.addListener(_maybeSetState);
     _pulse.addListener(_maybeSetState);
     _readyKick.addListener(_maybeSetState);
+    _aimCtrl.addListener(_maybeSetState);
     final rng = math.Random();
     _puffs = List.generate(5, (i) {
       return _SmokePuff(
@@ -228,6 +257,14 @@ class _CannonWidgetState extends State<CannonWidget>
         oldWidget.enabled != widget.enabled) {
       _maybeSetState();
     }
+    if (oldWidget.barrelAim != widget.barrelAim) {
+      // Tween FROM wherever the barrel actually is right now, not from
+      // the previous target — a second order arriving mid-traverse has to
+      // carry on from the current heading rather than snapping back.
+      _aim = Tween<double>(begin: _aim.value, end: widget.barrelAim)
+          .animate(CurvedAnimation(parent: _aimCtrl, curve: Curves.easeOut));
+      _aimCtrl.forward(from: 0);
+    }
     if (oldWidget.skin.id != widget.skin.id) {
       _profile = fireProfileFor(widget.skin);
       // Only retimed while at rest — resizing an AnimationController's
@@ -240,6 +277,7 @@ class _CannonWidgetState extends State<CannonWidget>
 
   @override
   void dispose() {
+    _aimCtrl.dispose();
     _fireSub?.cancel();
     _readySub?.cancel();
     _recoil.dispose();
@@ -328,6 +366,7 @@ class _CannonWidgetState extends State<CannonWidget>
                 height: widget.size,
                 child: CustomPaint(
                   painter: CannonPainter(
+                    barrelAim: _aim.value,
                     accent: ready
                         ? (widget.accentOverride ?? widget.skin.projectile)
                         : AppColors.inkSoft,
@@ -418,7 +457,12 @@ class CannonPainter extends CustomPainter {
     this.ready = true,
     this.smoke = 0,
     this.smokePuffs = const [],
+    this.barrelAim = 0,
   });
+
+  /// How far the BARREL is swung off dead ahead, in radians. The mount
+  /// it sits on never moves — see `paintLegacyCannon`.
+  final double barrelAim;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -474,12 +518,13 @@ class CannonPainter extends CustomPainter {
     // tell WHICH gun was bolted on. The sweep alone already says
     // "reloading", and says it more precisely (it shows how far along),
     // so the gun now keeps its own colours the whole time.
-    final muzzleCenter = paintLegacyCannon(
+    paintLegacyCannon(
       canvas,
       center,
       outerR,
       id,
       recoilPull: recoilPull,
+      barrelAim: barrelAim,
       // Only visible while actually reloading. When a shot misses the gun
       // stays instantly ready (cooldown 1.0) and the circle timer is
       // hidden entirely, so a miss produces no reload visuals at all.
@@ -490,13 +535,25 @@ class CannonPainter extends CustomPainter {
       recoil: recoil,
     );
 
-    // `mouthCenter`/`mouthR` anchor the muzzle flash and smoke below —
-    // no bore-hole is drawn here any more. Each turret's own replayed
-    // SVG art already carries its own genuine bore/rim detail (e.g.
-    // MK-I's own `<ellipse cx="60" cy="11" .../>` mouth), so this used to
-    // draw a second, generic dark circle right on top of it — the
-    // "stray dot" every legacy skin showed at its muzzle.
-    final mouthCenter = muzzleCenter;
+    // FEEDBACK ("synchronise the smoke with the barrel — it is off, and
+    // does not appear on firing"): the bang is drawn in the BARREL's own
+    // frame now, not the gun's. Rotating the canvas about the mount by
+    // exactly the angle the turret was drawn at means the flash, the
+    // smoke and the new particles all leave the muzzle along the barrel
+    // and drift the way it is pointing, with no per-effect trigonometry
+    // to keep in step — and, more to the point, they land ON the muzzle
+    // instead of wherever it used to be before the gun traversed.
+    canvas.save();
+    if (barrelAim != 0) {
+      canvas.translate(center.dx, center.dy);
+      canvas.rotate(barrelAim);
+      canvas.translate(-center.dx, -center.dy);
+    }
+    // The tip in the BARREL's rest frame — the frame the canvas is now
+    // in. `paintLegacyCannon` returns the already-swung tip for callers
+    // outside this rotation; here that would rotate it twice.
+    final mouthCenter = center +
+        Offset(0, -size.width * legacyMuzzleFractionOf(id) + recoilPull);
     final mouthR = outerR * 0.12;
 
     // Muzzle flash while recoiling — see [_paintLegacyFlash].
@@ -522,6 +579,11 @@ class CannonPainter extends CustomPainter {
     if (smoke > 0.01 && smokePuffs.isNotEmpty) {
       _paintLegacyExhaust(canvas, mouthCenter, outerR);
     }
+    // Per-gun sparks thrown out of the muzzle — see [paintMuzzleSparks].
+    if (smoke > 0.01) {
+      paintMuzzleSparks(canvas, mouthCenter, outerR, smoke, id);
+    }
+    canvas.restore();
   }
 
   /// The bang itself, one per legacy gun.
@@ -1075,11 +1137,37 @@ class CannonPainter extends CustomPainter {
     canvas.translate(mountCenter.dx, mountCenter.dy - recoilPull);
     canvas.scale(FleetFamily.gunInset);
     canvas.translate(-mountCenter.dx, -(mountCenter.dy - recoilPull));
-    paintFamilyCannon(canvas, size, fam, shadow: false);
+    paintFamilyCannon(canvas, size, fam, shadow: false, barrelAim: barrelAim);
     canvas.restore();
 
     final mouthCenter =
         Offset(side / 2, fam.gunY(side, fam.muzzleY) + recoilPull);
+
+    // BUGFIX (the bang stayed put while the barrel traversed): the flash,
+    // the exhaust and the sparks are all drawn at the muzzle, but they
+    // were drawn in the WIDGET's frame while the barrel that threw them
+    // had already rotated away in its own. Swing the gun hard left and
+    // the smoke still came off dead ahead, hanging in the air beside a
+    // barrel that was no longer there.
+    //
+    // Everything the shot throws is painted inside the barrel's frame
+    // now — the same hinge `paintFamilyCannon` turns the barrel about
+    // (`kFamilyBarrelPivot*`, read from the art so the two cannot drift)
+    // — so the muzzle geometry below stays written in the simple
+    // pointing-straight-ahead terms it was, and the rotation carries it.
+    canvas.save();
+    if (barrelAim != 0) {
+      // On the gun's own centre line, which the art maps to the middle of
+      // the widget; `recoilPull` is added because the whole gun is drawn
+      // shifted back by it while it kicks.
+      final hinge = Offset(
+        side / 2,
+        fam.gunY(side, kFamilyBarrelPivotY[fam.id]!) + recoilPull,
+      );
+      canvas.translate(hinge.dx, hinge.dy);
+      canvas.rotate(barrelAim);
+      canvas.translate(-hinge.dx, -hinge.dy);
+    }
 
     // Muzzle flash, tinted with the family's own accent — a magma
     // bombard should not flash the same white as an ion lance.
@@ -1099,6 +1187,12 @@ class CannonPainter extends CustomPainter {
     if (smoke > 0.01 && smokePuffs.isNotEmpty) {
       _paintExhaust(canvas, fam, mouthCenter, outerR);
     }
+    // Per-family throw-off, on top of the exhaust — see
+    // [paintFamilyMuzzleSparks].
+    if (smoke > 0.01) {
+      paintFamilyMuzzleSparks(canvas, mouthCenter, outerR, smoke, fam);
+    }
+    canvas.restore();
   }
 
   /// The design's firing storyboard, past the flash.

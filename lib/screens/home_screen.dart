@@ -20,7 +20,9 @@ import '../widgets/ocean_background.dart';
 import 'customize_screen.dart';
 import 'friends_screen.dart';
 import 'hotspot_screen.dart';
+import 'how_to_play_screen.dart';
 import 'match_resume.dart';
+import 'settings_screen.dart';
 import 'local_mode_screen.dart';
 import 'vs_ai_mode_screen.dart';
 
@@ -224,6 +226,26 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                             children: [
                               Expanded(child: _profileCard(profile)),
                               const SizedBox(width: 10),
+                              _iconButton(
+                                icon: Icons.help_outline,
+                                color: AppColors.green,
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => const HowToPlayScreen(),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              _iconButton(
+                                icon: Icons.settings,
+                                color: AppColors.navy,
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => const SettingsScreen(),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
                               _soundButton(profile),
                             ],
                           ),
@@ -464,6 +486,26 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
     );
   }
 
+
+  /// A square chunky button for the header row — the same shape the sound
+  /// toggle already is, so the three read as one set.
+  Widget _iconButton({
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Pressable(
+      onTap: () {
+        SoundService.instance.click();
+        onTap();
+      },
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: cartoonBox(color, radius: 14),
+        child: Icon(icon, color: AppColors.cream, size: 20),
+      ),
+    );
+  }
   Widget _soundButton(ProfileStore profile) {
     return Pressable(
       onTap: () {

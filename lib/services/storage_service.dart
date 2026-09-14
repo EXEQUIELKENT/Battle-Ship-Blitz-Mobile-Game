@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../art/fleet_family.dart';
+import '../art/impact_fx.dart';
 import '../art/legacy_identity.dart';
+import 'sound_service.dart';
 
 /// A ship hull skin.
 ///
@@ -371,6 +373,51 @@ String rankTitleForRp(int rp) {
 }
 
 /// Persistent profile: RP, streaks, stats and customization.
+
+/// How much visual flourish the battle screen spends per frame.
+///
+/// A real knob, not a label: each step switches off specific work that
+/// costs real milliseconds on a mid-range phone — see
+/// `GraphicsQualityX` for exactly what each one changes.
+enum GraphicsQuality { low, balanced, high }
+
+extension GraphicsQualityX on GraphicsQuality {
+  String get label => switch (this) {
+        GraphicsQuality.low => 'PERFORMANCE',
+        GraphicsQuality.balanced => 'BALANCED',
+        GraphicsQuality.high => 'MAXIMUM',
+      };
+
+  String get blurb => switch (this) {
+        GraphicsQuality.low =>
+          'Fewer impact particles, no screen shake. Smoothest frame rate '
+              'on older phones.',
+        GraphicsQuality.balanced =>
+          'The full impact effects and screen shake. What the game is '
+              'tuned for.',
+        GraphicsQuality.high =>
+          'Everything in BALANCED plus denser particles and longer '
+              'shell trails.',
+      };
+
+  /// Multiplier on how many particles an impact effect draws. Read by
+  /// `impact_fx.dart`, which is where the per-frame cost actually is.
+  double get fxDensity => switch (this) {
+        GraphicsQuality.low => 0.5,
+        GraphicsQuality.balanced => 1.0,
+        GraphicsQuality.high => 1.35,
+      };
+
+  /// Whether an impact is allowed to shake the screen.
+  bool get screenShake => this != GraphicsQuality.low;
+
+  /// How many motion-trail ghosts follow a shell.
+  int get shellTrails => switch (this) {
+        GraphicsQuality.low => 0,
+        GraphicsQuality.balanced => 2,
+        GraphicsQuality.high => 3,
+      };
+}
 class ProfileStore extends ChangeNotifier {
   /// Testing/build-time override: every hull, cannon and battlefield
   /// reads as owned everywhere in the app, release APKs included. On by
@@ -400,6 +447,10 @@ class ProfileStore extends ChangeNotifier {
   static const _kCannonSkin = 'profile.cannonSkin';
   static const _kOwned = 'profile.owned';
   static const _kGameplayTheme = 'profile.gameplayTheme';
+  static const _kSfxVol = 'profile.sfxVolume';
+  static const _kMusicVol = 'profile.musicVolume';
+  static const _kGraphics = 'profile.graphics';
+  static const _kCinematic = 'profile.cinematicFinish';
 
   SharedPreferences? _prefs;
 
@@ -410,6 +461,25 @@ class ProfileStore extends ChangeNotifier {
   int bestStreak = 0;
   String playerName = 'Captain';
   bool soundOn = true;
+
+  /// Master effect volume, 0..1. Multiplied into every cue's own level —
+  /// see `SoundService.sfxVolume`.
+  double sfxVolume = 1.0;
+
+  /// Menu-music volume, 0..1. 0.82 is the level the music always played
+  /// at before it became adjustable, so an untouched profile sounds
+  /// exactly as it did.
+  double musicVolume = 0.82;
+
+  /// How much visual flourish the battle screen spends — see
+  /// [GraphicsQuality].
+  GraphicsQuality graphics = GraphicsQuality.balanced;
+
+  /// The slow, close-up finish on the shot that sinks a fleet's last
+  /// hull. OFF by default: it is a deliberate interruption of the pace,
+  /// and a player who has not asked for it should not have their match
+  /// paused for a camera move.
+  bool cinematicFinish = false;
   String shipSkinId = 'steel';
 
   /// Whether the player has ever actually equipped a hull in the
@@ -458,12 +528,22 @@ class ProfileStore extends ChangeNotifier {
     bestStreak = p.getInt(_kBestStreak) ?? 0;
     playerName = p.getString(_kName) ?? 'Captain';
     soundOn = p.getBool(_kSound) ?? true;
+    sfxVolume = (p.getDouble(_kSfxVol) ?? 1.0).clamp(0.0, 1.0);
+    musicVolume = (p.getDouble(_kMusicVol) ?? 0.82).clamp(0.0, 1.0);
+    graphics = GraphicsQuality.values[(p.getInt(_kGraphics) ?? GraphicsQuality.balanced.index).clamp(0, GraphicsQuality.values.length - 1)];
+    cinematicFinish = p.getBool(_kCinematic) ?? false;
     shipSkinId = p.getString(_kShipSkin) ?? 'steel';
     shipSkinChosen = p.getBool(_kShipSkinChosen) ?? false;
     cannonSkinId = p.getString(_kCannonSkin) ?? 'mk1';
     gameplayThemeId = p.getString(_kGameplayTheme) ?? 'mk1';
     owned = (p.getStringList(_kOwned) ?? ['steel', 'mk1', 'mk1']).toSet();
     _migrateOwnership();
+    // The sound service and the effect painters read these as globals;
+    // this is what makes a restored profile sound and draw the way it
+    // was left rather than at the compiled-in defaults.
+    SoundService.instance.sfxVolume = sfxVolume;
+    SoundService.instance.musicVolume = musicVolume;
+    applyGraphics();
     notifyListeners();
   }
 
@@ -477,6 +557,10 @@ class ProfileStore extends ChangeNotifier {
     await p.setInt(_kBestStreak, bestStreak);
     await p.setString(_kName, playerName);
     await p.setBool(_kSound, soundOn);
+    await p.setDouble(_kSfxVol, sfxVolume);
+    await p.setDouble(_kMusicVol, musicVolume);
+    await p.setInt(_kGraphics, graphics.index);
+    await p.setBool(_kCinematic, cinematicFinish);
     await p.setString(_kShipSkin, shipSkinId);
     await p.setBool(_kShipSkinChosen, shipSkinChosen);
     await p.setString(_kCannonSkin, cannonSkinId);
@@ -509,6 +593,46 @@ class ProfileStore extends ChangeNotifier {
     notifyListeners();
   }
 
+
+  /// Applies a settings change and pushes it at whatever actually acts on
+  /// it. Kept as one method per setting rather than a single "save
+  /// everything" so a slider dragged across the screen writes once per
+  /// change and never has to guess what else moved.
+  Future<void> setSfxVolume(double v) async {
+    sfxVolume = v.clamp(0.0, 1.0);
+    SoundService.instance.sfxVolume = sfxVolume;
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> setMusicVolume(double v) async {
+    musicVolume = v.clamp(0.0, 1.0);
+    SoundService.instance.musicVolume = musicVolume;
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> setGraphics(GraphicsQuality q) async {
+    graphics = q;
+    applyGraphics();
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> setCinematicFinish(bool on) async {
+    cinematicFinish = on;
+    await _save();
+    notifyListeners();
+  }
+
+  /// Pushes the audio and graphics settings at the systems that read them
+  /// as plain globals rather than through this store — the sound service,
+  /// and the impact-effect painters in `lib/art/`. Called on load so a
+  /// restored profile sounds and draws the way it was left, and again
+  /// from each setter.
+  void applyGraphics() {
+    fxDensity = graphics.fxDensity;
+  }
   Future<void> toggleSound() async {
     soundOn = !soundOn;
     await _save();

@@ -14,8 +14,13 @@ import 'package:flutter/material.dart';
 /// design a character at a time.
 ///
 /// Supports the subset the design actually uses: `M m L l H h V v C c
-/// Q q Z z`. Anything else is ignored rather than throwing — a missing
-/// flourish is a far better failure than a crashed battle screen.
+/// Q q A a Z z`. Anything else is ignored rather than throwing — a
+/// missing flourish is a far better failure than a crashed battle screen.
+///
+/// (`A`/`a` arrived with the POWER PLAY power-up icons, whose JAM signal
+/// arcs and SCRAMBLE rotation arrow are drawn with it. Until then every
+/// design file had used only lines and béziers, so an arc silently
+/// aborted the rest of its path — the shape simply did not appear.)
 Path parseSvgPath(String d) {
   final path = Path();
   var i = 0;
@@ -137,6 +142,41 @@ Path parseSvgPath(String d) {
           cy = ey;
           break;
         }
+      case 'A':
+      case 'a':
+        {
+          // `A rx ry x-axis-rotation large-arc-flag sweep-flag x y`.
+          //
+          // Flutter's `arcToPoint` takes the SVG ENDPOINT parameterization
+          // verbatim — same radii, same rotation, same two flags — so this
+          // is a direct hand-off rather than a conversion through centre
+          // parameterization. `clockwise` is SVG's sweep flag.
+          final rel = command == 'a';
+          final rx = readNumber().abs(), ry = readNumber().abs();
+          final rot = readNumber();
+          final largeArc = readNumber() != 0;
+          final sweep = readNumber() != 0;
+          final x = readNumber(), y = readNumber();
+          final ex = rel ? cx + x : x, ey = rel ? cy + y : y;
+          // Both degenerate cases the SVG spec calls out: a zero radius
+          // means "draw a straight line", and an arc that ends where it
+          // started is dropped entirely (there is no unique arc, and
+          // `arcToPoint` misbehaves rather than no-opping).
+          if (rx == 0 || ry == 0) {
+            path.lineTo(ex, ey);
+          } else if ((ex - cx).abs() > 1e-9 || (ey - cy).abs() > 1e-9) {
+            path.arcToPoint(
+              Offset(ex, ey),
+              radius: Radius.elliptical(rx, ry),
+              rotation: rot,
+              largeArc: largeArc,
+              clockwise: sweep,
+            );
+          }
+          cx = ex;
+          cy = ey;
+          break;
+        }
       case 'Z':
       case 'z':
         path.close();
@@ -238,6 +278,29 @@ class FamilyCanvas {
         measuring: true,
       );
 
+
+  /// This same canvas with an extra rotation of [radians] about the
+  /// design-space point (cx, cy) composed into its geometry transform.
+  ///
+  /// Exists so a gun's BARREL can be swung to bear without the carriage
+  /// it is mounted on moving with it. A plain `canvas.rotate` cannot do
+  /// that here: this class transforms the GEOMETRY rather than the canvas
+  /// (see the class doc), so the canvas transform is identity and turning
+  /// it would rotate nothing that matters.
+  ///
+  /// Composed as `m · T(c) · R · T(-c)`, i.e. the rotation happens in
+  /// design space FIRST and the existing mapping to the widget is applied
+  /// to the result — which is what keeps the pivot at the design point
+  /// the caller named rather than somewhere in device pixels.
+  FamilyCanvas rotatedAbout(double cx, double cy, double radians) {
+    if (radians == 0) return this;
+    final m = Matrix4.fromFloat64List(Float64List.fromList(_m))
+      ..translateByDouble(cx, cy, 0, 1)
+      ..rotateZ(radians)
+      ..translateByDouble(-cx, -cy, 0, 1);
+    return FamilyCanvas._(canvas, m.storage, scale, inkScale,
+        measuring: _measuring);
+  }
   final bool _measuring;
   Rect? _measured;
 

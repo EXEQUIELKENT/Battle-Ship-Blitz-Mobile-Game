@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import 'legacy_identity.dart';
+import 'legacy_shell_art.dart';
 import 'svg_replay.dart';
 
 /// Converts a [Color] to the `#RRGGBB` form the replayed SVG markup wants.
@@ -53,6 +54,7 @@ Offset paintLegacyCannon(
   double recoilPull = 0,
   double cooldown = 1,
   double recoil = 0,
+  double barrelAim = 0,
 }) {
   final scale = outerR / 34;
   canvas.save();
@@ -73,13 +75,45 @@ Offset paintLegacyCannon(
   // files carry, which describe that design tool's own preview canvas
   // rather than this widget's.
   if (cooldown < 0.999) {
+    // FEEDBACK ("make the reload circle different colours depending on
+    // the cannon skin theme, and make sure they are visible"): this was
+    // one flat white arc at 55% for all nine guns — the last piece of the
+    // cannon that did not belong to the skin it was bolted to, and on the
+    // pale rings (Arctic, Coral) a white sweep on a near-white plate was
+    // barely there at all.
+    //
+    // It now runs in the gun's OWN shell palette, the same one the muzzle
+    // flash, the exhaust and the projectile already share, over a dark
+    // track. The track is what actually makes it legible: an arc has to
+    // read against the ring plate underneath it, and the plates run from
+    // near-black (Midnight) to near-white (Arctic), so no single sweep
+    // colour could ever have worked on all nine. A dark groove under a
+    // bright sweep reads on both.
+    final p = legacyShellPalette(cannonId);
+    final rect =
+        Rect.fromCircle(center: const Offset(60, 72), radius: 20.5);
     canvas.drawArc(
-      Rect.fromCircle(center: const Offset(60, 72), radius: 20.5),
+      rect,
+      0,
+      2 * math.pi,
+      false,
+      Paint()
+        ..color = const Color(0xFF11181F).withValues(alpha: 0.45)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 34 * 0.145
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawArc(
+      rect,
       -math.pi / 2,
       2 * math.pi * cooldown,
       false,
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.55)
+        // Warms from the gun's body tone up to its glow as the reload
+        // completes, so the ring brightens into "ready" rather than just
+        // filling in.
+        ..color = Color.lerp(p.trim, p.glow, cooldown)!
+            .withValues(alpha: 0.95)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 34 * 0.12
         ..strokeCap = StrokeCap.round,
@@ -87,6 +121,21 @@ Offset paintLegacyCannon(
   }
 
   canvas.save();
+  // FEEDBACK ("only the barrels where the projectile is fired will turn,
+  // not the cannon itself"): the swing goes HERE, between the ring plate
+  // and the turret, so only the turret is inside it. The ring, its
+  // rivets and the reload sweep are all drawn above and stay square to
+  // the deck, exactly as a real mount does.
+  //
+  // Design point (60, 72) is the ring's own centre, and the translates at
+  // the top of this function map it onto `center` — so this pivots about
+  // the widget's centre, which is the same point `battle_screen`'s
+  // `_cannonMouth` rotates the muzzle around. The two cannot disagree.
+  if (barrelAim != 0) {
+    canvas.translate(60, 72);
+    canvas.rotate(barrelAim);
+    canvas.translate(-60, -72);
+  }
   // recoilPull is given in canvas pixels (matching the old contract the
   // caller's recoil math is written against); translating by
   // recoilPull/scale here, inside the scale(scale) frame just applied
@@ -101,7 +150,19 @@ Offset paintLegacyCannon(
   canvas.restore();
 
   canvas.restore();
-  return center + Offset(0, (_tipY(cannonId) - 72) * scale + recoilPull);
+  // The muzzle tip, swung with the barrel.
+  //
+  // FEEDBACK ("the smoke is off and does not appear on firing"): this
+  // used to return the tip of an UNROTATED barrel, and the flash and
+  // smoke are anchored to it — so the moment the gun started traversing,
+  // the bang was drawn where the barrel used to be. At a decent angle
+  // that lands inside the gun's own body, which is why it read as the
+  // smoke not appearing at all rather than merely being misplaced.
+  final tip = Offset(0, (_tipY(cannonId) - 72) * scale + recoilPull);
+  if (barrelAim == 0) return center + tip;
+  final cos = math.cos(barrelAim), sin = math.sin(barrelAim);
+  return center +
+      Offset(tip.dx * cos - tip.dy * sin, tip.dx * sin + tip.dy * cos);
 }
 
 /// How far THIS legacy skin's own muzzle tip sits from the ring's centre,

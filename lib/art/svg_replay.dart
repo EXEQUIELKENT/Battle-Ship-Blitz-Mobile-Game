@@ -126,6 +126,8 @@ void paintSvgFragment(Canvas canvas, String source) {
         _drawPoly(canvas, attrs, leafStyle, close: true);
       case 'polyline':
         _drawPoly(canvas, attrs, leafStyle, close: false);
+      case 'line':
+        _drawLine(canvas, attrs, leafStyle);
     }
   }
   // Unwind any groups a malformed/truncated fragment left open, so a bad
@@ -156,6 +158,14 @@ class _Style {
       opacity: opAttr != null ? opacity * double.parse(opAttr) : opacity,
     );
   }
+
+  /// This style with any inherited `fill` dropped — for shapes SVG never
+  /// fills (see `_drawLine`).
+  _Style noFill() => _Style(
+        stroke: stroke,
+        strokeWidth: strokeWidth,
+        opacity: opacity,
+      );
 }
 
 Map<String, String> _attrs(String tag) {
@@ -288,6 +298,31 @@ void _drawPath(Canvas canvas, Map<String, String> a, _Style st) {
   final d = a['d'];
   if (d == null) return;
   _fillAndStroke(canvas, parseSvgPath(d), a, st);
+}
+
+/// `<line>` — a two-point open polyline. The design's POWER PLAY power-up
+/// icons (see `power_up_icons.dart`) lean on it heavily for sonar sweeps,
+/// mine spikes, crosshairs and trap wires, so replaying those needs it.
+void _drawLine(Canvas canvas, Map<String, String> a, _Style st) {
+  final x1 = double.tryParse(a['x1'] ?? '');
+  final y1 = double.tryParse(a['y1'] ?? '');
+  final x2 = double.tryParse(a['x2'] ?? '');
+  final y2 = double.tryParse(a['y2'] ?? '');
+  if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+  // Routed through `_fillAndStroke` like every other shape so it picks up
+  // dasharray, caps, opacity and inherited group style identically — a
+  // line with no `stroke` is simply invisible, exactly as in SVG. `fill`
+  // is dropped rather than inherited: a line has no interior, and SVG
+  // never paints one, so a fill leaking down from an enclosing `<g>`
+  // would draw a filled sliver that does not exist in the source.
+  _fillAndStroke(
+    canvas,
+    Path()
+      ..moveTo(x1, y1)
+      ..lineTo(x2, y2),
+    a,
+    st.noFill(),
+  );
 }
 
 /// `<polygon>`/`<polyline>` — the design's `Ship Damage/*.svg` files draw

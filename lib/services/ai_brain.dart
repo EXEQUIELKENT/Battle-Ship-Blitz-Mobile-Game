@@ -309,6 +309,10 @@ class AiBrain {
       if (!e.forcePass) {
         if (e.hold) continue;
         if (e.result != ShotResult.miss) continue;
+        // Same volley rule the player screen applies — see
+        // `GameController.volleyScoredHit`. Without it the two ends would
+        // disagree about whose turn it is after a part-scoring card.
+        if (_c.volleyScoredHit(e)) continue;
       }
       final wasMyTurn = !_c.peerHasTurn;
       _c.peerHasTurn = e.byPlayer;
@@ -439,6 +443,33 @@ class AiBrain {
     return take();
   }
 
+
+  /// Mirrors `BattleScreen._volleyStagger`. A multi-shot card's shells
+  /// now leave the muzzle one at a time rather than all in the same
+  /// frame, so the last one of a five-cell CROSS FIRE is still crossing
+  /// the water well after the first has landed.
+  static const Duration kVolleyStagger = Duration(milliseconds: 130);
+
+  /// How long to hold off after firing a card that sends [shots] shells.
+  ///
+  /// [kFlightDelay] alone only covers ONE shell's arc, which was fine
+  /// while a volley arrived all at once and wrong the moment it stopped
+  /// doing so — the AI would take its next action while the player's
+  /// screen was still flying the back half of the burst, which is exactly
+  /// the "both sides firing at once" look the pacing exists to avoid.
+  Duration _volleyLead(int shots) =>
+      _flightLead + kVolleyStagger * (shots - 1).clamp(0, 8);
+
+  /// How many shells a firing card actually sends, so [_volleyLead] can
+  /// wait for all of them. Counts the CLAMPED shape (see
+  /// [_shapeCellsFor]) rather than the nominal size.
+  int _shotsFiredBy(PowerUpCard card, List<(int, int)> cells) =>
+      switch (card) {
+        PowerUpCard.spray => cells.length,
+        PowerUpCard.chainShot => 2, // the shot plus its possible bonus
+        PowerUpCard.barrage => 4,
+        _ => cells.isEmpty ? 1 : _shapeCellsFor(card, cells.first).length,
+      };
   void _markAwaitingResult() {
     _awaitingResult = true;
     _awaitingSince = _now();
@@ -472,6 +503,7 @@ class AiBrain {
         if (cells == null) return false;
         if (_c.usePowerUp(cells)) {
           _markAwaitingResult();
+          _scheduleAction(_volleyLead(_shotsFiredBy(card, cells)));
           return true;
         }
         return false;
@@ -483,15 +515,17 @@ class AiBrain {
         if (_unfiredCellCount() < 4) return false;
         if (_c.usePowerUp()) {
           _markAwaitingResult();
+          _scheduleAction(_volleyLead(4));
           return true;
         }
         return false;
       case PowerUpCard.sonar:
+        final centre = _bestSonarCentre();
+        if (centre != null) _c.usePowerUp([centre]);
+        return false;
       case PowerUpCard.reconSweep:
-        final cells = _targetCellsFor(card);
-        if (cells != null && cells.length == _c.powerUpTapsNeeded) {
-          _c.usePowerUp(cells);
-        }
+        final row = _bestReconRow();
+        if (row != null) _c.usePowerUp([row]);
         return false;
       case PowerUpCard.minefield:
       case PowerUpCard.trapLine:
@@ -520,7 +554,72 @@ class AiBrain {
         if (!_c.boards[0].ships.any((s) => s.hitIndices.isEmpty)) return false;
         _c.usePowerUp();
         return false;
+      case PowerUpCard.autoDodge:
+      case PowerUpCard.armourPlate:
+      case PowerUpCard.hardTurn:
+        // All three are aimed at one of the AI's OWN hulls by tapping a
+        // cell it occupies. Priming the hull the human is closest to
+        // finishing is the best use of every one of them: it is the one
+        // about to be sunk.
+        final cell = _mostThreatenedOwnHullCell();
+        if (cell == null) return false;
+        _c.usePowerUp([cell]);
+        return false;
+      case PowerUpCard.spyShip:
+        // Plant the scout where it can see the most unexplored water —
+        // and never on a cell already fired at, which `usePowerUp`
+        // refuses outright.
+        final cell = _spyPlantCell();
+        if (cell == null) return false;
+        _c.usePowerUp([cell]);
+        return false;
     }
+  }
+
+  /// A cell of the AI's own hull that most needs protecting: the one with
+  /// the most damage already on it but still afloat, falling back to any
+  /// intact hull when nothing has been hit yet. Returns null only when
+  /// every hull is sunk.
+  (int, int)? _mostThreatenedOwnHullCell() {
+    PlacedShip? best;
+    for (final s in _c.boards[0].ships) {
+      if (s.isSunk) continue;
+      if (best == null || s.hitIndices.length > best.hitIndices.length) {
+        best = s;
+      }
+    }
+    if (best == null) return null;
+    final cell = best.cells.first;
+    return (cell[0], cell[1]);
+  }
+
+  /// Where to drop the scout: the un-fired cell with the most un-fired
+  /// neighbours, so it has the most water left to report on.
+  (int, int)? _spyPlantCell() {
+    if (_c.mySpyCell != null) return null; // one scout at a time
+    (int, int)? best;
+    var bestScore = -1;
+    for (var r = 0; r < kBoardSize; r++) {
+      for (var c = 0; c < kBoardSize; c++) {
+        if (_c.myShots[r][c] != 0) continue;
+        var score = 0;
+        for (var dr = -1; dr <= 1; dr++) {
+          for (var dc = -1; dc <= 1; dc++) {
+            if (dr == 0 && dc == 0) continue;
+            final rr = r + dr, cc = c + dc;
+            if (rr < 0 || rr >= kBoardSize || cc < 0 || cc >= kBoardSize) {
+              continue;
+            }
+            if (_c.myShots[rr][cc] == 0) score++;
+          }
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          best = (r, c);
+        }
+      }
+    }
+    return best;
   }
 
   bool _hasDamagedHull() =>
@@ -551,43 +650,158 @@ class AiBrain {
   /// never on the wire and waited for a result that could not come, with
   /// nothing on either device able to move the match forward.
   List<(int, int)>? _firingCellsFor(PowerUpCard card) {
-    final picked = _targetCellsFor(card);
-    if (picked == null || picked.length != _c.powerUpTapsNeeded) return null;
-    // SPRAY fires its two cells verbatim and both came from the
-    // already-tried filter, so there is nothing to slide out from under
-    // it; likewise CHAIN SHOT's single cell.
+    // SPRAY fires its two cells verbatim and CHAIN SHOT its single one —
+    // there is no shape to place, so the hunt's own picks are exactly
+    // right and nothing can slide out from under them.
     if (card == PowerUpCard.spray || card == PowerUpCard.chainShot) {
+      final picked = _targetCellsFor(card);
+      if (picked == null || picked.length != _c.powerUpTapsNeeded) return null;
       return picked;
     }
-    if (_shapeHasFreshCell(card, picked.first)) return picked;
-    // The hunt's own pick lands on an edge with nothing left around it.
-    // Any other centre whose shape still has water to hit will do.
-    final fallback = <(int, int)>[
-      for (var r = 0; r < kBoardSize; r++)
-        for (var c = 0; c < kBoardSize; c++)
-          if (_c.myShots[r][c] == 0) (r, c),
-    ]..shuffle(_rng);
-    for (final cell in fallback) {
-      if (_shapeHasFreshCell(card, cell)) return [cell];
-    }
-    return null; // hold it — nothing this card could still accomplish
+    // Everything else covers an area, so the aim point is chosen by what
+    // the whole shape would actually hit rather than by the hunt's first
+    // suggestion — see [_shapeScore].
+    final centre = _bestShapeCentre(card);
+    return centre == null ? null : [centre];
   }
 
-  bool _shapeHasFreshCell(PowerUpCard card, (int, int) centre) {
+  /// The cells a shaped card would ACTUALLY fire at from [centre].
+  ///
+  /// Goes through `PowerUpShapes` rather than re-deriving the offsets,
+  /// because those functions SLIDE a shape that would hang off the board
+  /// back onto it (see `PowerUpShapes._clamp`). A CROSS FIRE "centred" on
+  /// (0,0) really fires the plus centred on (1,1) — so scoring the raw
+  /// offsets would grade a shot the card is not going to take.
+  List<(int, int)> _shapeCellsFor(PowerUpCard card, (int, int) centre) {
     final (r, c) = centre;
-    final shape = switch (card) {
+    return switch (card) {
       PowerUpCard.salvo => PowerUpShapes.salvo(r, c),
       PowerUpCard.depthCharge => PowerUpShapes.depthCharge(r, c),
       PowerUpCard.crossFire => PowerUpShapes.crossFire(r, c),
       _ => [centre],
     };
-    return shape.any((p) => _c.myShots[p.$1][p.$2] == 0);
+  }
+
+  /// How much a shaped card is worth fired from [centre].
+  ///
+  /// FEEDBACK ("the AI does not have good logic on the multiple shots").
+  /// The old rule was only ever "does this shape contain at least ONE
+  /// cell I have not fired at" — so a five-shot CROSS FIRE was perfectly
+  /// happy to land four of its shots on water it had already spent, and
+  /// a SALVO aimed at the board edge routinely threw two of three away.
+  /// A rare card would be burned for a single useful shot.
+  ///
+  /// Now every cell the shape really covers is counted, and a cell the
+  /// hunt is actively interested in — the ring around a confirmed hit —
+  /// counts for much more than blind water, so a shape gets steered onto
+  /// a wounded hull instead of merely somewhere unexplored.
+  int _shapeScore(PowerUpCard card, (int, int) centre) {
+    final hunt = _huntQueue.toSet();
+    var score = 0;
+    for (final p in _shapeCellsFor(card, centre)) {
+      if (_c.myShots[p.$1][p.$2] != 0) continue; // already spent, worth 0
+      score += hunt.contains(p) ? 6 : 1;
+    }
+    return score;
+  }
+
+  /// The best cell to aim a shaped card at, or null when no aim point
+  /// would land a single fresh shot (in which case the card is held).
+  ///
+  /// Every candidate is scored rather than taking the hunt's first pick
+  /// and hoping — see [_shapeScore]. Ties are broken at random so the AI
+  /// does not become predictable on an empty board, where a great many
+  /// centres score identically.
+  (int, int)? _bestShapeCentre(PowerUpCard card) {
+    var best = 0;
+    final tied = <(int, int)>[];
+    for (var r = 0; r < kBoardSize; r++) {
+      for (var c = 0; c < kBoardSize; c++) {
+        final score = _shapeScore(card, (r, c));
+        if (score == 0) continue;
+        if (score > best) {
+          best = score;
+          tied
+            ..clear()
+            ..add((r, c));
+        } else if (score == best) {
+          tied.add((r, c));
+        }
+      }
+    }
+    if (tied.isEmpty) return null;
+    return tied[_rng.nextInt(tied.length)];
   }
 
   /// One or two cells against the OPPONENT's grid for a card that needs
   /// them, reusing the same hunt logic ordinary firing does — spending a
   /// card's shots on an already-good guess is strictly better than a
   /// fresh random tap. Null only when nowhere legal remains.
+
+  /// SONAR wants the 3×3 with the most UNKNOWN water in it — the answer
+  /// is a count of ships in that box, so aiming it at cells already
+  /// resolved by shot tells the AI nothing it does not already know.
+  ///
+  /// FEEDBACK ("the AI does not have good logic on ... other power ups"):
+  /// both scans used to take whatever the hunt queue offered next, which
+  /// is the cell the AI most wants to SHOOT. That is close to the worst
+  /// possible scan target: its neighbourhood is the part of the board the
+  /// AI has already learned most about.
+  (int, int)? _bestSonarCentre() {
+    var best = -1;
+    final tied = <(int, int)>[];
+    for (var r = 0; r < kBoardSize; r++) {
+      for (var c = 0; c < kBoardSize; c++) {
+        var unknown = 0;
+        for (var dr = -1; dr <= 1; dr++) {
+          for (var dc = -1; dc <= 1; dc++) {
+            final rr = r + dr, cc = c + dc;
+            if (rr < 0 || rr >= kBoardSize || cc < 0 || cc >= kBoardSize) {
+              continue;
+            }
+            if (_c.myShots[rr][cc] == 0) unknown++;
+          }
+        }
+        if (unknown == 0) continue;
+        if (unknown > best) {
+          best = unknown;
+          tied
+            ..clear()
+            ..add((r, c));
+        } else if (unknown == best) {
+          tied.add((r, c));
+        }
+      }
+    }
+    if (tied.isEmpty) return null;
+    return tied[_rng.nextInt(tied.length)];
+  }
+
+  /// RECON SWEEP asks a whole row yes/no, so the useful row is the one
+  /// still holding the most unexplored water. Only the row index is read
+  /// by the card (see `GameController.usePowerUp`), so the column here is
+  /// arbitrary.
+  (int, int)? _bestReconRow() {
+    var best = 0;
+    final tied = <int>[];
+    for (var r = 0; r < kBoardSize; r++) {
+      var unknown = 0;
+      for (var c = 0; c < kBoardSize; c++) {
+        if (_c.myShots[r][c] == 0) unknown++;
+      }
+      if (unknown == 0) continue;
+      if (unknown > best) {
+        best = unknown;
+        tied
+          ..clear()
+          ..add(r);
+      } else if (unknown == best) {
+        tied.add(r);
+      }
+    }
+    if (tied.isEmpty) return null;
+    return (tied[_rng.nextInt(tied.length)], 0);
+  }
   List<(int, int)>? _targetCellsFor(PowerUpCard card) {
     final taps = card == PowerUpCard.spray ? 2 : 1;
     final picked = <(int, int)>[];

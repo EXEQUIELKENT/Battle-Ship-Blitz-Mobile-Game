@@ -643,6 +643,74 @@ void main() {
     });
   });
 
+
+  group('a volley that scored keeps the guns', () {
+    // FEEDBACK ("sometimes the extra shots does hit a ship but it counts
+    // as a miss"). Only the LAST shot of a batch is un-held, so it alone
+    // used to decide the turn — a SALVO that holed a hull twice and
+    // missed with its third shell handed the guns over anyway.
+    CombatEvent ev(bool hold, ShotResult result, {bool byPlayer = true}) =>
+        CombatEvent(
+          row: 0,
+          col: 0,
+          result: result,
+          byPlayer: byPlayer,
+          hold: hold,
+        );
+
+    test('an earlier shell landing keeps the turn', () async {
+      final c = await _newPowerUpController(host: true);
+      c.events
+        ..add(ev(true, ShotResult.miss))
+        ..add(ev(true, ShotResult.hit))
+        ..add(ev(false, ShotResult.miss));
+      expect(c.volleyScoredHit(c.events.last), isTrue);
+    });
+
+    test('a volley that missed with every shell passes the turn', () async {
+      final c = await _newPowerUpController(host: true);
+      c.events
+        ..add(ev(true, ShotResult.miss))
+        ..add(ev(true, ShotResult.miss))
+        ..add(ev(false, ShotResult.miss));
+      expect(c.volleyScoredHit(c.events.last), isFalse);
+    });
+
+    test('a hit on the final shell needs no lookback at all', () async {
+      final c = await _newPowerUpController(host: true);
+      c.events.add(ev(false, ShotResult.hit));
+      expect(c.volleyScoredHit(c.events.last), isTrue);
+    });
+
+    test('an ordinary single miss still passes the turn', () async {
+      final c = await _newPowerUpController(host: true);
+      c.events
+        ..add(ev(false, ShotResult.hit)) // a previous turn's shot
+        ..add(ev(false, ShotResult.miss));
+      expect(c.volleyScoredHit(c.events.last), isFalse,
+          reason: 'the earlier hit belongs to a different shot entirely');
+    });
+
+    test('the lookback stops at the previous un-held shot', () async {
+      final c = await _newPowerUpController(host: true);
+      c.events
+        ..add(ev(true, ShotResult.hit)) // an OLDER volley that scored
+        ..add(ev(false, ShotResult.miss)) // ...and ended here
+        ..add(ev(true, ShotResult.miss)) // this volley
+        ..add(ev(false, ShotResult.miss));
+      expect(c.volleyScoredHit(c.events.last), isFalse,
+          reason: 'a hit two volleys ago must not keep this one alive');
+    });
+
+    test('the opponent\'s shots do not split a volley in two', () async {
+      final c = await _newPowerUpController(host: true);
+      c.events
+        ..add(ev(true, ShotResult.hit))
+        ..add(ev(false, ShotResult.miss, byPlayer: false)) // theirs, interleaved
+        ..add(ev(false, ShotResult.miss));
+      expect(c.volleyScoredHit(c.events.last), isTrue);
+    });
+  });
   group('MINEFIELD / TRAP LINE', () {
     test('MINEFIELD costs the shooter their turn on that one cell, hit or '
         'miss', () async {
@@ -661,6 +729,95 @@ void main() {
           reason: 'an unmined cell must never trigger it');
     });
 
+
+    test('a sprung mine throws the shell into the firer\'s own fleet',
+        () async {
+      // FEEDBACK ("the traps is not working, it should damage their ship
+      // instead"): costing a turn was the trap's ONLY effect and showed
+      // nowhere on either screen. It now also ricochets into a hull of
+      // whoever fired into it.
+      final c = await _newPowerUpController(host: true);
+      c.boards[0] = Board();
+      // boards[1] is our mirror of THEIR fleet — the one a ricochet hits.
+      c.beginBattle(enemyBoard: Board()..place(kFleet[0], 3, 0, true));
+      c.attachNetwork();
+      c.myPowerUp = PowerUpCard.minefield;
+      expect(c.usePowerUp([(6, 6)]), isTrue);
+
+      await _incoming(c, {'type': 'fire', 'r': 6, 'c': 6});
+
+      final res = c.network.sentForTest.lastWhere((m) => m['type'] == 'result');
+      expect(res['fp'], isTrue, reason: 'it still costs them the turn');
+      expect(res['bR'], isNotNull, reason: 'and now bounces back at them');
+      final bR = res['bR'] as int, bC = res['bC'] as int;
+      // The cell has to be a real, still-intact hull cell of their fleet.
+      final victim = c.boards[1].shipAt(bR, bC);
+      expect(victim, isNotNull);
+      expect(victim!.hitIndices, contains(victim.cellIndexAt(bR, bC)),
+          reason: 'our mirror of their fleet takes the damage too');
+    });
+
+    test('the ricochet is a held event, so it never decides the turn',
+        () async {
+      final c = await _newPowerUpController(host: true);
+      c.boards[0] = Board();
+      c.beginBattle(enemyBoard: Board()..place(kFleet[0], 3, 0, true));
+      c.attachNetwork();
+      c.myPowerUp = PowerUpCard.minefield;
+      c.usePowerUp([(6, 6)]);
+      await _incoming(c, {'type': 'fire', 'r': 6, 'c': 6});
+
+      final ricochet = c.events.where((e) => e.isRicochet).toList();
+      expect(ricochet, hasLength(1));
+      expect(ricochet.first.hold, isTrue);
+      expect(ricochet.first.bounceFrom, [6, 6],
+          reason: 'the screen flies it from the mined cell');
+    });
+
+    test('the firer applies the same damage to their own board', () async {
+      // The other end of the round trip: the cell is chosen by the board
+      // holding the trap and applied verbatim here, so the two devices
+      // cannot drift on which hull took it.
+      final c = await _newPowerUpController(host: true);
+      c.boards[0] = Board()..place(kFleet[2], 4, 0, true); // cruiser 4,0-4,2
+      c.beginBattle(enemyBoard: _harmlessEnemyBoard());
+      c.attachNetwork();
+
+      await _incoming(c, {
+        'type': 'result',
+        'r': 8,
+        'c': 8,
+        'res': ShotResult.miss.index,
+        'fp': true,
+        'bR': 4,
+        'bC': 1,
+      });
+
+      final mine = c.boards[0].shipOfKind(ShipKind.cruiser)!;
+      expect(mine.hitIndices, contains(1),
+          reason: 'our own hull really takes the ricochet');
+      final ricochet = c.events.where((e) => e.isRicochet).toList();
+      expect(ricochet, hasLength(1));
+      expect(ricochet.first.byPlayer, isFalse,
+          reason: 'from this side it lands on our own fleet');
+    });
+
+    test('a ricochet with nowhere to land is simply not produced', () async {
+      final c = await _newPowerUpController(host: true);
+      c.boards[0] = Board();
+      // Their fleet is already entirely sunk — nothing left to bounce off.
+      final enemy = Board()..place(kFleet[4], 0, 0, true); // destroyer, size 2
+      c.beginBattle(enemyBoard: enemy);
+      c.attachNetwork();
+      c.boards[1].shipOfKind(ShipKind.destroyer)!.hitIndices.addAll([0, 1]);
+      c.myPowerUp = PowerUpCard.minefield;
+      c.usePowerUp([(6, 6)]);
+
+      await _incoming(c, {'type': 'fire', 'r': 6, 'c': 6});
+      final res = c.network.sentForTest.lastWhere((m) => m['type'] == 'result');
+      expect(res['fp'], isTrue, reason: 'the turn cost still applies');
+      expect(res['bR'], isNull);
+    });
     test('TRAP LINE mines a three-cell line; the first hit consumes the '
         'WHOLE trap', () async {
       final c = await _newPowerUpController(host: true);

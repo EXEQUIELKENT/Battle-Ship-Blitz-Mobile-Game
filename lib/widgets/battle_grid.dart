@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../art/deck_debris.dart';
 import '../art/family_board_art.dart';
 import '../art/fleet_family.dart';
 import '../art/impact_fx.dart';
@@ -26,6 +27,16 @@ class CellFx {
   /// effect already in flight should finish in the colours it started in.
   final ImpactFx fx;
 
+  /// The DECK this shot landed on, captured for the same reason [fx] is:
+  /// POWER PLAY can change a board mid-match, and an effect already
+  /// running should finish on the water it started in.
+  ///
+  /// Keyed to the board rather than to the gun on purpose — the two
+  /// layers answer different questions ("what fired this?" and "what did
+  /// it land in?"), which is what makes the same cannon read differently
+  /// against different boards. See `paintDeckDebris`.
+  final DeckFx deck;
+
   /// Whether this shot left a permanent mark on the deck.
   ///
   /// PHANTOM and GHOST FLEET never write the tracking cache (see
@@ -35,7 +46,7 @@ class CellFx {
   final bool recorded;
 
   CellFx(this.row, this.col, this.result,
-      {required this.fx, required this.recorded})
+      {required this.fx, required this.deck, required this.recorded})
       : start = DateTime.now();
 
   double get progress =>
@@ -77,6 +88,24 @@ class BattleGrid extends StatefulWidget {
   /// in their destroyed form — shown regardless of [ships]/[skin], since a
   /// sunk ship's kind and position are common knowledge to both players.
   final List<PlacedShip> destroyedShips;
+
+  /// POWER PLAY only — cells SPOTTER has revealed on this grid, and traps
+  /// its owner has armed on it. Empty everywhere else. See
+  /// `_StaticGridPainter`'s tells.
+  final Set<int> spottedCells;
+  final Set<int> minedCells;
+
+  /// POWER PLAY only — a SPY SHIP sitting in this grid's water, whoever
+  /// planted it. Both sides can see it: its owner needs to know where
+  /// their scout is, and the board's owner needs to know there is one to
+  /// run down (see `GameController._crushSpyIfCovered`).
+  final int? spyCell;
+
+  /// POWER PLAY only — ARMOUR PLATE's remaining plates per hull, and the
+  /// hull primed by AUTO DODGE. Only ever populated for the grid showing
+  /// this device's OWN fleet.
+  final Map<ShipKind, int> armourByKind;
+  final ShipKind? dodgeKind;
 
   /// The fleet those wrecks belong to — the skin of the board's OWNER, not
   /// the shooter. Picks the destruction motion each wreck plays as it is
@@ -202,6 +231,11 @@ const BattleGrid({
     this.recentEvents = const [],
     this.enabled = true,
     this.destroyedShips = const [],
+    this.spottedCells = const {},
+    this.minedCells = const {},
+    this.spyCell,
+    this.armourByKind = const {},
+    this.dodgeKind,
     this.wreckShipSkinId,
     this.glowColor = AppColors.water,
     this.cellColor = AppColors.steelBlue,
@@ -357,6 +391,10 @@ class _BattleGridState extends State<BattleGrid>
       return;
     }
     final fxProfile = impactFxForCannon(widget.cannonSkinId);
+    final deckProfile = deckFxFor(
+      family: widget.boardFamily,
+      legacyBoardId: widget.legacyBoardId,
+    );
     for (var i = _lastProcessedEvents; i < events.length; i++) {
       final e = events[i];
       final key = e.row * kBoardSize + e.col;
@@ -366,6 +404,7 @@ class _BattleGridState extends State<BattleGrid>
           e.col,
           e.result,
           fx: fxProfile,
+          deck: deckProfile,
           // `shots` is already the post-shot cache by the time this runs
           // (it is the same rebuild that delivered the event), so a
           // non-zero entry means a mark has just landed here and wants
@@ -545,6 +584,9 @@ class _BattleGridState extends State<BattleGrid>
                           legacyBoardId: widget.legacyBoardId,
                           gridLineColor: widget.gridLineColor,
                           destroyedShips: widget.destroyedShips,
+                          spottedCells: widget.spottedCells,
+                          minedCells: widget.minedCells,
+                          spyCell: widget.spyCell,
                           // Same shooter's-cannon value the reticle already
                           // reads (see the BUGFIX note on `cannonSkinId`
                           // above) — a hit/miss mark is a shell's impact,
@@ -840,6 +882,8 @@ class _BattleGridState extends State<BattleGrid>
             showRotate:
                 widget.onShipTap != null && !ship.isSunk && _movable(ship),
             shooterCannonId: widget.cannonSkinId,
+            armourPlates: widget.armourByKind[ship.spec.kind] ?? 0,
+            dodgePrimed: widget.dodgeKind == ship.spec.kind,
           ),
         ),
       ),
@@ -1182,12 +1226,18 @@ class _ShipWithRotate extends StatelessWidget {
   /// The attacker's own cannon — see `ShipPainter.shooterCannonId`'s doc.
   final String? shooterCannonId;
 
+  /// POWER PLAY fittings — see `ShipPainter.armourPlates`/`dodgePrimed`.
+  final int armourPlates;
+  final bool dodgePrimed;
+
   const _ShipWithRotate({
     required this.ship,
     required this.skin,
     required this.cell,
     required this.showRotate,
     this.shooterCannonId,
+    this.armourPlates = 0,
+    this.dodgePrimed = false,
   });
 
   static const _rotateDuration = Duration(milliseconds: 420);
@@ -1206,6 +1256,8 @@ class _ShipWithRotate extends StatelessWidget {
       // instead of always filling in from the bow end. See ShipPainter.
       hitIndices: ship.hitIndices,
       shooterCannonId: shooterCannonId,
+      armourPlates: armourPlates,
+      dodgePrimed: dodgePrimed,
     );
 
     final hull = SizedBox(
@@ -1569,6 +1621,16 @@ class _StaticGridPainter extends CustomPainter {
   /// see the note in [paint] for the case where it did not.
   final String? shooterCannonId;
 
+  /// POWER PLAY — cells SPOTTER has revealed on the board being aimed AT,
+  /// and traps armed on the board being defended. Both are
+  /// `row * kBoardSize + col` keys, and both are empty in every other
+  /// mode. See the tells drawn at the end of [paint].
+  final Set<int> spottedCells;
+  final Set<int> minedCells;
+
+  /// A SPY SHIP planted in this board's water — see [BattleGrid.spyCell].
+  final int? spyCell;
+
   _StaticGridPainter({
     required this.shots,
     this.preview,
@@ -1580,6 +1642,9 @@ class _StaticGridPainter extends CustomPainter {
     this.gridLineColor = AppColors.steelBlueLight,
     this.destroyedShips = const [],
     this.shooterCannonId,
+    this.spottedCells = const {},
+    this.minedCells = const {},
+    this.spyCell,
   });
 
   @override
@@ -1748,6 +1813,108 @@ class _StaticGridPainter extends CustomPainter {
         }
       }
     }
+
+    // ---- POWER PLAY tells ----
+    //
+    // FEEDBACK ("add all of the power play designs, icons, effects"): the
+    // controller has tracked both of these since the mode shipped, and
+    // even carries them across a reconnect in the match snapshot, but
+    // nothing ever DREW them. So SPOTTER announced it had found a hull and
+    // then showed you nothing, and MINEFIELD / TRAP LINE armed traps their
+    // own owner could not see. Both are drawn after the shot markers so a
+    // later shot on the same cell covers the tell it resolves.
+    for (final key in spottedCells) {
+      final r = key ~/ kBoardSize, c = key % kBoardSize;
+      if (r >= kBoardSize || c >= kBoardSize) continue;
+      if (shots[r][c] != 0) continue; // already fired on — nothing to hint
+      _drawSpotted(canvas, Offset(c * cell + cell / 2, r * cell + cell / 2),
+          cell);
+    }
+    for (final key in minedCells) {
+      final r = key ~/ kBoardSize, c = key % kBoardSize;
+      if (r >= kBoardSize || c >= kBoardSize) continue;
+      _drawMine(canvas, Offset(c * cell + cell / 2, r * cell + cell / 2), cell);
+    }
+    final spy = spyCell;
+    if (spy != null) {
+      final r = spy ~/ kBoardSize, c = spy % kBoardSize;
+      if (r < kBoardSize && c < kBoardSize) {
+        _drawSpy(canvas, Offset(c * cell + cell / 2, r * cell + cell / 2), cell);
+      }
+    }
+  }
+
+  /// A SPY SHIP sitting in the water — a little scope on a hull, ringed
+  /// so it cannot be mistaken for a shot marker.
+  void _drawSpy(Canvas canvas, Offset center, double cell) {
+    final ink = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = cell * 0.06
+      ..strokeCap = StrokeCap.round
+      ..color = AppColors.outline;
+    canvas.drawCircle(
+      center,
+      cell * 0.34,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = cell * 0.05
+        ..color = AppColors.gold.withValues(alpha: 0.85),
+    );
+    // Hull.
+    final hull = Path()
+      ..moveTo(center.dx - cell * 0.22, center.dy + cell * 0.02)
+      ..lineTo(center.dx + cell * 0.22, center.dy + cell * 0.02)
+      ..lineTo(center.dx + cell * 0.13, center.dy + cell * 0.17)
+      ..lineTo(center.dx - cell * 0.13, center.dy + cell * 0.17)
+      ..close();
+    canvas.drawPath(hull, Paint()..color = AppColors.cream);
+    canvas.drawPath(hull, ink);
+    // Scope.
+    canvas.drawLine(
+      Offset(center.dx + cell * 0.04, center.dy + cell * 0.02),
+      Offset(center.dx + cell * 0.04, center.dy - cell * 0.18),
+      ink,
+    );
+    canvas.drawCircle(
+      Offset(center.dx + cell * 0.04, center.dy - cell * 0.20),
+      cell * 0.06,
+      Paint()..color = AppColors.gold,
+    );
+  }
+
+  /// SPOTTER's find: the design's `◎` — a hull located but not yet fired
+  /// on. Deliberately an outline, not a filled mark, so it never reads as
+  /// a shot already taken.
+  void _drawSpotted(Canvas canvas, Offset center, double cell) {
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = cell * 0.07
+      ..color = AppColors.cream.withValues(alpha: 0.92);
+    canvas.drawCircle(center, cell * 0.30, ring);
+    canvas.drawCircle(
+      center,
+      cell * 0.12,
+      Paint()..color = AppColors.cream.withValues(alpha: 0.92),
+    );
+  }
+
+  /// A trap of your own, armed on your own water — the design's gold `◆`.
+  void _drawMine(Canvas canvas, Offset center, double cell) {
+    final r = cell * 0.22;
+    final diamond = Path()
+      ..moveTo(center.dx, center.dy - r)
+      ..lineTo(center.dx + r, center.dy)
+      ..lineTo(center.dx, center.dy + r)
+      ..lineTo(center.dx - r, center.dy)
+      ..close();
+    canvas.drawPath(diamond, Paint()..color = AppColors.gold);
+    canvas.drawPath(
+      diamond,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = cell * 0.05
+        ..color = AppColors.outline,
+    );
   }
 
   /// The plate a themed miss glyph is drawn on, so a spent square reads on
@@ -1831,7 +1998,22 @@ class _StaticGridPainter extends CustomPainter {
         oldDelegate.legacyBoardId != legacyBoardId ||
         oldDelegate.shooterCannonId != shooterCannonId ||
         oldDelegate.gridColor != gridColor ||
-        !identical(oldDelegate.destroyedShips, destroyedShips);
+        !identical(oldDelegate.destroyedShips, destroyedShips) ||
+        // Compared by LENGTH, not identity. `spottedCells` is the
+        // controller's own long-lived set, mutated in place, so its
+        // reference never changes and an identity check would never fire;
+        // `minedCells` is rebuilt per read, so identity would fire on
+        // every single repaint instead. Length is the one cheap test that
+        // is right for both, since a spot is only ever added and a trap is
+        // only ever added or sprung whole.
+        //
+        // The gap it leaves: arming one trap in the same repaint gap that
+        // another springs would net to no length change. It takes both
+        // players acting with no board repaint in between, which a shot
+        // landing always causes — and the next shot corrects the display.
+        oldDelegate.spottedCells.length != spottedCells.length ||
+        oldDelegate.minedCells.length != minedCells.length ||
+        oldDelegate.spyCell != spyCell;
   }
 }
 
@@ -1870,6 +2052,21 @@ class _FxGridPainter extends CustomPainter {
         effect.row * cell + cell / 2,
       );
       final prog = effect.progress;
+      // FEEDBACK ("hit and miss want particles too, differing per deck"):
+      // the board's own contribution, under the gun's splash so the
+      // shell's own flash still reads as the brightest thing in the
+      // frame. A hit throws more of it and pulls it toward the board's
+      // accent — see [paintDeckDebris].
+      paintDeckDebris(
+        canvas,
+        center,
+        cell,
+        prog,
+        effect.deck,
+        effect.seed,
+        hit: effect.result == ShotResult.hit ||
+            effect.result == ShotResult.sunk,
+      );
       paintImpactSplash(canvas, center, cell, prog, effect.fx, effect.seed);
       if (effect.result == ShotResult.hit || effect.result == ShotResult.sunk) {
         paintImpactBurst(

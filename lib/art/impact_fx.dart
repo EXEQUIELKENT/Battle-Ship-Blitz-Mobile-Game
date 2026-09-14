@@ -32,6 +32,24 @@ import 'package:flutter/material.dart';
 /// painted only by the grid's transient FX layer, which stops ticking the
 /// moment the last effect expires (see `_BattleGridState._fxCtrl`).
 
+
+/// How many particles an impact effect draws, as a multiplier on each
+/// style's own counts. 1.0 is what every effect was authored against.
+///
+/// A plain global rather than a parameter threaded through every painter:
+/// it is read once per loop by code that runs on the paint hot path, it
+/// never varies between two effects drawn in the same frame, and adding
+/// it to fifteen splash and fifteen burst signatures would bury the one
+/// thing each of those functions is actually about. Set from
+/// `ProfileStore.applyGraphics`.
+double fxDensity = 1.0;
+
+/// Scales a particle count by [fxDensity], never below one — an effect
+/// that drops to zero particles stops being that effect.
+int _n(int base) {
+  final scaled = (base * fxDensity).round();
+  return scaled < 1 ? 1 : scaled;
+}
 /// The ground/water impact every landed shot makes, whatever it hit.
 enum SplashStyle {
   spray,
@@ -378,7 +396,7 @@ void paintImpactSplash(
     case SplashStyle.spray:
       canvas.drawCircle(center, s * (0.12 + 0.46 * grow),
           _stroke(fx.core, fade * 0.55, s * 0.045 * fade));
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < _n(6); i++) {
         final ang = (i / 6) * 2 * pi + _jit(seed, i) * 0.35;
         final dist = s * 0.42 * grow;
         final lift = -s * 0.30 * sin(local * pi);
@@ -391,7 +409,7 @@ void paintImpactSplash(
 
     case SplashStyle.ember:
       // Flame licks stand up out of the impact, embers rain back down.
-      for (var i = 0; i < 5; i++) {
+      for (var i = 0; i < _n(5); i++) {
         final ang = -pi / 2 + (i - 2) * 0.42 + _jit(seed, i) * 0.18;
         final len = s * (0.30 + 0.28 * _jit(seed, i + 9)) * (1 - local * 0.45);
         final tip = center + Offset(cos(ang) * len * grow * 1.4,
@@ -400,7 +418,7 @@ void paintImpactSplash(
             _stroke(i.isEven ? fx.accent : fx.core, fade * 0.85,
                 s * 0.09 * fade));
       }
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < _n(4); i++) {
         final ang = _jit(seed, i + 3) * 2 * pi;
         final d = s * 0.46 * grow;
         final drop = s * 0.34 * local * local;
@@ -414,7 +432,7 @@ void paintImpactSplash(
       // A heavy, low sea-surge: a squashed ring plus whipping tendrils.
       _squashedCircle(canvas, center, s * (0.14 + 0.52 * grow), 0.62,
           _stroke(fx.accent, fade * 0.6, s * 0.06 * fade));
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < _n(4); i++) {
         final ang = (i / 4) * 2 * pi + 0.4 + _jit(seed, i) * 0.3;
         final r = s * 0.5 * grow;
         final path = Path()
@@ -433,7 +451,7 @@ void paintImpactSplash(
 
     case SplashStyle.gilt:
       // A fan of coins thrown up and out on a shallow arc.
-      for (var i = 0; i < 7; i++) {
+      for (var i = 0; i < _n(7); i++) {
         final ang = -pi / 2 + (i - 3) * 0.34;
         final d = s * 0.5 * grow;
         final lift = -s * 0.22 * sin(local * pi);
@@ -457,7 +475,7 @@ void paintImpactSplash(
       final r = s * (0.16 + 0.34 * grow);
       canvas.drawCircle(center, r, _fill(fx.deep, fade * 0.55));
       canvas.drawCircle(center, r, _stroke(fx.accent, fade * 0.8, s * 0.05));
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _n(3); i++) {
         final ang = _jit(seed, i) * 2 * pi;
         final d = r * (1.0 + 0.55 * grow);
         canvas.drawCircle(center + Offset(cos(ang) * d, sin(ang) * d),
@@ -468,7 +486,7 @@ void paintImpactSplash(
 
     case SplashStyle.frost:
       // Needle shards, rigid — they grow rather than fly.
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < _n(6); i++) {
         final ang = (i / 6) * 2 * pi + 0.26;
         final inner = s * 0.10;
         final outer = s * (0.18 + 0.36 * grow);
@@ -483,7 +501,7 @@ void paintImpactSplash(
 
     case SplashStyle.bloom:
       // Coral petals opening, with a couple of bubbles rising off them.
-      for (var i = 0; i < 5; i++) {
+      for (var i = 0; i < _n(5); i++) {
         final ang = (i / 5) * 2 * pi + 0.3;
         final r = s * (0.16 + 0.32 * grow);
         canvas.save();
@@ -496,7 +514,7 @@ void paintImpactSplash(
             _fill(fx.accent, fade * 0.8));
         canvas.restore();
       }
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _n(3); i++) {
         final ang = _jit(seed, i + 5) * 2 * pi;
         final d = s * 0.34 * grow;
         final lift = -s * 0.3 * local;
@@ -521,7 +539,7 @@ void paintImpactSplash(
           Rect.fromCenter(center: Offset.zero, width: w * 2, height: h * 2),
           _stroke(fx.accent, fade * 0.9, s * 0.035));
       canvas.restore();
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < _n(4); i++) {
         final ang = _jit(seed, i) * 2 * pi;
         final d = s * 0.5 * (1 - grow);
         canvas.drawCircle(center + Offset(cos(ang) * d, sin(ang) * d),
@@ -530,7 +548,7 @@ void paintImpactSplash(
 
     case SplashStyle.acid:
       // Caustic blobs of uneven size, wobbling as they eat outward.
-      for (var i = 0; i < 7; i++) {
+      for (var i = 0; i < _n(7); i++) {
         final ang = (i / 7) * 2 * pi + _jit(seed, i) * 0.5;
         final d = s * (0.24 + 0.30 * _jit(seed, i + 7)) * grow * 1.6;
         final wob = sin(local * pi * 3 + i) * s * 0.03;
@@ -545,7 +563,7 @@ void paintImpactSplash(
       // Black-powder smoke with hot cinders tumbling out of it. Billowed
       // in the CREAM tone rather than the carriage brown: gun smoke reads
       // pale, and dark brown at low alpha over a navy deck is invisible.
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < _n(4); i++) {
         final ang = (i / 4) * 2 * pi + 0.7;
         final d = s * 0.34 * grow;
         final p = center + Offset(cos(ang) * d, sin(ang) * d * 0.8);
@@ -553,7 +571,7 @@ void paintImpactSplash(
         canvas.drawCircle(p, r, _fill(fx.core, fade * 0.34));
         canvas.drawCircle(p, r, _stroke(fx.accent, fade * 0.5, s * 0.025));
       }
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < _n(4); i++) {
         final ang = _jit(seed, i + 2) * 2 * pi;
         final d = s * 0.5 * grow;
         final drop = s * 0.18 * local * local;
@@ -584,7 +602,7 @@ void paintImpactSplash(
 
     case SplashStyle.steam:
       // Pressure jets straight up, condensation ring underneath.
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _n(3); i++) {
         final dx = (i - 1) * s * 0.16;
         final top = center.dy - s * 0.46 * grow;
         canvas.drawLine(Offset(center.dx + dx, center.dy),
@@ -593,7 +611,7 @@ void paintImpactSplash(
       }
       _squashedCircle(canvas, center, s * (0.14 + 0.42 * grow), 0.45,
           _stroke(fx.accent, fade * 0.7, s * 0.05 * fade));
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _n(3); i++) {
         final ang = _jit(seed, i + 4) * 2 * pi;
         final d = s * 0.36 * grow;
         canvas.drawCircle(center + Offset(cos(ang) * d, sin(ang) * d * 0.5),
@@ -603,7 +621,7 @@ void paintImpactSplash(
     case SplashStyle.rime:
       // Snow burst that hangs — the slowest-settling splash of the set.
       final slow = Curves.easeOutCubic.transform(local);
-      for (var i = 0; i < 8; i++) {
+      for (var i = 0; i < _n(8); i++) {
         final ang = (i / 8) * 2 * pi;
         final d = s * 0.44 * slow;
         final p = center + Offset(cos(ang) * d, sin(ang) * d + s * 0.1 * local);
@@ -624,7 +642,7 @@ void paintImpactSplash(
       canvas.drawCircle(center, crater, _fill(fx.deep, fade * 0.32));
       canvas.drawCircle(
           center, crater, _stroke(fx.accent, fade * 0.65, s * 0.04));
-      for (var i = 0; i < 5; i++) {
+      for (var i = 0; i < _n(5); i++) {
         final ang = -pi / 2 + (i - 2) * 0.5;
         final d = s * 0.5 * grow;
         final drop = s * 0.4 * local * local;
@@ -641,7 +659,7 @@ void paintImpactSplash(
           _stroke(fx.accent, fade * 0.85, s * 0.045 * fade));
       canvas.drawPath(_polyPath(center, s * (0.08 + 0.24 * grow), 6, -local * 0.9),
           _stroke(fx.core, fade * 0.6, s * 0.03 * fade));
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _n(3); i++) {
         final ang = (i / 3) * 2 * pi + local * 1.4;
         final d = s * 0.42 * grow;
         canvas.drawLine(
@@ -680,7 +698,7 @@ void paintImpactBurst(
       if (head > 0) {
         final len = s * 0.45 * grow;
         final ray = _stroke(fx.accent, head * 0.7, s * 0.12 * (1 - t * 0.5));
-        for (var i = 0; i < 4; i++) {
+        for (var i = 0; i < _n(4); i++) {
           final a = i * pi / 2;
           canvas.drawLine(
               center, center + Offset(cos(a) * len, sin(a) * len), ray);
@@ -689,7 +707,7 @@ void paintImpactBurst(
             center, s * 0.28 * grow, _fill(fx.accent, head * 0.7));
         canvas.drawCircle(center, s * 0.15 * grow, _fill(fx.core, head * 0.7));
       }
-      for (var i = 0; i < n; i++) {
+      for (var i = 0; i < _n(n); i++) {
         final a = _jit(seed, i) * 2 * pi;
         final d = s * (0.25 + 0.75 * t) * (0.6 + _jit(seed, i + 11) * 0.5);
         canvas.drawPath(
@@ -707,7 +725,7 @@ void paintImpactBurst(
         canvas.drawCircle(center, s * 0.14 * grow, _fill(fx.core, head));
       }
       // Smoke rolling up out of the fireball.
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _n(3); i++) {
         final dx = (i - 1) * s * 0.22;
         final rise = -s * 0.55 * t;
         canvas.drawCircle(Offset(center.dx + dx, center.dy + rise),
@@ -716,7 +734,7 @@ void paintImpactBurst(
 
     case BurstStyle.tendril:
       // Arms lashing out of the water and curling back.
-      for (var i = 0; i < 5; i++) {
+      for (var i = 0; i < _n(5); i++) {
         final a = (i / 5) * 2 * pi + _jit(seed, i) * 0.4;
         final r = s * 0.62 * grow;
         final curl = sin(t * pi) * r * 0.4;
@@ -737,7 +755,7 @@ void paintImpactBurst(
 
     case BurstStyle.starflare:
       if (head > 0) {
-        for (var i = 0; i < 8; i++) {
+        for (var i = 0; i < _n(8); i++) {
           final a = i * pi / 4;
           final len = s * (i.isEven ? 0.58 : 0.30) * grow;
           canvas.drawLine(center, center + Offset(cos(a) * len, sin(a) * len),
@@ -746,7 +764,7 @@ void paintImpactBurst(
         canvas.drawCircle(center, s * 0.16 * grow, _fill(fx.core, head));
       }
       // Gold dust settling on a ring.
-      for (var i = 0; i < n + 2; i++) {
+      for (var i = 0; i < _n(n + 2); i++) {
         final a = _jit(seed, i) * 2 * pi;
         final d = s * (0.3 + 0.6 * t);
         canvas.drawCircle(center + Offset(cos(a) * d, sin(a) * d),
@@ -764,7 +782,7 @@ void paintImpactBurst(
 
     case BurstStyle.arcBolt:
       // Jagged discharge: each bolt kinks off its own stable seed.
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < _n(4); i++) {
         final a = (i / 4) * 2 * pi + _jit(seed, i) * 0.7;
         final path = Path()..moveTo(center.dx, center.dy);
         var r = 0.0;
@@ -781,7 +799,7 @@ void paintImpactBurst(
       }
 
     case BurstStyle.bubblePop:
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < _n(6); i++) {
         final a = (i / 6) * 2 * pi + _jit(seed, i) * 0.4;
         final d = s * 0.5 * grow * (0.6 + _jit(seed, i + 6) * 0.6);
         final r = s * (0.09 + 0.07 * _jit(seed, i + 12)) * (1 - t * 0.35);
@@ -796,7 +814,7 @@ void paintImpactBurst(
 
     case BurstStyle.collapse:
       // Debris travels INWARD, then a pinpoint flash where it all met.
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < _n(6); i++) {
         final a = (i / 6) * 2 * pi + _jit(seed, i) * 0.5;
         final d = s * 0.7 * (1 - Curves.easeIn.transform(t));
         canvas.drawCircle(center + Offset(cos(a) * d, sin(a) * d),
@@ -808,7 +826,7 @@ void paintImpactBurst(
           _stroke(fx.deep, head * 0.5, s * 0.05));
 
     case BurstStyle.spatter:
-      for (var i = 0; i < 7; i++) {
+      for (var i = 0; i < _n(7); i++) {
         final a = (i / 7) * 2 * pi + _jit(seed, i) * 0.6;
         final d = s * (0.3 + 0.55 * t) * (0.5 + _jit(seed, i + 7) * 0.8);
         final p = center + Offset(cos(a) * d, sin(a) * d);
@@ -825,7 +843,7 @@ void paintImpactBurst(
     case BurstStyle.cannonSmoke:
       // Pale billow with a bronze rim — see [SplashStyle.powder] for why
       // the smoke is not painted in the gun's dark carriage brown.
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _n(3); i++) {
         final a = i * 2 * pi / 3 + t * 0.8;
         final d = s * 0.28 * grow;
         final p = center + Offset(cos(a) * d, sin(a) * d);
@@ -841,7 +859,7 @@ void paintImpactBurst(
 
     case BurstStyle.crossFlak:
       if (head > 0) {
-        for (var i = 0; i < 4; i++) {
+        for (var i = 0; i < _n(4); i++) {
           final a = i * pi / 2 + pi / 4;
           final len = s * 0.55 * grow;
           final w = s * 0.10 * (1 - t * 0.4);
@@ -858,7 +876,7 @@ void paintImpactBurst(
           );
         }
       }
-      for (var i = 0; i < n; i++) {
+      for (var i = 0; i < _n(n); i++) {
         final a = _jit(seed, i) * 2 * pi;
         final d = s * (0.3 + 0.6 * t);
         final p = center + Offset(cos(a) * d, sin(a) * d);
@@ -874,7 +892,7 @@ void paintImpactBurst(
       canvas.rotate(t * 1.6);
       final r = s * 0.5 * grow;
       final teeth = Path();
-      for (var i = 0; i < 8; i++) {
+      for (var i = 0; i < _n(8); i++) {
         final a0 = i * pi / 4;
         teeth.moveTo(cos(a0) * r * 0.68, sin(a0) * r * 0.68);
         teeth.lineTo(cos(a0) * r, sin(a0) * r);
@@ -883,7 +901,7 @@ void paintImpactBurst(
       canvas.drawCircle(Offset.zero, r * 0.68,
           _stroke(fx.accent, head * 0.9, s * 0.06));
       canvas.restore();
-      for (var i = 0; i < 2; i++) {
+      for (var i = 0; i < _n(2); i++) {
         canvas.drawCircle(
             Offset(center.dx + (i == 0 ? -1 : 1) * s * 0.3,
                 center.dy - s * 0.4 * t),
@@ -894,7 +912,7 @@ void paintImpactBurst(
     case BurstStyle.frostNova:
       canvas.drawPath(_polyPath(center, s * 0.60 * grow, 6, 0.26),
           _stroke(fx.accent, head * 0.9, s * 0.07 * (1 - t * 0.4)));
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < _n(6); i++) {
         final a = i * pi / 3 + 0.26;
         final d = s * (0.3 + 0.55 * t);
         final p = center + Offset(cos(a) * d, sin(a) * d);
@@ -925,7 +943,7 @@ void paintImpactBurst(
         );
         canvas.drawCircle(center, s * 0.16 * grow, _fill(fx.core, head));
       }
-      for (var i = 0; i < n + 1; i++) {
+      for (var i = 0; i < _n(n + 1); i++) {
         final a = -pi / 2 + (_jit(seed, i) - 0.5) * 2.2;
         final d = s * 0.7 * t;
         final drop = s * 0.5 * t * t;
@@ -944,7 +962,7 @@ void paintImpactBurst(
       }
       canvas.drawPath(_polyPath(center, s * 0.45 * grow, 6, t),
           _stroke(fx.core, tail * 0.6, s * 0.035));
-      for (var i = 0; i < n; i++) {
+      for (var i = 0; i < _n(n); i++) {
         final y = center.dy + (_jit(seed, i) - 0.5) * s * 1.1;
         final w = s * 0.5 * tail;
         canvas.drawLine(Offset(center.dx - w, y), Offset(center.dx + w, y),
@@ -998,14 +1016,14 @@ void paintMarkArrival(
       final r = mark * (2.0 - 1.0 * ease);
       canvas.drawCircle(center, r, _stroke(fx.deep, fade * 0.85, cell * 0.07));
       canvas.drawCircle(center, r, _stroke(fx.accent, fade * 0.6, cell * 0.03));
-      for (var i = 0; i < 5; i++) {
+      for (var i = 0; i < _n(5); i++) {
         final ang = i * 2 * pi / 5 + a * 1.2;
         canvas.drawCircle(center + Offset(cos(ang) * r, sin(ang) * r),
             cell * 0.03 * fade, _fill(fx.accent, fade));
       }
 
     case MarkArrival.bloomIn:
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < _n(4); i++) {
         final ang = i * pi / 2 + pi / 4;
         final d = mark * (2.0 - 1.6 * ease);
         canvas.save();
@@ -1026,7 +1044,7 @@ void paintMarkArrival(
       canvas.drawCircle(
           Offset.zero, r, _stroke(fx.accent, fade * 0.95, cell * 0.05));
       final tick = _stroke(fx.core, fade * 0.8, cell * 0.03);
-      for (var i = 0; i < 8; i++) {
+      for (var i = 0; i < _n(8); i++) {
         final ang = i * pi / 4;
         canvas.drawLine(
           Offset(cos(ang) * r * 0.78, sin(ang) * r * 0.78),
@@ -1047,7 +1065,7 @@ void paintMarkArrival(
           center.translate(0, r * fade), _stroke(fx.core, fade * 0.8, cell * 0.03));
 
     case MarkArrival.shatterIn:
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < _n(6); i++) {
         final ang = i * pi / 3 + 0.3;
         final d = mark * (2.2 - 1.6 * ease);
         final p = center + Offset(cos(ang) * d, sin(ang) * d);
@@ -1063,7 +1081,7 @@ void paintMarkArrival(
       }
 
     case MarkArrival.swirlIn:
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < _n(3); i++) {
         final ang = i * 2 * pi / 3 + a * 5.0;
         final d = mark * (2.3 - 1.7 * ease);
         canvas.drawCircle(center + Offset(cos(ang) * d, sin(ang) * d),
@@ -1082,7 +1100,7 @@ void paintMarkArrival(
       canvas.drawCircle(center, mark * 0.7 * flash, _fill(fx.core, flash * 0.9));
 
     case MarkArrival.dissolveIn:
-      for (var i = 0; i < 8; i++) {
+      for (var i = 0; i < _n(8); i++) {
         final ang = i * pi / 4 + 0.2;
         final wob = sin(a * pi * 3 + i) * cell * 0.02;
         final d = mark * (1.5 - 0.4 * ease) + wob;
@@ -1111,7 +1129,7 @@ void paintMarkArrival(
 
     case MarkArrival.frostIn:
       // Crystal spikes growing outward off the mark's edges.
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < _n(6); i++) {
         final ang = i * pi / 3;
         final inner = mark * 0.7;
         final outer = mark * (0.7 + 1.5 * ease);
@@ -1131,7 +1149,7 @@ void paintMarkArrival(
           Offset(center.dx + mark * 1.4, y),
           _stroke(fx.accent, fade * 0.95, cell * 0.035));
       final c = mark * (1.8 - 0.6 * ease);
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < _n(4); i++) {
         final sx = i.isEven ? -1.0 : 1.0;
         final sy = i < 2 ? -1.0 : 1.0;
         final corner = Offset(center.dx + sx * c, center.dy + sy * c);

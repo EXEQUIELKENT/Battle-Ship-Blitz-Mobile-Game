@@ -299,6 +299,113 @@ void main() {
           reason: 'the card has to actually reach the wire');
     });
 
+
+    test('a shaped card is aimed for COVERAGE, not at the first fresh cell',
+        () async {
+      // REGRESSION ("the AI does not have good logic on the multiple
+      // shots"). The old rule accepted any aim point whose shape held at
+      // least ONE unfired cell, so a five-shot CROSS FIRE would happily
+      // throw four shots into water it had already spent. Here the whole
+      // board is used up except one clean 3x3 pocket, and the card has to
+      // find it rather than settling for a one-shot corner.
+      final rig = await newRig(LanBattleMode.powerPlay, seed: 71);
+      rig.session.playerReady();
+      await rig.playerMisses();
+
+      const pocket = [
+        (5, 5), (5, 6), (5, 7),
+        (6, 5), (6, 6), (6, 7),
+        (7, 5), (7, 6), (7, 7),
+      ];
+      for (var r = 0; r < kBoardSize; r++) {
+        for (var c = 0; c < kBoardSize; c++) {
+          if (pocket.contains((r, c))) continue;
+          rig.ai.myShots[r][c] = 1;
+        }
+      }
+      rig.ai.myPowerUp = PowerUpCard.crossFire;
+      await rig.run(clock, const Duration(seconds: 6));
+
+      // Every cell the plus actually reached has to be inside the pocket:
+      // any aim point outside it wastes shots on spent water.
+      final fired = <(int, int)>[
+        for (final cell in pocket)
+          if (rig.ai.myShots[cell.$1][cell.$2] != 0) cell,
+      ];
+      expect(fired.length, greaterThanOrEqualTo(4),
+          reason: 'a 5-cell plus dropped into a clean 3x3 should land '
+              'almost all of its shots there');
+    });
+
+    test('SONAR scans unexplored water, not the cell it wants to shoot',
+        () async {
+      // The scans used to reuse the hunt queue's next pick — which is the
+      // cell the AI most wants to FIRE at, and therefore sits in the part
+      // of the board it already knows most about. A count of ships in a
+      // 3x3 it has already shot to pieces tells it nothing.
+      final rig = await newRig(LanBattleMode.powerPlay, seed: 73);
+      rig.session.playerReady();
+      await rig.playerMisses();
+
+      // Everything resolved except one clean corner block.
+      for (var r = 0; r < kBoardSize; r++) {
+        for (var c = 0; c < kBoardSize; c++) {
+          final clean = r >= 8 && c >= 8;
+          rig.ai.myShots[r][c] = clean ? 0 : 1;
+        }
+      }
+      rig.ai.myPowerUp = PowerUpCard.sonar;
+      final asksBefore = rig.ai.network.sentForTest
+          .where((m) => m['type'] == 'pw_ask')
+          .length;
+      await rig.run(clock, const Duration(seconds: 6));
+
+      final asks = rig.ai.network.sentForTest
+          .where((m) => m['type'] == 'pw_ask')
+          .skip(asksBefore)
+          .toList();
+      expect(asks, isNotEmpty, reason: 'SONAR must have been used');
+      final r = asks.first['r'] as int, c = asks.first['c'] as int;
+      // The 3x3 it chose has to actually contain unexplored water.
+      var unknown = 0;
+      for (var dr = -1; dr <= 1; dr++) {
+        for (var dc = -1; dc <= 1; dc++) {
+          final rr = r + dr, cc = c + dc;
+          if (rr < 0 || rr >= kBoardSize || cc < 0 || cc >= kBoardSize) {
+            continue;
+          }
+          if (rig.ai.myShots[rr][cc] == 0) unknown++;
+        }
+      }
+      expect(unknown, greaterThan(0),
+          reason: 'scanning water it has already resolved learns nothing');
+    });
+
+    test('RECON SWEEP picks a row it has not already explored', () async {
+      final rig = await newRig(LanBattleMode.powerPlay, seed: 79);
+      rig.session.playerReady();
+      await rig.playerMisses();
+
+      // Only row 4 still holds anything unknown.
+      for (var r = 0; r < kBoardSize; r++) {
+        for (var c = 0; c < kBoardSize; c++) {
+          rig.ai.myShots[r][c] = r == 4 ? 0 : 1;
+        }
+      }
+      rig.ai.myPowerUp = PowerUpCard.reconSweep;
+      final before = rig.ai.network.sentForTest
+          .where((m) => m['type'] == 'pw_ask')
+          .length;
+      await rig.run(clock, const Duration(seconds: 6));
+
+      final asks = rig.ai.network.sentForTest
+          .where((m) => m['type'] == 'pw_ask')
+          .skip(before)
+          .toList();
+      expect(asks, isNotEmpty);
+      expect(asks.first['r'], 4,
+          reason: 'the only row with anything left to learn');
+    });
     test('a card that can act is spent', () async {
       final rig = await newRig(LanBattleMode.powerPlay, seed: 59);
       rig.session.playerReady();

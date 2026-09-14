@@ -1476,6 +1476,8 @@ class NetworkService extends ChangeNotifier {
     bool forcePass = false,
     int? hotR,
     int? hotC,
+    int? bounceR,
+    int? bounceC,
   }) {
     _send({
       'type': 'result',
@@ -1487,6 +1489,10 @@ class NetworkService extends ChangeNotifier {
       if (forcePass) 'fp': true,
       if (hotR != null) 'hotR': hotR,
       if (hotC != null) 'hotC': hotC,
+      // POWER PLAY — where a sprung mine threw the shell back into the
+      // firer's own fleet, so their device can apply the same damage.
+      if (bounceR != null) 'bR': bounceR,
+      if (bounceC != null) 'bC': bounceC,
     });
   }
 
@@ -1519,11 +1525,21 @@ class NetworkService extends ChangeNotifier {
     if (has != null) 'has': has,
   });
 
-  /// POWER PLAY — JAM / HOT SHOT: a condition armed on the PEER's device,
-  /// consulted the next time it matters on their end (their next draw for
-  /// JAM, their next resolved incoming hit for HOT SHOT).
-  void sendPowerUpFlag(PowerUpCard card) =>
-      _send({'type': 'pw_flag', 'card': card.index});
+  /// POWER PLAY — JAM / HOT SHOT / SPY SHIP: a condition armed on the
+  /// PEER's device, consulted the next time it matters on their end
+  /// (their next draw for JAM, their next resolved incoming hit for HOT
+  /// SHOT, immediately for a planted scout).
+  ///
+  /// [r]/[c] carry where a SPY SHIP was planted. [on] is how a flag is
+  /// LIFTED rather than set — the defender reporting that the scout on
+  /// their water is gone, so its owner stops asking it for reports.
+  void sendPowerUpFlag(PowerUpCard card, {int? r, int? c, bool? on}) => _send({
+        'type': 'pw_flag',
+        'card': card.index,
+        if (r != null) 'r': r,
+        if (c != null) 'c': c,
+        if (on != null) 'on': on,
+      });
 
   /// POWER PLAY — announces that a card was used, purely for the
   /// opponent's "X used CARDNAME" banner. Never the mechanism a card's

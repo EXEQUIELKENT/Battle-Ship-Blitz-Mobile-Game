@@ -42,6 +42,18 @@ class CombatEvent {
   /// [byPlayer], regardless of hit or miss.
   final bool forcePass;
 
+  /// POWER PLAY only: this "shot" is a MINEFIELD / TRAP LINE ricochet —
+  /// the shell that sprang the trap thrown back into the FIRER's own
+  /// fleet — and [bounceFrom] is the mined cell it came off, on the
+  /// opposite grid. The screen flies it from there to here instead of
+  /// out of a cannon (see `BattleScreen._flyRicochet`).
+  ///
+  /// Always [hold], so a ricochet can never itself decide the turn: the
+  /// shot that sprang the trap already did that with [forcePass].
+  final List<int>? bounceFrom;
+
+  bool get isRicochet => bounceFrom != null;
+
   CombatEvent({
     required this.row,
     required this.col,
@@ -50,6 +62,7 @@ class CombatEvent {
     this.sunkShipName,
     this.hold = false,
     this.forcePass = false,
+    this.bounceFrom,
   }) : time = DateTime.now();
 }
 
@@ -262,6 +275,16 @@ class GameController extends ChangeNotifier {
   /// [onMyTurnStart] draw check, which then skips that turn's draw.
   bool _jammed = false;
 
+  /// True when THIS turn's draw was the one a JAM ate.
+  ///
+  /// [_jammed] itself cannot answer that: it is spent the instant the turn
+  /// begins, so by the time anything renders it is already false and the
+  /// hand just looks ordinarily empty. The HUD badge needs to tell those
+  /// two apart to show the jam crackle rather than a blank slot (see
+  /// `_PowerUpBadge`), so the fact that it happened is latched here until
+  /// the next draw or turn actually replaces it.
+  bool powerUpJammedThisTurn = false;
+
   /// DECOY: armed by using the card on THIS board; consumed the next time
   /// an incoming shot would otherwise hit it — the hit is swallowed
   /// (reported as a miss, no damage taken) rather than resolved normally.
@@ -299,6 +322,44 @@ class GameController extends ChangeNotifier {
   /// "row * kBoardSize + col".
   final List<Set<int>> _myTraps = [];
 
+  /// AUTO DODGE: the hull this player picked to evade. The next incoming
+  /// shot that would hit it is reported as a miss and the hull slips to
+  /// new water instead — see [_tryAutoDodge]. One-shot.
+  ShipKind? _dodgeShip;
+
+  /// ARMOUR PLATE: plates left on each hull that has any. Every incoming
+  /// hit on a plated hull is deflected — reported as a miss, no damage —
+  /// and spends one plate.
+  final Map<ShipKind, int> _armour = {};
+
+  /// How many armour plates [kind] has left. Drives the plating drawn on
+  /// the hull as well as the deflection itself.
+  int armourOn(ShipKind kind) => _armour[kind] ?? 0;
+
+  /// Every plated hull, for the board to draw. Unmodifiable so the view
+  /// cannot reach in and change the mechanic it is only displaying.
+  Map<ShipKind, int> get armourByKind => Map.unmodifiable(_armour);
+
+  /// The hull primed by AUTO DODGE, or null.
+  ShipKind? get dodgeKind => _dodgeShip;
+
+  /// SPY SHIP — where THIS player planted their scout on the ENEMY board,
+  /// as a `row * kBoardSize + col` key, or null for none in the water.
+  /// Only one at a time: planting a second would need a second reveal
+  /// clock, and the card is rare enough that holding two is unlikely.
+  int? mySpyCell;
+
+  /// SPY SHIP — where the OPPONENT planted their scout on THIS player's
+  /// board. Drawn on the owner's own grid, and the only thing they can
+  /// tap their own water to do (see [scuttleEnemySpy]).
+  int? enemySpyCell;
+
+  /// Every currently-armed trap cell on this player's own board, flattened
+  /// — what the board draws the gold trap glyph on. Only this player ever
+  /// sees them: the whole point of MINEFIELD / TRAP LINE is that the
+  /// opponent finds out by firing into one.
+  Set<int> get myTrapCells => {for (final t in _myTraps) ...t};
+
   /// True while [myPowerUp] is a card that still needs the player to pick
   /// a cell (or two, for SPRAY) before it does anything.
   bool get powerUpNeedsTarget =>
@@ -313,18 +374,54 @@ class GameController extends ChangeNotifier {
   /// resolves on a single tap except SPRAY, which picks two.
   int get powerUpTapsNeeded => myPowerUp == PowerUpCard.spray ? 2 : 1;
 
+
+  /// Whether the multi-shot volley ending at [last] scored anywhere.
+  ///
+  /// FEEDBACK ("sometimes the extra shots does hit a ship but it counts
+  /// as a miss"). Only the FINAL shot of a batch is allowed to decide the
+  /// turn — every earlier one is tagged [CombatEvent.hold] so a miss
+  /// among them cannot hand the guns over early. The catch is that the
+  /// final shot then decided the turn ALONE: a SALVO that holed a hull
+  /// twice and missed with its third shell passed the turn anyway, which
+  /// is exactly "I hit a ship and it counted as a miss". The whole game
+  /// otherwise runs on "a hit lets you fire again", and a card that fires
+  /// three shots should not be the one place that stops being true.
+  ///
+  /// The volley is the run of `hold` shots immediately before [last] by
+  /// the same shooter. Shots from the other side are stepped over rather
+  /// than ending the run — in a turn-based mode they cannot interleave,
+  /// but a late-arriving result must not be able to split a batch in two.
+  bool volleyScoredHit(CombatEvent last) {
+    if (last.result != ShotResult.miss) return true;
+    final i = events.lastIndexOf(last);
+    if (i < 0) return false;
+    for (var k = i - 1; k >= 0; k--) {
+      final e = events[k];
+      if (e.byPlayer != last.byPlayer) continue;
+      if (!e.hold) break; // an un-held shot of ours: the batch starts after it
+      if (e.result == ShotResult.hit || e.result == ShotResult.sunk) {
+        return true;
+      }
+    }
+    return false;
+  }
   /// Called once whenever this device's own turn begins. POWER PLAY:
   /// draws a fresh card if the hand is empty — unless the opponent JAMmed
   /// this turn, in which case that one draw is skipped and the jam is
   /// spent.
   void onMyTurnStart() {
     if (!isPowerUpBattle || !battling) return;
+    // The scout reports first, independently of the draw: JAM silences
+    // your radio, not the boat you already put in their water.
+    _askSpyReveal();
     if (_jammed) {
       _jammed = false;
+      powerUpJammedThisTurn = true;
       _log('📡 Signal jammed — no card this turn.');
       notifyListeners();
       return;
     }
+    powerUpJammedThisTurn = false;
     if (myPowerUp != null) return;
     myPowerUp = PowerUps.draw(_rng);
     _log('🃏 Drew ${PowerUps.of(myPowerUp!).name}.');
@@ -479,6 +576,39 @@ class GameController extends ChangeNotifier {
         final shape = PowerUpShapes.salvo(cells[0].$1, cells[0].$2);
         _myTraps.add({for (final (r, c) in shape) r * kBoardSize + c});
         break;
+      case PowerUpCard.hardTurn:
+        {
+          if (!_turnOneShip(cells[0].$1, cells[0].$2)) {
+            _log('↩️ HARD TURN — that hull has nowhere to swing.');
+            return false;
+          }
+          break;
+        }
+      case PowerUpCard.autoDodge:
+        {
+          final ship = _ownHullAt(cells[0].$1, cells[0].$2);
+          if (ship == null) {
+            _log('🌀 AUTO DODGE — tap one of your own hulls.');
+            return false;
+          }
+          _dodgeShip = ship.spec.kind;
+          break;
+        }
+      case PowerUpCard.armourPlate:
+        {
+          final ship = _ownHullAt(cells[0].$1, cells[0].$2);
+          if (ship == null) {
+            _log('🛡️ ARMOUR PLATE — tap one of your own hulls.');
+            return false;
+          }
+          _armour[ship.spec.kind] = PowerUps.armourPlates;
+          break;
+        }
+      case PowerUpCard.spyShip:
+        {
+          if (!_plantSpy(cells[0].$1, cells[0].$2)) return false;
+          break;
+        }
     }
 
     network.sendPowerUpUsed(card);
@@ -634,12 +764,234 @@ class GameController extends ChangeNotifier {
       if (boards[0].canRelocateTo(ship, row, col, horizontal) &&
           boards[0].relocate(ship.spec.kind, row, col, horizontal)) {
         network.sendMove(ship.spec.kind, row, col, horizontal);
+        _crushSpyIfCovered();
         revision++;
         stateSeq++;
         return true;
       }
     }
     return false;
+  }
+
+  /// The player's own not-yet-sunk hull at (r, c), for the three cards
+  /// that are aimed at a hull by tapping it on your own grid. A sunk hull
+  /// is refused rather than silently accepted: plating or priming a wreck
+  /// would spend the card on nothing.
+  PlacedShip? _ownHullAt(int r, int c) {
+    final ship = boards[0].shipAt(r, c);
+    if (ship == null || ship.isSunk) return null;
+    return ship;
+  }
+
+  /// HARD TURN: swings the hull at (r, c) a quarter turn.
+  ///
+  /// Tries the pivot the player would expect first — same origin cell,
+  /// opposite orientation — and if that would hang off the board or foul
+  /// another hull, walks outward for the nearest anchor that fits. The
+  /// hull therefore turns roughly where it stands rather than teleporting
+  /// across the board, which is what separates this from SCRAMBLE.
+  ///
+  /// Damage travels with the hull ([ignoreDamage]), unlike SCRAMBLE which
+  /// only moves clean hulls: a quarter turn is the whole card, and
+  /// refusing it on the first scratch would make it near-useless late on.
+  /// That leaves the attacker's old hit marks sitting on water the hull
+  /// has left — exactly what MANOEUVRE already does whenever a damaged
+  /// fleet rearranges, and harmless because [Board.canRelocateTo] only
+  /// ever lands a hull on water nobody has fired at, so every cell of the
+  /// turned hull stays legally reachable.
+  bool _turnOneShip(int r, int c) {
+    final ship = _ownHullAt(r, c);
+    if (ship == null) return false;
+    final turned = !ship.horizontal;
+    // Candidate anchors, nearest first: the hull's own origin, then the
+    // tapped cell, then a widening ring around the origin.
+    final origin = (ship.row, ship.col);
+    final tries = <(int, int)>[origin, (r, c)];
+    for (var d = 1; d <= 3; d++) {
+      for (var dr = -d; dr <= d; dr++) {
+        for (var dc = -d; dc <= d; dc++) {
+          if (dr.abs() != d && dc.abs() != d) continue; // ring edge only
+          tries.add((origin.$1 + dr, origin.$2 + dc));
+        }
+      }
+    }
+    for (final (row, col) in tries) {
+      if (row < 0 || col < 0) continue;
+      if (!boards[0].canRelocateTo(ship, row, col, turned, ignoreDamage: true)) {
+        continue;
+      }
+      if (!boards[0]
+          .relocate(ship.spec.kind, row, col, turned, ignoreDamage: true)) {
+        continue;
+      }
+      network.sendMove(ship.spec.kind, row, col, turned);
+      _crushSpyIfCovered();
+      revision++;
+      stateSeq++;
+      return true;
+    }
+    return false;
+  }
+
+
+  /// Picks the cell a sprung mine throws the shell into — a random
+  /// still-unhit cell of a random still-afloat hull on the FIRER's fleet,
+  /// which this device holds as `boards[1]`.
+  ///
+  /// Chooses the hull first and the cell second, rather than picking
+  /// uniformly across every exposed cell: cell-uniform would quietly
+  /// favour the carrier simply because it is the longest, and "a random
+  /// ship on their deck" is what the card promises.
+  ///
+  /// Returns null when there is nothing left to hit — every hull already
+  /// sunk, or every remaining cell already fired at. A ricochet is then
+  /// simply not produced and the trap still costs them the turn.
+  (int, int)? _pickRicochetTarget() {
+    final afloat = <PlacedShip>[];
+    for (final ship in boards[1].ships) {
+      if (ship.isSunk) continue;
+      final open = _openRicochetCells(ship);
+      if (open.isNotEmpty) afloat.add(ship);
+    }
+    if (afloat.isEmpty) return null;
+    final ship = afloat[_rng.nextInt(afloat.length)];
+    final open = _openRicochetCells(ship);
+    return open[_rng.nextInt(open.length)];
+  }
+
+  /// Cells of [ship] a ricochet could still land on: not already holed,
+  /// and not already resolved by one of our own shots — reusing a cell we
+  /// have already fired at would overwrite a known result with a second,
+  /// conflicting one.
+  List<(int, int)> _openRicochetCells(PlacedShip ship) {
+    final out = <(int, int)>[];
+    for (var i = 0; i < ship.spec.size; i++) {
+      if (ship.hitIndices.contains(i)) continue;
+      final cell = ship.cells[i];
+      if (myShots[cell[0]][cell[1]] != 0) continue;
+      out.add((cell[0], cell[1]));
+    }
+    return out;
+  }
+  /// AUTO DODGE: slips [ship] out from under a shot that was about to hit
+  /// it at (r, c). Returns false — leaving the card armed and the shot to
+  /// resolve normally — when there is nowhere legal to slip to.
+  ///
+  /// ORDER MATTERS. The incoming cell is marked spent BEFORE the hull
+  /// looks for somewhere to go, because [Board.canRelocateTo] refuses any
+  /// position touching water that has been fired at: mark first and the
+  /// hull cannot possibly dodge INTO the very shot it is dodging. That
+  /// same rule is also what makes the reported miss honest rather than a
+  /// lie — by the time the attacker is told "miss", the cell really is
+  /// empty water.
+  ///
+  /// Damage travels with the hull (`ignoreDamage`), unlike SCRAMBLE which
+  /// only moves clean hulls: a hull that has already been found is
+  /// exactly the one that most wants to run.
+  bool _tryAutoDodge(PlacedShip ship, int r, int c) {
+    boards[0].markShot(r, c);
+    final kind = ship.spec.kind;
+    // Nearest water first, so the hull visibly slips aside rather than
+    // teleporting across the board — a dodge, not a scramble.
+    final candidates = <(int, int, bool)>[];
+    for (var d = 1; d <= 4; d++) {
+      for (var dr = -d; dr <= d; dr++) {
+        for (var dc = -d; dc <= d; dc++) {
+          if (dr.abs() != d && dc.abs() != d) continue;
+          final row = ship.row + dr, col = ship.col + dc;
+          if (row < 0 || col < 0) continue;
+          candidates.add((row, col, ship.horizontal));
+          candidates.add((row, col, !ship.horizontal));
+        }
+      }
+    }
+    for (final (row, col, horizontal) in candidates) {
+      if (!boards[0]
+          .canRelocateTo(ship, row, col, horizontal, ignoreDamage: true)) {
+        continue;
+      }
+      if (!boards[0]
+          .relocate(kind, row, col, horizontal, ignoreDamage: true)) {
+        continue;
+      }
+      _dodgeShip = null;
+      network.sendMove(kind, row, col, horizontal);
+      _crushSpyIfCovered();
+      revision++;
+      stateSeq++;
+      _log('🌀 AUTO DODGE — your ${ship.spec.name} slipped the shot.');
+      return true;
+    }
+    // Boxed in. Un-mark the cell so the shot can resolve as the real hit
+    // it is: leaving it marked would swallow the shot entirely.
+    boards[0].unmarkShot(r, c);
+    return false;
+  }
+
+  /// SPY SHIP: drops this player's scout onto the enemy board at (r, c).
+  ///
+  /// Refused on water already fired at — the scout is meant to sit
+  /// somewhere still unknown, and planting it on a resolved cell would
+  /// both waste the card and put it where its own owner can no longer
+  /// learn anything. Refused too while a scout is already out, since
+  /// exactly one reveal clock runs (see [_askSpyReveal]).
+  bool _plantSpy(int r, int c) {
+    if (mySpyCell != null) {
+      _log('🕵️ SPY SHIP — your scout is already out there.');
+      return false;
+    }
+    if (r < 0 || r >= kBoardSize || c < 0 || c >= kBoardSize) return false;
+    if (myShots[r][c] != 0) {
+      _log('🕵️ SPY SHIP — that water is already spent.');
+      return false;
+    }
+    mySpyCell = r * kBoardSize + c;
+    network.sendPowerUpFlag(PowerUpCard.spyShip, r: r, c: c);
+    _log('🕵️ Scout away — planted at ${_coord(r, c)}.');
+    // It reports for the first time on the turn AFTER it lands, so the
+    // card costs a turn of patience rather than paying out instantly.
+    return true;
+  }
+
+  /// SPY SHIP: asks the defender what sits beside our scout. Sent at the
+  /// start of every one of our turns while the scout is alive; the answer
+  /// comes back through [_handlePowerUpAnswer].
+  void _askSpyReveal() {
+    final key = mySpyCell;
+    if (key == null) return;
+    network.sendPowerUpAsk(
+      PowerUpCard.spyShip,
+      r: key ~/ kBoardSize,
+      c: key % kBoardSize,
+    );
+  }
+
+  /// Runs a hull over the enemy scout, if one of this player's hulls has
+  /// just come to rest on top of it.
+  ///
+  /// This is the counter to SPY SHIP, and it is deliberately the ONLY
+  /// one. The obvious counter — "shoot the thing" — cannot exist: the
+  /// scout sits on the defender's own water, and a player only ever fires
+  /// at the OPPOSITE board, so there is no shot either side could take at
+  /// it. Costing the defender a turn to scuttle it by tapping was the
+  /// other candidate and is worse than it looks: whose turn it is, is not
+  /// a message either device sends. Both ends derive it independently
+  /// from the combat events they each see (see `_maybePassTurn`), so a
+  /// turn spent on something that is not a shot has no event to ride on
+  /// and would desync the two devices' idea of whose guns are live.
+  ///
+  /// Steering a hull over it instead rides on machinery that already
+  /// mirrors perfectly — the same `sendMove` every rearrangement uses —
+  /// and gives the three new hull-moving cards (HARD TURN, AUTO DODGE and
+  /// the existing SCRAMBLE) a second job.
+  void _crushSpyIfCovered() {
+    final key = enemySpyCell;
+    if (key == null) return;
+    final r = key ~/ kBoardSize, c = key % kBoardSize;
+    if (boards[0].shipAt(r, c) == null) return;
+    enemySpyCell = null;
+    network.sendPowerUpFlag(PowerUpCard.spyShip, on: false);
+    _log('💥 Your hull ran the enemy scout down at ${_coord(r, c)}.');
   }
 
   String _coord(int r, int c) => '${String.fromCharCode(65 + r)}${c + 1}';
@@ -730,6 +1082,14 @@ class GameController extends ChangeNotifier {
   /// mainly for tests/diagnostics — UI code should just fire shots and let
   /// [resolvePendingFinishFor] do the right thing once each impact lands.
   bool get hasPendingFinish => _pendingFinishEvent != null;
+
+  /// Whether [e] is the shot that has already decided the match and is
+  /// only waiting for its own impact to become visible.
+  ///
+  /// The battle screen asks so it can give that one shell the slow,
+  /// close-up finish — which has to begin while the shell is still in
+  /// the AIR, well before [resolvePendingFinishFor] ends the match.
+  bool isDecidingShot(CombatEvent e) => identical(_pendingFinishEvent, e);
 
   final List<CombatEvent> events = [];
 
@@ -866,6 +1226,10 @@ class GameController extends ChangeNotifier {
     _doubleTapArmed = false;
     _chainShotArmed = false;
     _myTraps.clear();
+    _dodgeShip = null;
+    _armour.clear();
+    mySpyCell = null;
+    enemySpyCell = null;
 
     for (var r = 0; r < kBoardSize; r++) {
       for (var c = 0; c < kBoardSize; c++) {
@@ -1139,6 +1503,17 @@ class GameController extends ChangeNotifier {
           'chainShotArmed': _chainShotArmed,
           'myTraps': _myTraps.map((t) => t.toList()).toList(),
           'spottedEnemyCells': spottedEnemyCells.toList(),
+          // SPY SHIP, named from the RECIPIENT's point of view like
+          // `yourBoard`/`myBoard` above: the scout sitting on OUR water is
+          // the returning player's own, and ours is sitting on theirs.
+          //
+          // AUTO DODGE and ARMOUR PLATE are deliberately absent. They are
+          // flags on the returning player's OWN hulls, which this device
+          // has never been told about — nothing here could reconstruct
+          // them. They are lost on a reconnect, exactly as DECOY and
+          // COUNTER BATTERY already are.
+          if (enemySpyCell != null) 'yourSpy': enemySpyCell,
+          if (mySpyCell != null) 'mySpy': mySpyCell,
         },
       };
 
@@ -1247,6 +1622,10 @@ class GameController extends ChangeNotifier {
     _doubleTapArmed = false;
     _chainShotArmed = false;
     _myTraps.clear();
+    _dodgeShip = null;
+    _armour.clear();
+    mySpyCell = null;
+    enemySpyCell = null;
 
     combatLog
       ..clear()
@@ -1323,6 +1702,10 @@ class GameController extends ChangeNotifier {
       ..clear()
       ..addAll(((pw['myTraps'] as List?) ?? const [])
           .map((t) => Set<int>.from(t as List)));
+    // Both scouts, un-flipped back to this device's own point of view —
+    // see the note where these are written in `buildResumeSnapshot`.
+    mySpyCell = pw['yourSpy'] as int?;
+    enemySpyCell = pw['mySpy'] as int?;
     spottedEnemyCells
       ..clear()
       ..addAll(((pw['spottedEnemyCells'] as List?) ?? const [])
@@ -1436,6 +1819,7 @@ class GameController extends ChangeNotifier {
     PlacedShip? sunk,
     bool hold = false,
     bool forcePass = false,
+    List<int>? bounceFrom,
   }) {
     final hit =
         result == ShotResult.hit || result == ShotResult.sunk;
@@ -1455,6 +1839,7 @@ class GameController extends ChangeNotifier {
         sunkShipName: sunk?.spec.name,
         hold: hold,
         forcePass: forcePass,
+        bounceFrom: bounceFrom,
       ),
     );
     revision++;
@@ -1473,7 +1858,15 @@ class GameController extends ChangeNotifier {
     // information: both players already SAW that hull go down (see the
     // doc on `LanBattleMode.ghost`), so naming it without the coordinate
     // is narration, not a leak.
-    if (!isGhostBattle) {
+    if (bounceFrom != null) {
+      // A ricochet is not something either captain aimed, so it must not
+      // be narrated as one of their shots.
+      final victim = shooterIsP1 ? _opponentName() : profile.playerName;
+      final hull = sunk?.spec.name;
+      _log(result == ShotResult.sunk
+          ? '💣 The mine threw the shell back — $victim lost the $hull at $coord!'
+          : '💣 The mine threw the shell back into $victim\'s own fleet at $coord!');
+    } else if (!isGhostBattle) {
       if (result == ShotResult.sunk) {
         _log('💥 $shooter SANK the ${sunk!.spec.name} at $coord!');
       } else if (result == ShotResult.hit) {
@@ -1960,7 +2353,35 @@ class GameController extends ChangeNotifier {
       return true;
     }
 
-    if (isPowerUpBattle &&
+    // AUTO DODGE and ARMOUR PLATE deflect exactly the way DECOY does —
+    // the shot is recorded, reported as a miss, and no damage is taken —
+    // so they share its stranding guard: turning away the one cell a hull
+    // still had left to be hit on would make it unsinkable for the rest
+    // of the match. A deflection that would do that is declined, and the
+    // shot resolves normally.
+    final deflectable = isPowerUpBattle &&
+        decoyTarget != null &&
+        !decoyWouldStrandHull();
+    final dodging = deflectable && decoyTarget.spec.kind == _dodgeShip;
+    final plated = deflectable && armourOn(decoyTarget.spec.kind) > 0;
+
+    if (dodging && _tryAutoDodge(decoyTarget, r, c)) {
+      result = ShotResult.miss;
+      sunk = null;
+    } else if (plated) {
+      final kind = decoyTarget.spec.kind;
+      final left = _armour[kind]! - 1;
+      if (left <= 0) {
+        _armour.remove(kind);
+      } else {
+        _armour[kind] = left;
+      }
+      boards[0].markShot(r, c);
+      result = ShotResult.miss;
+      sunk = null;
+      _log('🛡️ Plating turned a shell aside'
+          '${left > 0 ? " — $left plate${left == 1 ? "" : "s"} left." : " — that was the last plate."}');
+    } else if (isPowerUpBattle &&
         _decoyArmed &&
         decoyTarget != null &&
         !decoyWouldStrandHull()) {
@@ -2010,17 +2431,40 @@ class GameController extends ChangeNotifier {
 
     var forcePass = false;
     int? hotR, hotC;
+    // MINEFIELD / TRAP LINE ricochet target on the FIRER's own board.
+    int? bounceR, bounceC;
     if (isPowerUpBattle) {
       final hit = result == ShotResult.hit || result == ShotResult.sunk;
 
-      // MINEFIELD / TRAP LINE: triggers on the CELL regardless of
-      // hit or miss — a mine is water rigged to cost a turn, not
-      // damage. Consumes the whole trap it belongs to.
+      // MINEFIELD / TRAP LINE. A mine is water rigged to throw a shell
+      // back at whoever fired it — it triggers on the CELL regardless of
+      // hit or miss, and consumes the whole trap it belongs to.
+      //
+      // FEEDBACK ("the traps is not working, it should damage their ship
+      // instead ... the projectile will bounce back to the random ships
+      // on the deck of the opponent"): all it used to do was cost the
+      // firer their next turn. That is a real effect but an invisible
+      // one — nothing on either screen ever showed it happening, so a
+      // rare card read as a dud. It now also throws the shell into the
+      // firer's OWN fleet.
+      //
+      // The target is chosen HERE, on the defender's device, because the
+      // trap is ours and this is the only side that knows it sprang. Our
+      // `boards[1]` is a full mirror of their fleet (both boards are
+      // exchanged at battle start), so we can pick a real, still-intact
+      // hull cell and send it back with the result — and the firer's own
+      // device applies exactly the same cell to `boards[0]`, so the two
+      // copies cannot drift.
       final key = r * kBoardSize + c;
       final trapIdx = _myTraps.indexWhere((t) => t.contains(key));
       if (trapIdx != -1) {
         _myTraps.removeAt(trapIdx);
         forcePass = true;
+        final target = _pickRicochetTarget();
+        if (target != null) {
+          bounceR = target.$1;
+          bounceC = target.$2;
+        }
       }
 
       // HOT SHOT: one extra, nearest unhit cell of the SAME hull —
@@ -2086,6 +2530,8 @@ class GameController extends ChangeNotifier {
       forcePass: forcePass,
       hotR: hotR,
       hotC: hotC,
+      bounceR: bounceR,
+      bounceC: bounceC,
     );
 
     _registerShot(
@@ -2097,6 +2543,27 @@ class GameController extends ChangeNotifier {
       hold: hold,
       forcePass: forcePass,
     );
+    // The ricochet lands on OUR copy of their fleet. Registered as one of
+    // our own shots because that is exactly what it is from this side —
+    // their hull took damage on water we now know about — but always
+    // `hold`, so it can never decide a turn: the shot that sprang the
+    // trap already did that with `forcePass`.
+    if (bounceR != null && bounceC != null) {
+      final victim = boards[1].shipAt(bounceR, bounceC);
+      final idx = victim?.cellIndexAt(bounceR, bounceC);
+      if (victim != null && idx != null) {
+        victim.hitIndices.add(idx);
+        _registerShot(
+          shooterIsP1: true,
+          r: bounceR,
+          c: bounceC,
+          result: victim.isSunk ? ShotResult.sunk : ShotResult.hit,
+          sunk: victim.isSunk ? victim : null,
+          hold: true,
+          bounceFrom: [r, c],
+        );
+      }
+    }
     if (hotR != null) {
       _registerShot(
         shooterIsP1: false,
@@ -2240,6 +2707,35 @@ class GameController extends ChangeNotifier {
           forcePass: forcePass,
         );
 
+
+        // MINEFIELD / TRAP LINE: our own shell, thrown back into our own
+        // fleet. The cell was chosen by the board that held the trap (see
+        // `_pickRicochetTarget`) and is applied here verbatim, so both
+        // devices damage exactly the same hull cell.
+        final bR = msg['bR'] as int?;
+        final bC = msg['bC'] as int?;
+        if (bR != null &&
+            bC != null &&
+            bR >= 0 &&
+            bR < kBoardSize &&
+            bC >= 0 &&
+            bC < kBoardSize) {
+          final victim = boards[0].shipAt(bR, bC);
+          final idx = victim?.cellIndexAt(bR, bC);
+          if (victim != null && idx != null && !victim.hitIndices.contains(idx)) {
+            victim.hitIndices.add(idx);
+            boards[0].markShot(bR, bC);
+            _registerShot(
+              shooterIsP1: false,
+              r: bR,
+              c: bC,
+              result: victim.isSunk ? ShotResult.sunk : ShotResult.hit,
+              sunk: victim.isSunk ? victim : null,
+              hold: true,
+              bounceFrom: [r, c],
+            );
+          }
+        }
         final hotR = msg['hotR'] as int?;
         final hotC = msg['hotC'] as int?;
         if (hotR != null && hotC != null) {
@@ -2294,6 +2790,26 @@ class GameController extends ChangeNotifier {
         final card = PowerUpCard.values[msg['card'] as int];
         if (card == PowerUpCard.jam) _jammed = true;
         if (card == PowerUpCard.hotShot) _hotShotArmedAgainstMe = true;
+        if (card == PowerUpCard.spyShip) {
+          if (msg['on'] == false) {
+            // Our OWN scout, reported gone by the board it was sitting
+            // on — run down by a hull, or cleared with the match.
+            mySpyCell = null;
+          } else {
+            final r = msg['r'] as int?, c = msg['c'] as int?;
+            if (r != null &&
+                c != null &&
+                r >= 0 &&
+                r < kBoardSize &&
+                c >= 0 &&
+                c < kBoardSize) {
+              enemySpyCell = r * kBoardSize + c;
+              _log('🕵️ An enemy scout is sitting in your water at '
+                  '${_coord(r, c)} — run a hull over it.');
+            }
+          }
+          notifyListeners();
+        }
         break;
 
       case 'pw_used':
@@ -2417,6 +2933,40 @@ class GameController extends ChangeNotifier {
         final has = boards[0].ships.any((s) => s.cells.any((cell) => cell[0] == r));
         network.sendPowerUpAnswer(card, r: r, has: has);
         break;
+      case PowerUpCard.spyShip:
+        {
+          // The scout reports one hull cell touching it. Cells the asker
+          // has already fired at are no use to them, and neither is one
+          // this scout has named before — but we cannot see their
+          // `spottedEnemyCells` from here, so the asker filters repeats
+          // on arrival (a `Set` makes that free) and we simply avoid
+          // cells they have already resolved by shot.
+          if (enemySpyCell == null) {
+            network.sendPowerUpAnswer(card, has: false);
+            break;
+          }
+          final sr = enemySpyCell! ~/ kBoardSize;
+          final sc = enemySpyCell! % kBoardSize;
+          final found = <(int, int)>[];
+          for (var dr = -1; dr <= 1; dr++) {
+            for (var dc = -1; dc <= 1; dc++) {
+              if (dr == 0 && dc == 0) continue;
+              final rr = sr + dr, cc = sc + dc;
+              if (rr < 0 || rr >= kBoardSize || cc < 0 || cc >= kBoardSize) {
+                continue;
+              }
+              if (boards[0].alreadyShot(rr, cc)) continue;
+              if (boards[0].shipAt(rr, cc) != null) found.add((rr, cc));
+            }
+          }
+          if (found.isEmpty) {
+            network.sendPowerUpAnswer(card, has: true);
+          } else {
+            final pick = found[_rng.nextInt(found.length)];
+            network.sendPowerUpAnswer(card, r: pick.$1, c: pick.$2, has: true);
+          }
+          break;
+        }
       default:
         break;
     }
@@ -2443,6 +2993,26 @@ class GameController extends ChangeNotifier {
         _log(
             '🔍 RECON: row ${String.fromCharCode(65 + r)} ${has ? "holds a ship" : "is empty"}.');
         break;
+      case PowerUpCard.spyShip:
+        {
+          // `has: false` means the scout is no longer there at all — the
+          // authoritative word from the board it was sitting on, so stop
+          // asking it for reports.
+          if (msg['has'] != true) {
+            mySpyCell = null;
+            break;
+          }
+          final r = msg['r'] as int?, c = msg['c'] as int?;
+          if (r == null || c == null) {
+            _log('🕵️ Scout reports clear water beside it.');
+            break;
+          }
+          final key = r * kBoardSize + c;
+          if (spottedEnemyCells.add(key)) {
+            _log('🕵️ Scout marked a hull at ${_coord(r, c)}.');
+          }
+          break;
+        }
       default:
         break;
     }

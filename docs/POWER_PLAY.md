@@ -33,30 +33,54 @@ behind each one.
 | **DOUBLE TAP** | No target needed — arms your very next shot. If that shot misses, your turn does **not** pass; a hit was never going to pass it anyway. |
 | **REPAIR** | No target needed. Undoes one hit on your own **most-damaged** hull that isn't already sunk. Does nothing (and isn't spent) if nothing is eligible. |
 | **JAM** | No target needed. Your opponent draws no card on their very next turn — one turn only. |
-| **SPRAY** | Pick two cells on the enemy grid. Fires at both; the first shot never ends your turn even on a miss, only the second (last) one follows the normal rule. |
+| **SPRAY** | Pick two cells on the enemy grid. Fires at both. |
+| **HARD TURN** | Tap one of **your own** hulls — it swings a quarter turn on the spot. Prefers to pivot about its own origin and only walks outward if that would hang off the board or foul another hull, so it turns roughly where it stands. Unlike SCRAMBLE it will turn a **damaged** hull. Refused (and kept) if the hull has nowhere legal to swing. |
 
 ## Uncommon
 
 | Card | What it does |
 |---|---|
-| **SALVO** | Pick a cell on the enemy grid — fires three shots in a horizontal line centred on it, clamped to stay on the board (a SALVO tapped flush against an edge still fires three, just shifted). Only the last of the three can end your turn. |
-| **DEPTH CHARGE** | Pick a cell on the enemy grid — fires a 2×2 block anchored there (also edge-clamped). Only the last shot can end your turn. |
+| **SALVO** | Pick a cell on the enemy grid — fires three shots in a horizontal line centred on it, clamped to stay on the board (a SALVO tapped flush against an edge still fires three, just shifted). |
+| **DEPTH CHARGE** | Pick a cell on the enemy grid — fires a 2×2 block anchored there (also edge-clamped). |
 | **CHAIN SHOT** | Pick a cell on the enemy grid — an ordinary single shot. If it hits, one bonus shot automatically follows at a random *unfired* cell orthogonally adjacent to it. No bonus shot on a miss. |
 | **HOT SHOT** | No target needed — arms your side. The next hit **you** score also damages one more cell of that same hull (the nearest cell that isn't hit yet) — and can complete the kill on its own. One-shot: spent the instant it triggers, and ignores misses in between (it waits for your actual next hit). |
 | **RAPID FIRE** | No target needed. Your next three hits reload at half the normal cooldown. |
 | **SCRAMBLE** | No target needed. One of your own currently-undamaged hulls jumps to a random legal spot on your board. Does nothing (and isn't spent) if every hull is already damaged. |
 | **COUNTER BATTERY** | No target needed — arms your defence. The next hit you *take* queues one bonus shot for your own next turn; that bonus shot never ends your turn even if it misses. |
+| **AUTO DODGE** | Tap one of **your own** hulls to prime it. The next shot that would hit *that* hull is reported to your opponent as a miss and does no damage — and the hull immediately slips to the nearest legal water, so their map of it is now wrong. One-shot. If it is boxed in with nowhere to go, the dodge fizzles and the shot lands normally. Your own board shows a primed hull with wake chevrons. |
+| **ARMOUR PLATE** | Tap one of **your own** hulls — it shrugs off the next **two** hits. Each deflected shell is reported to your opponent as a miss, does no damage, and spends one plate. Your own board draws the plates as bolted bands, one per plate left, so you can watch them wear down. |
 
 ## Rare
 
 | Card | What it does |
 |---|---|
-| **BARRAGE** | No target needed. Four random shots land on enemy water you haven't already fired at. Only the last can end your turn. |
-| **CROSS FIRE** | Pick a cell on the enemy grid — fires a five-cell plus shape centred on it (edge-clamped). Only the last shot can end your turn. |
+| **BARRAGE** | No target needed. Four random shots land on enemy water you haven't already fired at. |
+| **CROSS FIRE** | Pick a cell on the enemy grid — fires a five-cell plus shape centred on it (edge-clamped). |
 | **DECOY** | No target needed — arms your defence. The next hit you'd take is instead reported to your opponent as a miss and does no damage to you. One-shot. |
 | **PATCH CREW** | No target needed. Undoes one hit on **every** damaged, not-yet-sunk hull you have — REPAIR's effect, but fleet-wide. |
-| **MINEFIELD** | Pick a cell on **your own** grid. If your opponent ever fires on that exact cell, it costs them their next turn — regardless of whether their shot was a hit or a miss. |
-| **TRAP LINE** | Pick a cell on **your own** grid — mines three cells in a line from it (same shape as SALVO, edge-clamped). The *first* one your opponent hits costs them their turn and springs the whole trap; the other two go inert with it. |
+| **MINEFIELD** | Pick a cell on **your own** grid. If your opponent ever fires on that exact cell the mine throws the shell straight back: it costs them their next turn AND ricochets into a random still-afloat hull of **their own** fleet. Triggers on the cell regardless of whether their shot was a hit or a miss. Both screens fly the bounce. |
+| **TRAP LINE** | Pick a cell on **your own** grid — mines three cells in a line from it (same shape as SALVO, edge-clamped). The *first* one your opponent hits springs the whole trap — same turn cost and same ricochet into their own fleet as MINEFIELD — and the other two go inert with it. |
+| **SPY SHIP** | Pick a cell on the **enemy** grid you have not already fired at — a one-cell scout takes up station there. At the start of every one of your turns while it survives, it names one enemy hull cell touching it, marked on your board the way SPOTTER's find is. Only one scout at a time. A **JAM** silences your draw but not your scout. See below for how it is removed. |
+
+---
+
+## Removing an enemy SPY SHIP
+
+The scout sits in **your** water and both players can see it there. You
+cannot shoot it: you only ever fire at the *opposite* board, so no shot
+either player could take would ever reach it.
+
+Instead you **run it down** — steer one of your own hulls onto its cell
+with **HARD TURN**, **AUTO DODGE** or **SCRAMBLE**, and it is crushed.
+Its owner is told immediately and stops getting reports.
+
+That is a deliberate design constraint, not a shortcut. Whose turn it is
+is never sent between the two devices: each end works it out
+independently from the shot outcomes they both see (see
+`BattleScreen._maybePassTurn`). So "spend a turn to scuttle it" has no
+shot to ride on and would leave the two devices disagreeing about whose
+guns are live. Moving a hull rides on `sendMove`, which both devices
+already mirror exactly.
 
 ---
 
@@ -73,6 +97,20 @@ M   a mine you've set       ▓   an enemy hull (shown only so the diagram makes
 
 Grids are drawn as seen from the **shooter's** side unless a diagram is
 explicitly marked "your own grid."
+
+## Multi-shot cards and the turn
+
+Every shot of a multi-shot card is fired as one action, and each shell
+gets its own arc across the water rather than all of them appearing at
+once.
+
+**If ANY shell of the volley lands, you keep the guns** — the same
+"a hit lets you fire again" rule the rest of the game runs on. Earlier
+shells are tagged `hold` so a miss among them cannot hand the turn over
+early, and the final shell no longer decides it alone: a SALVO that holes
+a hull twice and misses with its third shell used to pass the turn
+anyway, which read as a hit being counted as a miss. See
+`GameController.volleyScoredHit`.
 
 A shaped card skips any cell you have already fired at, so late in a
 match it can fire fewer shots than its shape suggests. If *every* cell it
