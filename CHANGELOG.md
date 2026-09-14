@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.20](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.19...battleship_blitz-v1.4.20) (2026-09-14)
+
+
+### Bug Fixes
+
+* New ([f175ae9](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/f175ae90d8acf202986f097c4e70023eb7a0637a))
+* Remove probe test; add deck coverage tests ([4c9fc5d](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/4c9fc5d04b535cfcc16c6f5c8293b5a4834e8e0f))
+
 ## [1.4.19](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.18...battleship_blitz-v1.4.19) (2026-09-14)
 
 
