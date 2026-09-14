@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.19](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.18...battleship_blitz-v1.4.19) (2026-09-14)
+
+
+### Bug Fixes
+
+* Add per-gun FX, wreck motions, and lobby polish ([eedf7f9](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/eedf7f96fc143a2ad4ec64ca98c4a82e0c849d56))
+* Include commit descriptions in PRs and releases ([6c949cd](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/6c949cdeb14b8eac61c593886758db637537a547))
+* New ([479847a](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/479847ac534beaffbcb47f1f007f9eb4cdb007b4))
+
 ## [1.4.18](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.17...battleship_blitz-v1.4.18) (2026-09-07)
 
 
