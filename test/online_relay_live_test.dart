@@ -323,6 +323,7 @@ void main() {
       // minute and would steal the next test's pairing — this suite has
       // been bitten by exactly that. Clear the seats whatever happens.
       Future<void> clearSeats() async {
+        if (!up) return; // No server: alice and bob were never set up.
         for (final api in [alice, bob]) {
           try {
             await api.call('queue_leave');
