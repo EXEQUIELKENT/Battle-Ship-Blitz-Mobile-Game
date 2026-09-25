@@ -2064,6 +2064,8 @@ class GameController extends ChangeNotifier {
         aiTurnToFire != beforeAiTurn ||
         (cooldown1 <= 0) != beforeReady1 ||
         (cooldown2 <= 0) != beforeReady2) {
+      // ignore: avoid_print
+      print('DBG notifyTick rev=${revision != beforeRevision} phase=${phase != beforePhase} ai=${aiTurnToFire != beforeAiTurn} c1=${(cooldown1 <= 0) != beforeReady1} c2=${(cooldown2 <= 0) != beforeReady2}');
       notifyListeners();
     }
   }
@@ -2114,9 +2116,14 @@ class GameController extends ChangeNotifier {
     final target = _aiPickTarget();
     if (target == null) return;
 
-    final int r = target[0];
-    final int c = target[1];
+    _fireAiShotAt(target[0], target[1]);
+  }
 
+  /// The tail of [_aiThink]: score the shot against the board, file it,
+  /// and schedule its VISIBLE firing [_aiVisualFireDelay] later. Split out
+  /// so [fireAiShotForTest] can drive the exact same machinery for a
+  /// chosen cell without waiting on the think delay and the random pick.
+  void _fireAiShotAt(int r, int c) {
     // Resolve the target now so the game state is deterministic, but DO NOT
     // start cooldown2 yet. The battle screen waits 900ms before the visible
     // cannon fire; the reload starts at that same point instead.
@@ -2186,6 +2193,16 @@ class GameController extends ChangeNotifier {
       }
     });
   }
+
+  /// Tests only: fires the AI's gun at an EXACT cell, through the same
+  /// score → register → visual-fire-delay machinery [_aiThink] uses after
+  /// its random pick (see [_fireAiShotAt]).
+  ///
+  /// Exists because the cinematic-finish regression test needs the AI to
+  /// sink a KNOWN hull — `_aiPickTarget`'s choice is deliberately random,
+  /// and a test that waits for luck is a test that flakes.
+  @visibleForTesting
+  void fireAiShotForTest(int r, int c) => _fireAiShotAt(r, c);
 
   List<int>? _aiPickTarget() {
     while (_aiQueue.isNotEmpty) {

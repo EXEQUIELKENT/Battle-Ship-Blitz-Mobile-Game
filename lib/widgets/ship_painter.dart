@@ -12,8 +12,16 @@ import '../services/storage_service.dart';
 
 /// Charred "wreck" hull used to reveal a ship on the grid once it has
 /// been fully sunk — deliberately drab/dark so a destroyed ship reads as
-/// unmistakably different from a live one, regardless of either player's
-/// equipped ship skin.
+/// unmistakably different from a live one.
+///
+/// FEEDBACK ("the destroyed ships on the deck during gameplay all have the
+/// same design"): this used to be the ONLY hull a wreck was ever drawn in,
+/// so every sunk ship collapsed to the same generic grey shape regardless
+/// of what its owner had equipped. Wrecks now draw in their owner's own
+/// resolved skin (see `BattleGrid.wreckShipSkin`), charred by the painter's
+/// sunk path — which keeps the "unmistakably a wreck" read while the hull
+/// keeps its own silhouette. This generic remains as the fallback for
+/// callers that don't know the owner's gear.
 const ShipSkin wreckSkin =
     ShipSkin('wreck', 'Wreck', Color(0xFF3A4148), Color(0xFF262C32), 0);
 

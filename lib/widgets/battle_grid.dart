@@ -109,11 +109,19 @@ class BattleGrid extends StatefulWidget {
 
   /// The fleet those wrecks belong to — the skin of the board's OWNER, not
   /// the shooter. Picks the destruction motion each wreck plays as it is
-  /// revealed (see [wreckMotionForShipSkin]); it does not affect how the
-  /// wreck is drawn, which stays the neutral charred [wreckSkin]. Separate
-  /// from [skin] because the enemy's grid holds `skin: null` for the whole
-  /// match (its fleet is hidden) yet still reveals wrecks.
+  /// revealed (see [wreckMotionForShipSkin]). Separate from [skin] because
+  /// the enemy's grid holds `skin: null` for the whole match (its fleet is
+  /// hidden) yet still reveals wrecks.
   final String? wreckShipSkinId;
+
+  /// The hull the wrecks on this grid are DRAWN in — the same resolved
+  /// [ShipSkin] its owner's live ships sail (see [FleetLook]). The wreck
+  /// keeps that hull's own silhouette and detail, charred by the painter's
+  /// sunk path, so a destroyed Crimson Armada cruiser no longer looks like
+  /// every other wreck on the water. Null falls back to the generic,
+  /// skin-agnostic [wreckSkin] (callers that don't know the owner's gear —
+  /// which the battle screen always does know).
+  final ShipSkin? wreckShipSkin;
 
   /// Cell fill color (defaults to the video's steel blue).
   final Color cellColor;
@@ -237,6 +245,7 @@ const BattleGrid({
     this.armourByKind = const {},
     this.dodgeKind,
     this.wreckShipSkinId,
+    this.wreckShipSkin,
     this.glowColor = AppColors.water,
     this.cellColor = AppColors.steelBlue,
     this.boardFamily,
@@ -931,10 +940,22 @@ class _BattleGridState extends State<BattleGrid>
     // FEEDBACK ("it is all the same popping out animation to all the
     // ships"): keyed to the SUNK hull's own fleet, not the shooter's gun —
     // it is this fleet being destroyed, so it is this fleet's character
-    // that should show. `wreckShipSkinId` is the defending board's fleet;
-    // the neutral charred `wreckSkin` the wreck is DRAWN in stays as it
-    // was (see its own doc), only the motion varies.
+    // that should show. `wreckShipSkinId` is the defending board's fleet.
+    //
+    // FEEDBACK ("the destroyed ships on the deck during gameplay all have
+    // the same design and it does not vary depending on what ship skins is
+    // equipped"): the wreck used to be DRAWN in the neutral, skin-agnostic
+    // `wreckSkin` no matter what its owner sailed, so every hull on the
+    // water died into the same generic grey shape — a Blackpowder galleon
+    // and a Helios Drift catamaran sank into identical hulks. It now draws
+    // in its owner's own resolved skin: [ShipPainter]'s sunk path chars
+    // whichever hull it is handed (family palettes lerp toward soot, legacy
+    // hulls go through the `_sunkFilter`), so the wreck keeps its own
+    // silhouette and detail while still reading unmistakably as a wreck.
+    // Null falls back to the generic wreck for callers that don't know the
+    // owner's gear.
     final motion = wreckMotionForShipSkin(widget.wreckShipSkinId);
+    final wreckArtSkin = widget.wreckShipSkin ?? wreckSkin;
     final settled = <Widget>[];
     final moving = <Widget>[];
     for (final ship in widget.destroyedShips) {
@@ -952,7 +973,7 @@ class _BattleGridState extends State<BattleGrid>
             ? CustomPaint(
                 painter: ShipPainter(
                   spec: ship.spec,
-                  skin: wreckSkin,
+                  skin: wreckArtSkin,
                   sunk: true,
                   hitCount: ship.spec.size,
                   shooterCannonId: widget.cannonSkinId,
@@ -963,7 +984,7 @@ class _BattleGridState extends State<BattleGrid>
                 child: CustomPaint(
                   painter: ShipPainter(
                     spec: ship.spec,
-                    skin: wreckSkin,
+                    skin: wreckArtSkin,
                     sunk: true,
                     hitCount: ship.spec.size,
                     shooterCannonId: widget.cannonSkinId,

@@ -995,7 +995,22 @@ class _BattleScreenState extends State<BattleScreen>
     }
     if (!mounted || controller.phase != BattlePhase.battling) return;
 
-    if (_flyIncomingBall(e.row, e.col)) return;
+    if (_flyIncomingBall(e.row, e.col)) {
+      // BUGFIX ("no cinematic zoom camera effect on the local multiplayer
+      // and ai mode"): the opponent's shot is REGISTERED up to ~900ms
+      // before its shell visibly flies — the plain vs-AI brain scores the
+      // shot immediately and only THEN waits out its visual-fire delay, and
+      // every `_tryStartCinematic` caller up to now asked "is a shell in
+      // the air?" during that gap, found none, and never asked again. When
+      // the shell finally left the muzzle nothing re-armed the camera, so
+      // the one shot that ends the match landed without the close-up
+      // whenever the OPPONENT fired it (the AI sinking you, a remote
+      // peer's finishing blow). The local player's own shots never saw this
+      // because `_fireAtCell` re-arms right after ITS ball launch. Now the
+      // launch site does too.
+      _tryStartCinematic(controller);
+      return;
+    }
     // This gun's permanent slot is busy — which in POWER PLAY is the
     // normal case for every shell of an opponent's volley past the
     // first. Give it a slot of its own rather than letting it arrive
@@ -1166,7 +1181,21 @@ class _BattleScreenState extends State<BattleScreen>
             : _flyIncomingBall(shot.event.row, shot.event.col, into: slot);
     // Geometry not laid out yet, or some other refusal — the shot must
     // still land, or the turn can hang waiting on it forever.
-    if (!launched) _resolveImpact(shot.event);
+    if (!launched) {
+      _resolveImpact(shot.event);
+    } else {
+      // BUGFIX (same "no cinematic" family as [_launchOpponentBall]): a
+      // POWER PLAY volley's shells — either captain's — and a MINEFIELD
+      // ricochet all leave the muzzle here, on the timer's schedule rather
+      // than inside a tap. The volley-queue drain is the only launch site
+      // that never re-armed the camera afterwards, so a match decided by a
+      // multi-shot card's LAST shell (a SALVO finishing the fleet off) had
+      // its deciding shell land unstretched and unzoomed. Idempotent — see
+      // `_maybeStartCinematic`'s own one-running guard.
+      // ignore: avoid_print
+      print('DBG call-volley');
+      _tryStartCinematic(context.read<GameController>());
+    }
   }
   /// Resolves the currently pending shot (`_pendingImpact`/`_pendingByP1`)
   /// against `controller.events` — but ONLY once both (a) the projectile
@@ -1508,6 +1537,8 @@ class _BattleScreenState extends State<BattleScreen>
     // Now that a shell is genuinely airborne, ask again whether it is the
     // one that ends the match — see [_tryStartCinematic] for why once, in
     // `_onUpdate`, was not enough.
+    // ignore: avoid_print
+    print('DBG call-fireAtCell');
     _tryStartCinematic(controller);
   }
 
@@ -3052,9 +3083,12 @@ class _BattleScreenState extends State<BattleScreen>
                             : sunkShips,
                     // The fleet those wrecks belong to — this half's own
                     // owner, whose skin picks the destruction motion each
-                    // wreck plays. `skin` above can't serve: it is null
-                    // for the whole match on the enemy's half.
+                    // wreck plays AND the hull the wreck is drawn in
+                    // (charred — see `BattleGrid.wreckShipSkin`).
+                    // `skin` above can't serve: it is null for the whole
+                    // match on the enemy's half.
                     wreckShipSkinId: fleetSkin.id,
+                    wreckShipSkin: fleetSkin,
                     // POWER PLAY tells, each on the half it belongs to:
                     // what SPOTTER found sits on the water you are firing
                     // INTO, and your own armed traps sit on your own.
