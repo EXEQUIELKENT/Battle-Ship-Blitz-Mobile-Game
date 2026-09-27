@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.20](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.19...battleship_blitz-v1.4.20) (2026-09-25)
+
+
+### Bug Fixes
+
+* guard matchmaking cleanup so the suite stays green with no server ([e06c424](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/e06c4240b39f29969a91233a80d50ee4405d8426))
+* new ([37e06b0](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/37e06b03858d9b1c480d639ee1353bc8d82ad8bf))
+* New ([f175ae9](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/f175ae90d8acf202986f097c4e70023eb7a0637a))
+* Remove probe test; add deck coverage tests ([22755c1](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/22755c1cbea213c16571f58a6d5284de8814fbf7))
+* Remove probe test; add deck coverage tests ([d436863](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/d4368635a2dd875fa73ecf04906a59487ef43ddb))
+* Remove probe test; add deck coverage tests ([4c9fc5d](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/4c9fc5d04b535cfcc16c6f5c8293b5a4834e8e0f))
+
 ## [1.4.19](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.18...battleship_blitz-v1.4.19) (2026-09-14)
 
 
