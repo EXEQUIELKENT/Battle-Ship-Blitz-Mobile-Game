@@ -518,6 +518,42 @@ approximate: subtracting the ship's own extent recovers the origin.
 * `flutter analyze` — clean (1 pre-existing lint).
 * `flutter test` — **96 passing**, up from 64.
 
+
+---
+
+## App icon — the game itself, shrunk to a launcher tile
+
+The old icon was a single 192x192 PNG dropped into `assets/icon/` —
+Android was scaling it down (blurry) and iOS/web/Windows were still
+running Flutter's placeholder art. Every platform now gets a proper
+asset generated from one design:
+
+* **What it is:** the navy battle grid the player fights on, a top-down
+  destroyer crossing it at an angle, and the amber "HIT" burst on the
+  bow turret — the one moment every match is decided by. Palette is the
+  game's own: `#123252` navy gradient, slate deck, foam-white grid,
+  `mk1`-blue turrets.
+* **Where it lands:** 1024x1024 master in `assets/icon/`, full Android
+  mipmap set (launcher + round + adaptive foreground at all five
+  densities), every iOS appiconset size (20pt up to 1024), the web
+  favicon plus the PWA icons the manifest was already pointing at but
+  that never existed (including maskable), and a 256px PNG-compressed
+  Windows `.ico`.
+* **Regenerating:** `flutter test tool/render_app_icon_test.dart`
+  repaints and rewrites all of the above from one painter, so a palette
+  tweak is a one-line change followed by a 2-second run. The generator
+  lives in `tool/` so it never runs as part of the normal suite.
+* **Web identity:** `manifest.json` and `index.html` now carry the
+  navy theme color instead of Flutter's default blue.
+
+*Files: `tool/render_app_icon_test.dart` (new), all icon PNGs listed
+above, `web/manifest.json`, `web/index.html`.*
+
+*Verification: sizes confirmed byte-exact per density (48/72/96/144/192
+launcher, 432 foreground, 20–1024 iOS, 16/192/512 web), pixel probes
+confirm the gradient, hull and burst land where designed, and the
+foreground/round variants have truly transparent corners.*
+
 Seen on screen, on a 442×853 phone-shaped window:
 
 * Cinder Hold's Magma Bombard with its reload ring riding the rock-slab
