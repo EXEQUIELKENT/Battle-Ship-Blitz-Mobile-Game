@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.21...battleship_blitz-v1.5.0) (2026-10-05)
+
+
+### Features
+
+* replace app icon across all platforms with game-themed design ([491d1ca](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/491d1ca94f6d20e6811151aa9cba99b0a9cd6c52))
+
+
+### Bug Fixes
+
+* Add canonical app icon artwork ([2289420](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/228942098321a7c15f0f0b84a6add4d97890a198))
+
 ## [1.4.21](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.4.20...battleship_blitz-v1.4.21) (2026-09-27)
 
 
