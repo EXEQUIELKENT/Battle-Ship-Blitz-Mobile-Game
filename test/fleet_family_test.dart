@@ -371,7 +371,7 @@ void main() {
 
     test('buying a family hull does not hand over its cannon or board', () {
       final p = ProfileStore()
-        ..rp = 9999
+        ..doubloons = 9999
         ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
       p.equipShipSkin(Catalog.shipById('f_volcanic'));
       expect(p.ownsShip('f_volcanic'), isTrue);
@@ -388,7 +388,7 @@ void main() {
         final key = 'f_${f.key}';
 
         final byHull = ProfileStore()
-          ..rp = 99999
+          ..doubloons = 99999
           ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
         byHull.equipShipSkin(Catalog.shipById(key));
         expect(byHull.ownsShip(key), isTrue, reason: '$key hull');
@@ -399,7 +399,7 @@ void main() {
         expect(byHull.gameplayThemeId, 'mk1');
 
         final byGun = ProfileStore()
-          ..rp = 99999
+          ..doubloons = 99999
           ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
         byGun.equipCannonSkin(Catalog.cannonById(key));
         expect(byGun.ownsCannon(key), isTrue, reason: '$key cannon');
@@ -409,7 +409,7 @@ void main() {
         expect(byGun.gameplayThemeId, 'mk1');
 
         final byBoard = ProfileStore()
-          ..rp = 99999
+          ..doubloons = 99999
           ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
         byBoard.equipGameplayTheme(Catalog.gameplayThemeById(key));
         expect(byBoard.ownsTheme(key), isTrue, reason: '$key board');
@@ -424,27 +424,29 @@ void main() {
       for (final f in FleetFamilies.all) {
         final key = 'f_${f.key}';
         final p = ProfileStore()
-          ..rp = 99999
+          ..doubloons = 99999
           ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
 
-        final start = p.rp;
+        final startRp = p.rp;
+        final start = p.doubloons;
         p.equipShipSkin(Catalog.shipById(key));
-        expect(p.rp, start - Catalog.shipById(key).cost);
+        expect(p.doubloons, start - Catalog.shipById(key).cost);
+        expect(p.rp, startRp, reason: 'buying must never lower rank');
 
         // Re-equipping something already owned is free — otherwise
         // switching back and forth between two hulls would bill you for
         // both every time.
-        final afterHull = p.rp;
+        final afterHull = p.doubloons;
         p.equipShipSkin(Catalog.shipById('steel'));
         p.equipShipSkin(Catalog.shipById(key));
-        expect(p.rp, afterHull);
+        expect(p.doubloons, afterHull);
       }
     });
   });
 
   group('matched sets', () {
     ProfileStore fresh() => ProfileStore()
-      ..rp = 99999
+      ..doubloons = 99999
       ..owned = {'ship:steel', 'cannon:mk1', 'theme:mk1'};
 
     test('the set costs 80% of its three pieces and equips all of them', () {
@@ -456,9 +458,11 @@ void main() {
       expect(p.setPriceFor(f), (full * 0.8).round());
       expect(p.setSavingFor(f), full - (full * 0.8).round());
 
-      final before = p.rp;
+      final before = p.doubloons;
+      final beforeRp = p.rp;
       expect(p.buyFamilySet(f), isTrue);
-      expect(p.rp, before - (full * 0.8).round());
+      expect(p.doubloons, before - (full * 0.8).round());
+      expect(p.rp, beforeRp);
       expect(p.ownsShip('f_arctic'), isTrue);
       expect(p.ownsCannon('f_arctic'), isTrue);
       expect(p.ownsTheme('f_arctic'), isTrue);
@@ -480,12 +484,12 @@ void main() {
     });
 
     test('an unaffordable set changes nothing at all', () {
-      // The failure that matters here is a HALF-bought set: RP gone, or
-      // one piece handed over and the rest not.
-      final p = fresh()..rp = 10;
+      // The failure that matters here is a HALF-bought set: Doubloons
+      // gone, or one piece handed over and the rest not.
+      final p = fresh()..doubloons = 10;
       const f = FleetFamilies.scifi;
       expect(p.buyFamilySet(f), isFalse);
-      expect(p.rp, 10);
+      expect(p.doubloons, 10);
       expect(p.ownsShip('f_scifi'), isFalse);
       expect(p.ownsCannon('f_scifi'), isFalse);
       expect(p.ownsTheme('f_scifi'), isFalse);

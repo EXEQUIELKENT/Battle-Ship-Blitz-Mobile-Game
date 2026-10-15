@@ -175,6 +175,7 @@ class _FriendsScreenState extends State<FriendsScreen>
     final profile = context.read<ProfileStore>();
 
     net.setSelfName(profile.playerName);
+    net.setSelfRp(profile.rp);
     net.setSelfLoadout(
       shipSkinId: profile.shipSkinId,
       cannonSkinId: profile.cannonSkinId,

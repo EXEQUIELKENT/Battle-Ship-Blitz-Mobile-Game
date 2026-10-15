@@ -211,6 +211,13 @@ class GameController extends ChangeNotifier {
   /// that lives in this same process.
   bool get hasRemotePeer => mode == GameMode.hotspot || mode == GameMode.online;
 
+  /// Ranked play: real humans with Elo on the line. Cannon reload skins
+  /// are normalized here (every gun fires at the standard rate) so a
+  /// purchase is never a fire-rate advantage in Chaos/Blitz where the
+  /// cooldown is the only limiter. Casual modes (vs-AI, local,
+  /// vsAiLan) keep each skin's own factor as a fun perk.
+  bool get isRankedBattle => hasRemotePeer;
+
   /// Mirror of the battle screen's "the opponent is the active side" flag.
   /// The screen owns turn-passing (it has to, since a turn only changes
   /// once a shell has visibly landed), but the value has to live somewhere
@@ -613,9 +620,40 @@ class GameController extends ChangeNotifier {
 
     network.sendPowerUpUsed(card);
     _log('🎴 You used ${def.name}.');
+    usedPowerUps.add(card);
     myPowerUp = null;
     notifyListeners();
     return true;
+  }
+
+  /// Power-up cards spent this match, in order — the result screen's
+  /// "cards used" recap. Reset with every match (see [beginBattle]).
+  final List<PowerUpCard> usedPowerUps = [];
+
+  /// Shots/hits/accuracy off a shot grid (1 = miss, 2 = hit).
+  static ({int shots, int hits}) shotStats(List<List<int>> grid) {
+    var shots = 0;
+    var hits = 0;
+    for (final row in grid) {
+      for (final v in row) {
+        if (v != 0) shots++;
+        if (v == 2) hits++;
+      }
+    }
+    return (shots: shots, hits: hits);
+  }
+
+  /// Your accuracy this match, 0..1 (null with no shots yet — avoids a
+  /// divide-by-zero and a misleading "0%").
+  double? get accuracyP1 {
+    final s = shotStats(myShots);
+    return s.shots == 0 ? null : s.hits / s.shots;
+  }
+
+  /// Second seat's accuracy (local pass-and-play only).
+  double? get accuracyP2 {
+    final s = shotStats(p2Shots);
+    return s.shots == 0 ? null : s.hits / s.shots;
   }
 
   /// Fires every cell in [cells] as one power-up action — all but the
@@ -817,11 +855,15 @@ class GameController extends ChangeNotifier {
     }
     for (final (row, col) in tries) {
       if (row < 0 || col < 0) continue;
-      if (!boards[0].canRelocateTo(ship, row, col, turned, ignoreDamage: true)) {
+      // pickets: false — this card promises the turned hull only ever
+      // lands on water nobody has fired at, and the cruiser's Picket
+      // exception would break that promise.
+      if (!boards[0].canRelocateTo(ship, row, col, turned,
+          ignoreDamage: true, pickets: false)) {
         continue;
       }
-      if (!boards[0]
-          .relocate(ship.spec.kind, row, col, turned, ignoreDamage: true)) {
+      if (!boards[0].relocate(ship.spec.kind, row, col, turned,
+          ignoreDamage: true, pickets: false)) {
         continue;
       }
       network.sendMove(ship.spec.kind, row, col, turned);
@@ -1053,6 +1095,7 @@ class GameController extends ChangeNotifier {
   bool suddenTimeout = false;
   String endReason = '';
   int rpDelta = 0;
+  int doubloonsDelta = 0;
   bool rpAwarded = false;
 
   // ----- Deferred end-game transition -----
@@ -1160,6 +1203,38 @@ class GameController extends ChangeNotifier {
   /// fires only when something structural really changed (see `_onTick`).
   final ValueNotifier<int> cooldownTick = ValueNotifier<int>(0);
 
+  // -------------------------------------------------- SALVO MODE ---
+  //
+  // Classic variant on turns: each turn fires one shell per SURVIVING
+  // hull of the shooting fleet, then the guns pass whether the salvo
+  // hit or not. `salvoLeft` is the current shooter's remaining shells:
+  // armed by [beginSalvoTurn] whenever a turn starts, spent by
+  // [_registerShot] (the single funnel every resolved shot passes
+  // through, both seats and the AI included), and read by the battle
+  // screen to hold the turn open (`_maybePassTurn`) and to lock the
+  // grid once the salvo is spent (`_fireAtCell`).
+
+  /// True in a Salvo match under the wire protocol (hotspot/online, or
+  /// the loopback AI playing by the same rules).
+  bool get isSalvoBattle =>
+      usesMatchProtocol && lanBattleMode == LanBattleMode.salvo;
+
+  /// Shots the current shooter still has this turn.
+  int salvoLeft = 0;
+
+  /// Hulls of [p1]'s fleet still afloat.
+  int afloatCount(bool p1) =>
+      boards[p1 ? 0 : 1].ships.where((s) => !s.isSunk).length;
+
+  /// Opens [p1]'s turn with a fresh salvo sized to their surviving
+  /// fleet (floored at 1 — a 0-gun turn could never end, and a fully
+  /// sunk fleet ends the match before it matters).
+  void beginSalvoTurn(bool p1) {
+    if (!isSalvoBattle || !battling) return;
+    salvoLeft = max(1, afloatCount(p1));
+    notifyListeners();
+  }
+
   int get mySunk => boards[1].sunkCount;
   int get enemySunk => boards[0].sunkCount;
 
@@ -1196,9 +1271,15 @@ class GameController extends ChangeNotifier {
     // own equipped cannon now decides its own seat's reload speed.
     final myCannon =
         mode == GameMode.local ? localLoadouts[0].cannonSkin : profile.cannonSkin;
-    cooldownMax1 = kCooldownSeconds * myCannon.cooldownFactor;
+    // Ranked: every gun fires standard (see isRankedBattle). Casual:
+    // each seat's own skin decides its own reload speed.
+    cooldownMax1 = kCooldownSeconds *
+        myCannon.effectiveCooldownFactor(ranked: isRankedBattle);
     cooldownMax2 = mode == GameMode.local
-        ? kCooldownSeconds * localLoadouts[1].cannonSkin.cooldownFactor
+        ? kCooldownSeconds *
+            localLoadouts[1]
+                .cannonSkin
+                .effectiveCooldownFactor(ranked: isRankedBattle)
         : kCooldownSeconds.toDouble();
     cooldown1 = 0;
     cooldown2 = 0;
@@ -1216,6 +1297,7 @@ class GameController extends ChangeNotifier {
     _lastPeerFireResult = null;
     _lastPeerFireSunkName = null;
     myPowerUp = null;
+    usedPowerUps.clear();
     spottedEnemyCells.clear();
     _jammed = false;
     _decoyArmed = false;
@@ -1245,6 +1327,8 @@ class GameController extends ChangeNotifier {
       _onTick,
     );
     _log('⚔️ Battle stations! Fire when ready!');
+    // SALVO: arm the opening shooter's salvo (P2 opens when peerHasTurn).
+    if (isSalvoBattle) salvoLeft = max(1, afloatCount(!peerHasTurn));
     // Whoever has the opening shot in POWER PLAY draws right away, rather
     // than waiting for a `_passTurn` that never happens for turn one.
     if (isPowerUpBattle && !peerHasTurn) onMyTurnStart();
@@ -1585,7 +1669,8 @@ class GameController extends ChangeNotifier {
     iWon = false;
     p2Won = false;
     endReason = '';
-    cooldownMax1 = kCooldownSeconds * profile.cannonSkin.cooldownFactor;
+    cooldownMax1 = kCooldownSeconds *
+        profile.cannonSkin.effectiveCooldownFactor(ranked: isRankedBattle);
     cooldownMax2 = kCooldownSeconds.toDouble();
     cooldown1 = 0;
     cooldown2 = 0;
@@ -1612,6 +1697,7 @@ class GameController extends ChangeNotifier {
     // a real, accepted downgrade (there is no way to do better without
     // the peer knowing something it fundamentally can't).
     myPowerUp = null;
+    usedPowerUps.clear();
     spottedEnemyCells.clear();
     _jammed = false;
     _decoyArmed = false;
@@ -1632,6 +1718,11 @@ class GameController extends ChangeNotifier {
       ..addAll(((s['log'] as List?) ?? const []).map((e) => e.toString()));
 
     _seedEventsFromShots(shotsByMe: shotsByMe, shotsByThem: shotsByThem);
+
+    // SALVO: a resumed match re-arms whoever's turn the snapshot says it
+    // is (a fresh full salvo — the exact mid-turn remainder isn't stored,
+    // and erring toward generosity beats stranding a shooter with zero).
+    if (isSalvoBattle) salvoLeft = max(1, afloatCount(!peerHasTurn));
 
     revision++;
     // Adopted from the snapshot, not incremented — see the doc on
@@ -1782,6 +1873,8 @@ class GameController extends ChangeNotifier {
     iWon = false;
     p2Won = false;
     rpDelta = 0;
+    doubloonsDelta = 0;
+    salvoLeft = 0;
     endReason = reason;
     _log('🚪 $reason No result recorded.');
     notifyListeners();
@@ -1806,6 +1899,9 @@ class GameController extends ChangeNotifier {
     _pendingFinishEvent = null;
     _pendingP1Win = false;
     _pendingReason = '';
+    doubloonsDelta = 0;
+    salvoLeft = 0;
+    usedPowerUps.clear();
     network.resetRematch();
     network.resetLanVote();
     notifyListeners();
@@ -1844,6 +1940,9 @@ class GameController extends ChangeNotifier {
     );
     revision++;
     stateSeq++;
+    // SALVO: every resolved shot spends one shell of the current turn,
+    // whoever fired it (both seats and the AI funnel through here).
+    if (isSalvoBattle && salvoLeft > 0) salvoLeft--;
 
     final shooter =
         shooterIsP1 ? profile.playerName : _opponentName();
@@ -1977,7 +2076,34 @@ class GameController extends ChangeNotifier {
     // excluded too — see its doc.
     if (!rpAwarded && !matchAbandoned && !noRpLocal && !headless) {
       rpAwarded = true;
-      rpDelta = profile.recordResult(won: p1Win);
+      // Ranked online/hotspot: Elo vs the handshake RP. vs-AI: scaled by
+      // difficulty with rookie diminishing returns. Both also award
+      // Doubloons (never rank) via ProfileStore.lastDoubloonsDelta.
+      final isNet = usesMatchProtocol;
+      final isAi =
+          mode == GameMode.vsAI || mode == GameMode.vsAiLan;
+      rpDelta = profile.recordResult(
+        won: p1Win,
+        opponentRp: isNet ? network.peerRp : null,
+        aiDifficulty: isAi ? difficulty : null,
+      );
+      doubloonsDelta = profile.lastDoubloonsDelta;
+      // Achievements + daily quests (same counted-match guard as RP —
+      // local/abandoned/headless games can't farm them).
+      final stats = shotStats(myShots);
+      profile.recordMatchForAwards(
+        won: p1Win,
+        now: DateTime.now(),
+        hitsThisMatch: stats.hits,
+        shotsThisMatch: stats.shots,
+        sinksThisMatch: mySunk,
+        cardsUsed: usedPowerUps.length,
+        sunkCarrier: boards[1].shipOfKind(ShipKind.carrier)?.isSunk ?? false,
+        isGhostWin: p1Win && isGhostFleetBattle,
+        counted: true,
+        ownShipsLost: boards[0].sunkCount,
+        lanMode: usesMatchProtocol ? lanBattleMode : null,
+      );
     }
 
     if (p1Win) {
@@ -2129,7 +2255,8 @@ class GameController extends ChangeNotifier {
     // cannon fire; the reload starts at that same point instead.
     _aiShotPending = true;
 
-    final (result, sunk) = boards[0].receiveShot(r, c);
+    final (result, sunk) =
+        boards[0].receiveShot(r, c);
     _aiShots[r][c] =
         (result == ShotResult.hit ||
                 result == ShotResult.sunk)
@@ -3042,6 +3169,10 @@ class GameController extends ChangeNotifier {
     boards[0] = Board();
     boards[1] = Board();
     rpAwarded = false;
+    rpDelta = 0;
+    doubloonsDelta = 0;
+    salvoLeft = 0;
+    usedPowerUps.clear();
     suddenTimeout = false;
     _aiThinkAccumulator = 0;
     _aiShotPending = false;

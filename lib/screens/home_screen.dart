@@ -18,7 +18,9 @@ import '../widgets/motion.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 import 'customize_screen.dart';
+import 'daily_puzzle_screen.dart';
 import 'friends_screen.dart';
+import 'quests_screen.dart';
 import 'hotspot_screen.dart';
 import 'how_to_play_screen.dart';
 import 'match_resume.dart';
@@ -401,6 +403,39 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                             },
                           ),
                         )),
+                        const SizedBox(height: 12),
+                        pop.wrap(SizedBox(
+                          width: double.infinity,
+                          child: NeonButton(
+                            label: 'DAILY PUZZLE',
+                            icon: Icons.calendar_month,
+                            color: AppColors.seafoam,
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const DailyPuzzleScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                        )),
+                        const SizedBox(height: 12),
+                        pop.wrap(SizedBox(
+                          width: double.infinity,
+                          child: NeonButton(
+                            label: 'QUESTS & MEDALS',
+                            icon: Icons.emoji_events,
+                            color: AppColors.green,
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const QuestsScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                        )),
                         const SizedBox(height: 18),
                         pop.wrap(_statsRow(profile)),
                         const SizedBox(height: 24),
@@ -457,7 +492,7 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${profile.rankTitle}  •  ${profile.rp} RP',
+                    '${profile.rankTitle}  •  ${profile.rp} RP  •  ${profile.doubloons} DBL',
                     style: AppText.label(size: 9.5, color: AppColors.gold),
                   ),
                 ],

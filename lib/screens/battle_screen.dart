@@ -1361,6 +1361,10 @@ class _BattleScreenState extends State<BattleScreen>
   /// to LAN chaos, where both fleets fire freely and there is no turn to
   /// hand over (`_turnTracked` is false there).
   ///
+  /// SALVO replaces hit-keeps-turn: the shooter keeps firing while their
+  /// salvo has shells left (`salvoLeft > 0`) and the guns pass the moment
+  /// it runs dry — hit or miss.
+  ///
   /// In a LAN match both devices run this independently off their own
   /// event streams. That stays consistent because every shot's outcome is
   /// known to BOTH ends (the defender resolves it and echoes the result
@@ -1369,6 +1373,27 @@ class _BattleScreenState extends State<BattleScreen>
   /// theirs — which is exactly the flip the two `_p2Active` flags need.
   void _maybePassTurn(CombatEvent e) {
     if (!_turnTracked) return;
+    final controller = context.read<GameController>();
+    // SALVO: shells left means the same shooter continues, no matter
+    // what this shot did. Exhausted means the guns pass — like a miss,
+    // holding the fire lock until the handoff below.
+    if (controller.isSalvoBattle) {
+      if (controller.salvoLeft > 0) {
+        _shotOutstanding = false;
+        return;
+      }
+      if (controller.phase != BattlePhase.battling) {
+        _shotOutstanding = false;
+        return;
+      }
+      final passToP2 = e.byPlayer;
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _shotOutstanding = false;
+        if (!mounted || controller.phase != BattlePhase.battling) return;
+        _passTurn(passToP2);
+      });
+      return;
+    }
     // POWER PLAY: MINEFIELD / TRAP LINE forces the turn to pass AWAY from
     // whoever fired regardless of hit or miss; a `hold` shot (a multi-shot
     // power-up's non-final cell, or a DOUBLE TAP / COUNTER BATTERY bonus)
@@ -1393,7 +1418,6 @@ class _BattleScreenState extends State<BattleScreen>
         return;
       }
     }
-    final controller = context.read<GameController>();
     if (controller.phase != BattlePhase.battling) {
       _shotOutstanding = false;
       return;
@@ -1444,6 +1468,9 @@ class _BattleScreenState extends State<BattleScreen>
     // reads to tell a reconnecting player whose turn they came back to.
     final controller = context.read<GameController>();
     controller.peerHasTurn = toP2;
+    // A SALVO match opens the incoming seat's fresh salvo, sized to
+    // their surviving fleet.
+    controller.beginSalvoTurn(!toP2);
     // Our turn beginning: POWER PLAY draws its card for the turn.
     if (!toP2) controller.onMyTurnStart();
     // Animate the slide: value 1 = P1 out (P2 home), 0 = P2 out (P1 home).
@@ -1498,6 +1525,10 @@ class _BattleScreenState extends State<BattleScreen>
     // it too closes that window instead of just narrowing it.
     final proj = byP1 ? _projP1 : _projP2;
     if (proj.visible || proj.pendingCell != null || _shotOutstanding) return;
+    // SALVO: the salvo is spent — the guns are passing. Belt-and-braces
+    // behind `_shotOutstanding` (which already locks until the handoff),
+    // so a tap racing the 500ms pass delay can't sneak an extra shell.
+    if (controller.isSalvoBattle && controller.salvoLeft <= 0) return;
     // GHOST FLEET: nothing is marked, so there is no "already shows its
     // hit/miss marker" to lean on here — and no way for the player to
     // even tell this cell was tried before. Refusing the tap anyway
@@ -3089,11 +3120,11 @@ class _BattleScreenState extends State<BattleScreen>
                     // match on the enemy's half.
                     wreckShipSkinId: fleetSkin.id,
                     wreckShipSkin: fleetSkin,
-                    // POWER PLAY tells, each on the half it belongs to:
-                    // what SPOTTER found sits on the water you are firing
-                    // INTO, and your own armed traps sit on your own.
-                    // `halfIsP1` is this device's own side (see
-                    // `showOwnFleet`), so the enemy half is the other one.
+                    // Revealed-water tells, each on the half it belongs to:
+                    // what SPOTTER (power play) found sits on the water
+                    // you are firing INTO. `halfIsP1` is this device's own
+                    // side (see `showOwnFleet`), so the enemy half is the
+                    // other one.
                     spottedCells: controller.isPowerUpBattle && !halfIsP1
                         ? controller.spottedEnemyCells
                         : const {},
@@ -3159,19 +3190,15 @@ class _BattleScreenState extends State<BattleScreen>
                     onShipDragEnd:
                         manoeuvring ? (k, r, c) => _commitMove(controller, k, r, c) : null,
                     onShipTap: manoeuvring ? (k) => _rotateOwnShip(controller, k) : null,
-                    // Only hulls that are still undamaged may move; one
-                    // hit pins a ship for the rest of the match. GHOST
-                    // FLEET is the one exception — see
-                    // `LanBattleMode.movesWhenDamaged` and
-                    // `GameController.damageIgnorableFor` — where a hull
-                    // keeps its freedom to run however badly it is
-                    // burning, right up until it goes down.
+                    // Which hulls offer drag/rotate handles. Delegates to
+                    // `GameController.canRelocate` so ship traits ride
+                    // along: the destroyer's Agile first hit and GHOST
+                    // FLEET's escape window both show up here with no
+                    // second copy of the rule.
                     movableShips: manoeuvring
                         ? {
                             for (final s in board.ships)
-                              if (s.hitIndices.isEmpty ||
-                                  controller.damageIgnorableFor(s))
-                                s.spec.kind
+                              if (controller.canRelocate(s)) s.spec.kind
                           }
                         : null,
                   ),
@@ -3501,6 +3528,32 @@ class _BattleScreenState extends State<BattleScreen>
             bottom: 2,
             child: _ExitPill(onTap: () => _confirmSurrender(controller)),
           ),
+          // SALVO shells-left count: only in a live salvo battle. It
+          // refreshes on the screen's normal controller rebuilds (every
+          // shot notifies).
+          if (controller.isSalvoBattle &&
+              controller.phase == BattlePhase.battling)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.62),
+                      borderRadius: BorderRadius.circular(12),
+                      border:
+                          Border.all(color: AppColors.cream, width: 1.5),
+                    ),
+                    child: Text(
+                      'SALVO ×${controller.salvoLeft}',
+                      style:
+                          AppText.label(size: 11, color: AppColors.cream),
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );

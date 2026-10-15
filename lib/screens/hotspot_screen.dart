@@ -91,6 +91,7 @@ class _HotspotScreenState extends State<HotspotScreen>
       final net = context.read<NetworkService>();
       final profile = context.read<ProfileStore>();
       net.setSelfName(profile.playerName);
+      net.setSelfRp(profile.rp);
       // Announce what we have equipped so the opponent's device can draw
       // our ships, cannon and battlefield the way we bought them.
       net.setSelfLoadout(

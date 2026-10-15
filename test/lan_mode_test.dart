@@ -417,11 +417,13 @@ void _manoeuvreTests() {
     });
 
     test('a ship that has been hit is pinned for the rest of the match', () {
-      final b = Board()..place(kFleet[4], 0, 0, true);
+      // A cruiser: the destroyer is exempt from this rule for its first
+      // hit (Agile — see ship_abilities_test.dart).
+      final b = Board()..place(kFleet[2], 0, 0, true);
       b.receiveShot(0, 0); // one hit is enough
-      expect(b.canRelocate(b.shipOfKind(ShipKind.destroyer)!), isFalse);
-      expect(b.relocate(ShipKind.destroyer, 5, 5, true), isFalse);
-      expect(b.shipOfKind(ShipKind.destroyer)!.row, 0,
+      expect(b.canRelocate(b.shipOfKind(ShipKind.cruiser)!), isFalse);
+      expect(b.relocate(ShipKind.cruiser, 5, 5, true), isFalse);
+      expect(b.shipOfKind(ShipKind.cruiser)!.row, 0,
           reason: 'a rejected move must not disturb the ship');
     });
 

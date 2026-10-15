@@ -467,6 +467,7 @@ class OnlineService extends ChangeNotifier {
       await api.call('sync', args: {
         'name': profile.playerName,
         'rp': profile.rp,
+        'doubloons': profile.doubloons,
         'wins': profile.wins,
         'losses': profile.losses,
         'bestStreak': profile.bestStreak,

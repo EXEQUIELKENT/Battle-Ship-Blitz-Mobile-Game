@@ -122,7 +122,7 @@ class _CustomizeScreenState extends State<CustomizeScreen>
                         ),
                       ),
                       child: Text(
-                        '${profile.rp} RP',
+                        '${profile.doubloons} DBL • ${profile.rp} RP',
                         style: AppText.label(
                           size: 11,
                           color: AppColors.outline,
@@ -498,7 +498,7 @@ class _FamilyHullCard extends StatelessWidget {
     final family = FleetFamilies.byKey(skin.familyKey)!;
     final owned = profile.ownsShip(skin.id);
     final equipped = profile.shipSkinId == skin.id;
-    final affordable = profile.rp >= skin.cost;
+    final affordable = profile.doubloons >= skin.cost;
 
     return Pressable(
       onTap: () async {
@@ -651,7 +651,7 @@ class _LegacyHullCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final owned = profile.ownsShip(skin.id);
     final equipped = profile.shipSkinId == skin.id;
-    final affordable = profile.rp >= skin.cost;
+    final affordable = profile.doubloons >= skin.cost;
 
     return Pressable(
       onTap: () async {
@@ -974,7 +974,7 @@ class _CannonCard extends StatelessWidget {
     final family = FleetFamilies.byKey(cannon.familyKey);
     final owned = profile.ownsCannon(cannon.id);
     final equipped = profile.cannonSkinId == cannon.id;
-    final affordable = profile.rp >= cannon.cost;
+    final affordable = profile.doubloons >= cannon.cost;
 
     return Pressable(
       onTap: () async {
@@ -1097,6 +1097,13 @@ class _CannonCard extends StatelessWidget {
                     const SizedBox(height: 3),
                     Text(
                       'FIRES THE ${family.shellName.toUpperCase()}',
+                      style: AppText.label(size: 9, color: AppColors.inkSoft),
+                    ),
+                  ],
+                  if (cannon.cooldownFactor != 1.0) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      'FASTER RELOAD IN CASUAL • STANDARD IN RANKED',
                       style: AppText.label(size: 9, color: AppColors.inkSoft),
                     ),
                   ],
@@ -1265,7 +1272,7 @@ class _MatchedSetCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final price = profile.setPriceFor(family);
     final saving = profile.setSavingFor(family);
-    final affordable = profile.rp >= price;
+    final affordable = profile.doubloons >= price;
     final key = 'f_${family.key}';
     final ink = family.board.deck.computeLuminance() > 0.5
         ? AppColors.outline
@@ -1472,7 +1479,7 @@ class _ThemeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final owned = profile.ownsTheme(theme.id);
     final equipped = profile.gameplayThemeId == theme.id;
-    final affordable = profile.rp >= theme.cost;
+    final affordable = profile.doubloons >= theme.cost;
     // The card wears the theme's own deck colour, which now spans
     // near-black (Cinder Straits) to near-white (Rime Field), so the text
     // on it has to be chosen rather than assumed. Same luminance rule

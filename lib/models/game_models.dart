@@ -246,13 +246,31 @@ class Board {
 
   /// Whether this hull is still free to move. A single hit pins a ship
   /// where it is for the rest of the match — you only get to run while
-  /// the enemy still has no idea where you are.
+  /// the enemy still has no idea where you are. A wreck never moves.
   ///
   /// [ignoreDamage] lifts that pin — GHOST FLEET's own rule, where a
   /// damaged hull can still run because nothing recorded where it was
   /// hit in the first place. See [LanBattleMode.movesWhenDamaged].
-  bool canRelocate(PlacedShip ship, {bool ignoreDamage = false}) =>
-      ignoreDamage || ship.hitIndices.isEmpty;
+  ///
+  /// DESTROYER — Agile: the first hit never pins it. Small, fast hulls
+  /// slip away from the first contact; the second hit pins it like any
+  /// other ship.
+  ///
+  /// SUBMARINE — Elusive: it slips the pin entirely and stays movable
+  /// for as long as it stays afloat, the better to dodge shells
+  /// mid-flight. Sinking one takes guessing where it will be, not
+  /// where it was.
+  bool canRelocate(PlacedShip ship, {bool ignoreDamage = false}) {
+    if (ignoreDamage) return !ship.isSunk;
+    if (ship.isSunk) return false;
+    if (ship.hitIndices.isEmpty) return true;
+    if (ship.spec.kind == ShipKind.submarine) return true;
+    if (ship.spec.kind == ShipKind.destroyer &&
+        ship.hitIndices.length <= 1) {
+      return true;
+    }
+    return false;
+  }
 
   /// Whether [ship] could legally sit at (row, col, horizontal): fully
   /// on-grid, clear of every OTHER ship, and — the rule specific to this
@@ -271,6 +289,7 @@ class Board {
     bool horizontal, {
     bool ignoreDamage = false,
     bool ignoreShotHistory = false,
+    bool pickets = true,
   }) {
     if (!canRelocate(ship, ignoreDamage: ignoreDamage)) return false;
     final size = ship.spec.size;
@@ -286,7 +305,16 @@ class Board {
     for (var i = 0; i < size; i++) {
       final r = horizontal ? row : row + i;
       final c = horizontal ? col + i : col;
-      if (!ignoreShotHistory && alreadyShot(r, c)) return false;
+      // CRUISER — Picket screen: it hides in shot-up water other hulls
+      // can't use. GHOST FLEET passes [ignoreShotHistory] anyway, so
+      // this only ever matters in MANOEUVRE/BLITZ. [pickets] lets
+      // callers with their own clean-water promise (HARD TURN — see its
+      // doc) opt back out of the exception.
+      if (!ignoreShotHistory &&
+          (ship.spec.kind != ShipKind.cruiser || !pickets) &&
+          alreadyShot(r, c)) {
+        return false;
+      }
       // `activeShipAt`, not `shipAt`: a GHOST FLEET hull that sank and was
       // freed ([PlacedShip.sunkCleared]) no longer blocks — the water it
       // left is free for a surviving hull to move back onto.
@@ -298,8 +326,8 @@ class Board {
 
   /// Moves a ship. Returns false and changes nothing if the destination
   /// is illegal, so callers can use the return value directly as "did
-  /// this manoeuvre happen". See [canRelocateTo] for [ignoreDamage] and
-  /// [ignoreShotHistory].
+  /// this manoeuvre happen". See [canRelocateTo] for [ignoreDamage],
+  /// [ignoreShotHistory] and [pickets].
   bool relocate(
     ShipKind kind,
     int row,
@@ -307,6 +335,7 @@ class Board {
     bool horizontal, {
     bool ignoreDamage = false,
     bool ignoreShotHistory = false,
+    bool pickets = true,
   }) {
     final ship = shipOfKind(kind);
     if (ship == null) return false;
@@ -317,6 +346,7 @@ class Board {
       horizontal,
       ignoreDamage: ignoreDamage,
       ignoreShotHistory: ignoreShotHistory,
+      pickets: pickets,
     )) {
       return false;
     }
@@ -622,6 +652,16 @@ enum LanBattleMode {
   /// Also appended, for the same reason [blitz], [ghost] and [powerPlay]
   /// were.
   phantom,
+
+  /// Turn-based, like [turns] — but each turn fires a whole salvo: one
+  /// shell per surviving hull of the shooting fleet, then the guns pass
+  /// no matter how many of them hit. Hits don't earn extra turns here —
+  /// the salvo IS the turn — so a full fleet opens 5-strong and a
+  /// battered one dribbles its last shots out one or two at a time.
+  ///
+  /// Also appended, for the same reason [blitz], [ghost], [powerPlay]
+  /// and [phantom] were.
+  salvo,
 }
 
 extension LanBattleModeX on LanBattleMode {
@@ -633,6 +673,7 @@ extension LanBattleModeX on LanBattleMode {
         LanBattleMode.ghost => 'GHOST FLEET',
         LanBattleMode.powerPlay => 'POWER PLAY',
         LanBattleMode.phantom => 'PHANTOM',
+        LanBattleMode.salvo => 'SALVO',
       };
 
   String get tagline => switch (this) {
@@ -643,6 +684,7 @@ extension LanBattleModeX on LanBattleMode {
         LanBattleMode.ghost => 'Take turns — nothing leaves a mark',
         LanBattleMode.powerPlay => 'Take turns — with a power-up in hand',
         LanBattleMode.phantom => 'Take turns — you never know if you hit',
+        LanBattleMode.salvo => 'Take turns — a salvo per surviving ship',
       };
 
   String get blurb => switch (this) {
@@ -681,6 +723,11 @@ extension LanBattleModeX on LanBattleMode {
               'nothing: no hit, no miss, no mark, no wreck — not even the '
               'splash of the moment. Only the ships-left counter reveals '
               'your progress.',
+        LanBattleMode.salvo =>
+          'The classic variant. Each turn fires one shell per surviving '
+              'hull — five strong with a full fleet, down to a single '
+              'shot when one hull is left. The turn always passes after '
+              'the salvo, hit or miss.',
       };
 
   /// True for the modes that alternate turns.

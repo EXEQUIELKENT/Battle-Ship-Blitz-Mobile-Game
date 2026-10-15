@@ -172,6 +172,11 @@ class NetworkService extends ChangeNotifier {
   String peerCannonSkinId = 'mk1';
   String peerThemeId = 'mk1';
 
+  /// Opponent's Rank Points for Elo calc. Defaults to 1000 (a fresh
+  /// profile) so older builds that never send `rp` still get symmetric
+  /// ±16 instead of crashing the formula.
+  int peerRp = 1000;
+
   /// Whether the opponent actually picked their hull or is still on the
   /// starter one — the difference between showing their skin and showing
   /// their side's plain red/blue. Sent because the id alone can't say:
@@ -692,6 +697,7 @@ class NetworkService extends ChangeNotifier {
     'shipPicked': _selfShipChosen ? 1 : 0,
     'cannon': _selfCannonSkinId,
     'theme': _selfThemeId,
+    'rp': _selfRp,
     // Whether THIS device wants the cinematic finish. A loadout is a
     // private choice — my ships look how I bought them, yours look how
     // you bought yours — but the closing camera is not: it stops the
@@ -848,6 +854,7 @@ class NetworkService extends ChangeNotifier {
       peerShipSkinChosen = msg['shipPicked'] == 1;
       peerCannonSkinId = (msg['cannon'] as String?) ?? 'mk1';
       peerThemeId = (msg['theme'] as String?) ?? 'mk1';
+      peerRp = (msg['rp'] as num?)?.toInt() ?? 1000;
       // Absent means no: an older build that never sends this field has
       // not opted in, and a camera move the other end knows nothing about
       // is exactly the desync worth avoiding.
@@ -1303,6 +1310,9 @@ class NetworkService extends ChangeNotifier {
   String _selfCannonSkinId = 'mk1';
   String _selfThemeId = 'mk1';
   bool _selfWantsCinematic = false;
+  int _selfRp = 1000;
+
+  void setSelfRp(int rp) => _selfRp = rp;
 
   /// Whether the OPPONENT has the cinematic finish switched on. False
   /// until they say otherwise, including against a build old enough not
@@ -1643,6 +1653,7 @@ class NetworkService extends ChangeNotifier {
     peerShipSkinChosen = false;
     peerCannonSkinId = 'mk1';
     peerThemeId = 'mk1';
+    peerRp = 1000;
     _peerBoardMsg = null; // never carry a fleet into the next match
     chat.clear(); // nor a conversation with someone you are no longer playing
     unreadChat = 0;

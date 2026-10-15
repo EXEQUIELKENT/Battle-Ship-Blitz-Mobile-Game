@@ -303,19 +303,29 @@ class AiBrain {
 
       if (!_c.lanBattleMode.hasTurns) continue; // no turn to pass here
 
-      // Mirrors `BattleScreen._maybePassTurn` exactly — see its own doc
-      // for why `forcePass` bypasses the hold/hit checks below and why
-      // `e.byPlayer` alone decides the direction either way.
-      if (!e.forcePass) {
-        if (e.hold) continue;
-        if (e.result != ShotResult.miss) continue;
-        // Same volley rule the player screen applies — see
-        // `GameController.volleyScoredHit`. Without it the two ends would
-        // disagree about whose turn it is after a part-scoring card.
-        if (_c.volleyScoredHit(e)) continue;
+      // SALVO mirrors `BattleScreen._maybePassTurn`'s salvo branch: the
+      // shooter keeps going while their salvo has shells left, and the
+      // guns pass the moment it runs dry — hit or miss.
+      if (_c.isSalvoBattle) {
+        if (_c.salvoLeft > 0) continue;
+      } else {
+        // Mirrors `BattleScreen._maybePassTurn` exactly — see its own doc
+        // for why `forcePass` bypasses the hold/hit checks below and why
+        // `e.byPlayer` alone decides the direction either way.
+        if (!e.forcePass) {
+          if (e.hold) continue;
+          if (e.result != ShotResult.miss) continue;
+          // Same volley rule the player screen applies — see
+          // `GameController.volleyScoredHit`. Without it the two ends would
+          // disagree about whose turn it is after a part-scoring card.
+          if (_c.volleyScoredHit(e)) continue;
+        }
       }
       final wasMyTurn = !_c.peerHasTurn;
       _c.peerHasTurn = e.byPlayer;
+      // A fresh salvo for the incoming seat, sized to their surviving
+      // fleet (no-op outside Salvo — see `beginSalvoTurn`).
+      _c.beginSalvoTurn(!_c.peerHasTurn);
       final nowMyTurn = !_c.peerHasTurn;
       if (!wasMyTurn && nowMyTurn) _onOwnTurnStart();
     }

@@ -31,6 +31,7 @@ IconData lanModeIcon(LanBattleMode mode) => switch (mode) {
   LanBattleMode.ghost => Icons.blur_on,
   LanBattleMode.powerPlay => Icons.auto_awesome,
   LanBattleMode.phantom => Icons.visibility_off,
+  LanBattleMode.salvo => Icons.grid_view,
 };
 
 /// Sits between "the two devices are connected" and "deploy your fleet":

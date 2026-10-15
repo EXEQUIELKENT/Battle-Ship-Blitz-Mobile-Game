@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../art/fleet_family.dart';
 import '../art/impact_fx.dart';
 import '../art/legacy_identity.dart';
+import '../models/game_models.dart';
 import 'sound_service.dart';
 
 /// A ship hull skin.
@@ -23,7 +24,7 @@ class ShipSkin {
   final String name;
   final Color hull;
   final Color trim;
-  final int cost; // RP cost; 0 = free
+  final int cost; // Doubloons cost; 0 = free
 
   /// Non-null for the thematic families — see `lib/art/fleet_family.dart`.
   final String? familyKey;
@@ -51,6 +52,14 @@ class CannonSkin {
 
   const CannonSkin(this.id, this.name, this.barrel, this.projectile,
       this.description, this.cooldownFactor, this.cost, {this.familyKey});
+
+  /// Reload factor actually used for a match. Ranked play (real humans
+  /// over hotspot/online — see `GameController.isRankedBattle`) always
+  /// fires at the standard rate so a bought cannon is never a fire-rate
+  /// advantage where Elo is on the line; casual modes (vs-AI, local)
+  /// keep the skin's own factor as a fun progression perk.
+  double effectiveCooldownFactor({required bool ranked}) =>
+      ranked ? 1.0 : cooldownFactor;
 }
 
 /// A gameplay theme changes the battlefield palette without changing rules.
@@ -436,6 +445,8 @@ class ProfileStore extends ChangeNotifier {
   static bool get _unlockAll => debugUnlockAllOverride ?? _unlockAllDefault;
 
   static const _kRp = 'profile.rp';
+  static const _kDoubloons = 'profile.doubloons';
+  static const _kRookieWins = 'profile.rookieWins';
   static const _kWins = 'profile.wins';
   static const _kLosses = 'profile.losses';
   static const _kStreak = 'profile.streak';
@@ -451,10 +462,33 @@ class ProfileStore extends ChangeNotifier {
   static const _kMusicVol = 'profile.musicVolume';
   static const _kGraphics = 'profile.graphics';
   static const _kCinematic = 'profile.cinematicFinish';
+  static const _kDailyClaim = 'profile.dailyPuzzleClaim';
+  static const _kDailyStreak = 'profile.dailyPuzzleStreak';
+  static const _kDailySolved = 'profile.dailyPuzzleSolved';
+  static const _kAch = 'profile.achievements';
+  static const _kQuestDate = 'profile.questDate';
+  static const _kQuestProg = 'profile.questProgress';
+  static const _kQuestDone = 'profile.questDone';
+  static const _kTotalSinks = 'profile.totalSinks';
 
   SharedPreferences? _prefs;
 
+  /// Rank Points — moved ONLY by match results, never by purchases.
+  /// This is the number `rankTitle` reads.
   int rp = 1000;
+
+  /// Spendable soft currency ("Doubloons") — earned by playing (win or
+  /// loss), spent by every shop purchase. Spending never lowers rank.
+  int doubloons = 1000;
+
+  /// Last match's doubloon gain, for the result screen. Set by
+  /// [recordResult] alongside its int (RP delta) return.
+  int lastDoubloonsDelta = 0;
+
+  /// Consecutive vs-AI Rookie wins — drives diminishing returns so
+  /// farming the easiest difficulty stalls out instead of ranking up.
+  int consecutiveRookieWins = 0;
+
   int wins = 0;
   int losses = 0;
   int streak = 0;
@@ -501,6 +535,453 @@ class ProfileStore extends ChangeNotifier {
 
   String get rankTitle => rankTitleForRp(rp);
 
+  // ------------------------------------------------- AWARDS (achievements + daily quests) ---
+  //
+  // Local-only retention: one-time achievement milestones and three
+  // seeded daily quests, all paying Doubloons (never rank). Progress is
+  // recorded only for counted matches (see `recordMatchForAwards`) so
+  // local pass-and-play can't farm them.
+
+  /// One-time milestones: id → (icon, name, description, reward).
+  /// Icons are unique across medals and quests.
+  static const List<
+      ({String id, String icon, String name, String desc, int reward})>
+      achievementDefs = [
+    (id: 'first_blood', icon: '🩸', name: 'First Blood', desc: 'Score a hit.', reward: 10),
+    (id: 'ship_sinker', icon: '⚓', name: 'Ship Sinker', desc: 'Sink a ship.', reward: 15),
+    (
+      id: 'fleet_destroyer',
+      icon: '💥',
+      name: 'Fleet Destroyer',
+      desc: 'Win a match.',
+      reward: 25
+    ),
+    (
+      id: 'sharpshooter',
+      icon: '🎯',
+      name: 'Sharpshooter',
+      desc: 'Win with 60%+ accuracy (10+ shots).',
+      reward: 40
+    ),
+    (
+      id: 'hot_streak',
+      icon: '🔥',
+      name: 'Hot Streak',
+      desc: 'Reach a 3-win streak.',
+      reward: 30
+    ),
+    (
+      id: 'carrier_killer',
+      icon: '🛩️',
+      name: 'Carrier Killer',
+      desc: 'Sink an Aircraft Carrier.',
+      reward: 20
+    ),
+    (
+      id: 'demolisher',
+      icon: '💀',
+      name: 'Demolisher',
+      desc: 'Sink 10 ships (career).',
+      reward: 50
+    ),
+    (
+      id: 'veteran',
+      icon: '🎖️',
+      name: 'Veteran',
+      desc: 'Complete 10 matches.',
+      reward: 30
+    ),
+    (
+      id: 'ghost_hunter',
+      icon: '👻',
+      name: 'Ghost Hunter',
+      desc: 'Win a Ghost Fleet match.',
+      reward: 30
+    ),
+    (
+      id: 'power_player',
+      icon: '🃏',
+      name: 'Power Player',
+      desc: 'Use 3 cards in one match.',
+      reward: 25
+    ),
+    (
+      id: 'puzzle_solver',
+      icon: '🧩',
+      name: 'Puzzle Solver',
+      desc: 'Solve a daily puzzle.',
+      reward: 20
+    ),
+    (
+      id: 'flawless',
+      icon: '🛡️',
+      name: 'Flawless Victory',
+      desc: 'Win without losing a hull.',
+      reward: 40
+    ),
+    (
+      id: 'annihilator',
+      icon: '☠️',
+      name: 'Annihilator',
+      desc: 'Sink 5 ships in one match.',
+      reward: 35
+    ),
+    (
+      id: 'brawler',
+      icon: '🔨',
+      name: 'Brawler',
+      desc: 'Score 15 hits in one match.',
+      reward: 30
+    ),
+    (
+      id: 'against_all_odds',
+      icon: '🌊',
+      name: 'Against All Odds',
+      desc: 'Win having lost 4 of your hulls.',
+      reward: 45
+    ),
+    (
+      id: 'unstoppable',
+      icon: '🚀',
+      name: 'Unstoppable',
+      desc: 'Reach a 5-win streak.',
+      reward: 60
+    ),
+    (
+      id: 'abyssal',
+      icon: '🐙',
+      name: 'Abyssal Terror',
+      desc: 'Sink 25 ships (career).',
+      reward: 75
+    ),
+    (
+      id: 'legend',
+      icon: '👑',
+      name: 'Living Legend',
+      desc: 'Complete 50 matches.',
+      reward: 100
+    ),
+    (
+      id: 'puzzle_streak_3',
+      icon: '📅',
+      name: 'Puzzle Devotee',
+      desc: 'Solve the daily puzzle 3 days in a row.',
+      reward: 30
+    ),
+    (
+      id: 'win_chaos',
+      icon: '⛈️',
+      name: 'Storm Rider',
+      desc: 'Win a Chaos match.',
+      reward: 25
+    ),
+    (
+      id: 'win_rearrange',
+      icon: '🧭',
+      name: 'Master Maneuverist',
+      desc: 'Win a Manoeuvre match.',
+      reward: 25
+    ),
+    (
+      id: 'win_blitz',
+      icon: '⚡',
+      name: 'Blitzkrieg',
+      desc: 'Win a Blitz match.',
+      reward: 25
+    ),
+    (
+      id: 'win_powerplay',
+      icon: '🎴',
+      name: 'Card Shark',
+      desc: 'Win a Power Play match.',
+      reward: 25
+    ),
+    (
+      id: 'win_phantom',
+      icon: '🌫️',
+      name: 'Phantom Menace',
+      desc: 'Win a Phantom match.',
+      reward: 30
+    ),
+    (
+      id: 'win_salvo',
+      icon: '🔱',
+      name: 'Salvo Striker',
+      desc: 'Win a Salvo match.',
+      reward: 30
+    ),
+  ];
+
+  /// Daily-quest pool: id → (icon, name, description, target, reward).
+  /// Three are dealt per day by seed (see [dailyQuestIds]). Icons are
+  /// unique across quests and medals.
+  static const List<
+      ({String id, String icon, String name, String desc, int target, int reward})>
+      questPool = [
+    (id: 'play_2', icon: '⛵', name: 'Sail Out', desc: 'Complete 2 matches.', target: 2, reward: 15),
+    (id: 'win_1', icon: '🏆', name: 'Victorious', desc: 'Win 1 match.', target: 1, reward: 30),
+    (
+      id: 'hits_8',
+      icon: '🔫',
+      name: 'Gunnery Practice',
+      desc: 'Score 8 hits.',
+      target: 8,
+      reward: 20
+    ),
+    (
+      id: 'sinks_2',
+      icon: '💣',
+      name: 'Shipbreaker',
+      desc: 'Sink 2 ships.',
+      target: 2,
+      reward: 25
+    ),
+    (
+      id: 'streak_2',
+      icon: '🎲',
+      name: 'On a Roll',
+      desc: 'Win 2 matches in a row.',
+      target: 1,
+      reward: 35
+    ),
+    (
+      id: 'accuracy_50',
+      icon: '🔭',
+      name: 'Deadeye',
+      desc: 'Win with 50%+ accuracy.',
+      target: 1,
+      reward: 25
+    ),
+    (
+      id: 'wins_2',
+      icon: '⚔️',
+      name: 'Double Victory',
+      desc: 'Win 2 matches.',
+      target: 2,
+      reward: 40
+    ),
+    (
+      id: 'hits_15',
+      icon: '🧨',
+      name: 'Broadside Barrage',
+      desc: 'Score 15 hits.',
+      target: 15,
+      reward: 30
+    ),
+    (
+      id: 'sinks_4',
+      icon: '🌀',
+      name: 'Wrecker',
+      desc: 'Sink 4 ships.',
+      target: 4,
+      reward: 35
+    ),
+  ];
+
+  /// Career ships sunk — feeds the Demolisher achievement.
+  int totalSinks = 0;
+
+  /// Unlocked achievement ids.
+  Set<String> achievements = {};
+
+  /// Active daily-quest date key (see [dailyPuzzleKey]).
+  String questDate = '';
+
+  /// Progress for the active date's quests: quest id → count.
+  Map<String, int> questProgress = {};
+
+  /// Claimed (completed + paid) quest ids for the active date.
+  Set<String> questDone = {};
+
+  /// Awards from the latest match/event, for the result screen to
+  /// announce. Reset on every recording call — never persisted.
+  List<({String icon, String name, int reward})> lastAwardNotes = [];
+
+  /// The three quest defs dealt for [now]'s date. Deterministic per
+  /// day, same on every device.
+  static List<
+      ({String id, String icon, String name, String desc, int target, int reward})>
+      dailyQuestIds(DateTime now) {
+    final pool = List.of(questPool);
+    pool.shuffle(
+        Random(dailyPuzzleSeed(DateTime(now.year, now.month, now.day))));
+    return pool.take(3).toList();
+  }
+
+  /// Medal id → its def, or null for unknown ids.
+  static ({String id, String icon, String name, String desc, int reward})?
+      medalById(String id) {
+    for (final a in achievementDefs) {
+      if (a.id == id) return a;
+    }
+    return null;
+  }
+
+  /// Mode-win medal for a network battle mode, or null when the mode
+  /// has no medal (classic turns ride on Fleet Destroyer; Ghost Fleet
+  /// has Ghost Hunter).
+  static String? modeMedalId(LanBattleMode mode) => switch (mode) {
+        LanBattleMode.chaos => 'win_chaos',
+        LanBattleMode.rearrange => 'win_rearrange',
+        LanBattleMode.blitz => 'win_blitz',
+        LanBattleMode.powerPlay => 'win_powerplay',
+        LanBattleMode.phantom => 'win_phantom',
+        LanBattleMode.salvo => 'win_salvo',
+        _ => null,
+      };
+
+  void _grant({required String icon, required String name, required int reward}) {
+    doubloons += reward;
+    lastAwardNotes.add((icon: icon, name: name, reward: reward));
+  }
+
+  void _unlock(String id) {
+    if (achievements.contains(id)) return;
+    final def = medalById(id);
+    if (def == null) return;
+    achievements.add(id);
+    _grant(icon: def.icon, name: def.name, reward: def.reward);
+  }
+
+  /// Records a finished match for awards. Call AFTER [recordResult] so
+  /// streak/wins are current. [counted] mirrors the RP guard (no local,
+  /// abandoned, or headless games) so unranked play can't farm.
+  /// [ownShipsLost] is this fleet's sunk count; [lanMode] is set for
+  /// hotspot/online matches (drives the mode-win medals).
+  void recordMatchForAwards({
+    required bool won,
+    required DateTime now,
+    required int hitsThisMatch,
+    required int shotsThisMatch,
+    required int sinksThisMatch,
+    required int cardsUsed,
+    required bool sunkCarrier,
+    required bool isGhostWin,
+    required bool counted,
+    int ownShipsLost = 0,
+    LanBattleMode? lanMode,
+  }) {
+    lastAwardNotes = [];
+    if (!counted) {
+      _save();
+      notifyListeners();
+      return;
+    }
+    totalSinks += sinksThisMatch;
+    final acc = shotsThisMatch == 0
+        ? 0.0
+        : hitsThisMatch / shotsThisMatch;
+
+    if (hitsThisMatch >= 1) _unlock('first_blood');
+    if (sinksThisMatch >= 1) _unlock('ship_sinker');
+    if (won) _unlock('fleet_destroyer');
+    if (won && shotsThisMatch >= 10 && acc >= 0.6) {
+      _unlock('sharpshooter');
+    }
+    if (streak >= 3) _unlock('hot_streak');
+    if (streak >= 5) _unlock('unstoppable');
+    if (sunkCarrier) _unlock('carrier_killer');
+    if (totalSinks >= 10) _unlock('demolisher');
+    if (totalSinks >= 25) _unlock('abyssal');
+    if (wins + losses >= 10) _unlock('veteran');
+    if (wins + losses >= 50) _unlock('legend');
+    if (isGhostWin) _unlock('ghost_hunter');
+    if (cardsUsed >= 3) _unlock('power_player');
+    if (won && shotsThisMatch > 0 && ownShipsLost == 0) {
+      _unlock('flawless');
+    }
+    if (sinksThisMatch >= 5) _unlock('annihilator');
+    if (hitsThisMatch >= 15) _unlock('brawler');
+    if (won && ownShipsLost >= 4) _unlock('against_all_odds');
+    if (won && lanMode != null) {
+      final modeMedal = modeMedalId(lanMode);
+      if (modeMedal != null) _unlock(modeMedal);
+    }
+
+    // Daily quests for today's date (roll over first).
+    final key = dailyPuzzleKey(now);
+    if (questDate != key) {
+      questDate = key;
+      questProgress = {};
+      questDone = {};
+    }
+    void bump(String id, int n) {
+      if (questDone.contains(id)) return;
+      questProgress[id] = (questProgress[id] ?? 0) + n;
+    }
+
+    bump('play_2', 1);
+    if (won) {
+      bump('win_1', 1);
+      bump('wins_2', 1);
+    }
+    bump('hits_8', hitsThisMatch);
+    bump('hits_15', hitsThisMatch);
+    bump('sinks_2', sinksThisMatch);
+    bump('sinks_4', sinksThisMatch);
+    if (streak >= 2) questProgress['streak_2'] = 1;
+    if (won && acc >= 0.5) questProgress['accuracy_50'] = 1;
+
+    for (final q in dailyQuestIds(now)) {
+      if (questDone.contains(q.id)) continue;
+      if ((questProgress[q.id] ?? 0) >= q.target) {
+        questDone.add(q.id);
+        _grant(icon: q.icon, name: q.name, reward: q.reward);
+      }
+    }
+    _save();
+    notifyListeners();
+  }
+
+  // -------------------------------------------------- DAILY PUZZLE ---
+  //
+  // One reward per calendar day (local time): solving pays 25 + 5 per
+  // streak day (cap 50), failing still pays 5 for showing up. Replays
+  // are free but pay nothing — the claim date is what enforces that,
+  // not the screen, so no UI path can double-pay.
+
+  /// Date key this device last claimed a daily-puzzle reward on.
+  String dailyPuzzleClaim = '';
+
+  /// Consecutive solved days. Resets on a fail or a skipped day.
+  int dailyPuzzleStreak = 0;
+
+  /// Date key of the last SOLVED day (drives the streak above).
+  String dailyPuzzleLastSolved = '';
+
+  static String dailyPuzzleKey(DateTime d) => '${d.year}-${d.month}-${d.day}';
+
+  static int dailyPuzzleSeed(DateTime d) =>
+      d.year * 10000 + d.month * 100 + d.day;
+
+  bool dailyPuzzleRewardAvailable(DateTime now) =>
+      dailyPuzzleClaim != dailyPuzzleKey(now);
+
+  int claimDailyPuzzleReward({required bool solved, required DateTime now}) {
+    final key = dailyPuzzleKey(now);
+    if (dailyPuzzleClaim == key) return 0;
+    dailyPuzzleClaim = key;
+    lastAwardNotes = [];
+    int reward;
+    if (solved) {
+      final yesterday =
+          dailyPuzzleKey(now.subtract(const Duration(days: 1)));
+      dailyPuzzleStreak =
+          (dailyPuzzleLastSolved == yesterday) ? dailyPuzzleStreak + 1 : 1;
+      dailyPuzzleLastSolved = key;
+      reward = 25 + 5 * min(dailyPuzzleStreak, 5);
+      _unlock('puzzle_solver');
+      if (dailyPuzzleStreak >= 3) _unlock('puzzle_streak_3');
+    } else {
+      dailyPuzzleStreak = 0;
+      reward = 5;
+    }
+    doubloons += reward;
+    _save();
+    notifyListeners();
+    return reward;
+  }
+
   /// Streak bonus applied on top of base RP change.
   int get streakBonus => min(streak, 5) * 5;
 
@@ -522,6 +1003,27 @@ class ProfileStore extends ChangeNotifier {
       return;
     }
     rp = p.getInt(_kRp) ?? 1000;
+    // Migration: Doubloons did not exist before the RP/currency split.
+    // Preserve purchasing power by seeding from the current RP once.
+    if (p.containsKey(_kDoubloons)) {
+      doubloons = p.getInt(_kDoubloons) ?? 1000;
+    } else {
+      doubloons = rp;
+    }
+    consecutiveRookieWins = p.getInt(_kRookieWins) ?? 0;
+    dailyPuzzleClaim = p.getString(_kDailyClaim) ?? '';
+    dailyPuzzleStreak = p.getInt(_kDailyStreak) ?? 0;
+    dailyPuzzleLastSolved = p.getString(_kDailySolved) ?? '';
+    achievements = (p.getStringList(_kAch) ?? const []).toSet();
+    questDate = p.getString(_kQuestDate) ?? '';
+    questProgress = {
+      for (final e in (p.getStringList(_kQuestProg) ?? const []))
+        if (e.contains('='))
+          e.substring(0, e.indexOf('=')):
+              int.tryParse(e.substring(e.indexOf('=') + 1)) ?? 0,
+    };
+    questDone = (p.getStringList(_kQuestDone) ?? const []).toSet();
+    totalSinks = p.getInt(_kTotalSinks) ?? 0;
     wins = p.getInt(_kWins) ?? 0;
     losses = p.getInt(_kLosses) ?? 0;
     streak = p.getInt(_kStreak) ?? 0;
@@ -551,6 +1053,17 @@ class ProfileStore extends ChangeNotifier {
     final p = _prefs;
     if (p == null) return;
     await p.setInt(_kRp, rp);
+    await p.setInt(_kDoubloons, doubloons);
+    await p.setInt(_kRookieWins, consecutiveRookieWins);
+    await p.setString(_kDailyClaim, dailyPuzzleClaim);
+    await p.setInt(_kDailyStreak, dailyPuzzleStreak);
+    await p.setString(_kDailySolved, dailyPuzzleLastSolved);
+    await p.setStringList(_kAch, achievements.toList());
+    await p.setString(_kQuestDate, questDate);
+    await p.setStringList(
+        _kQuestProg, [for (final e in questProgress.entries) '${e.key}=${e.value}']);
+    await p.setStringList(_kQuestDone, questDone.toList());
+    await p.setInt(_kTotalSinks, totalSinks);
     await p.setInt(_kWins, wins);
     await p.setInt(_kLosses, losses);
     await p.setInt(_kStreak, streak);
@@ -568,20 +1081,110 @@ class ProfileStore extends ChangeNotifier {
     await p.setStringList(_kOwned, owned.toList());
   }
 
-  /// Records a finished match. Returns the RP delta.
-  int recordResult({required bool won}) {
+  /// Records a finished match. Returns the RP (rank) delta.
+  ///
+  /// Rank and currency are separate: RP moves here (Elo-style online,
+  /// difficulty-scaled vs-AI, symmetric otherwise) while Doubloons are
+  /// always earned (never lost) so playing funds the shop without ever
+  /// lowering rank. The doubloon gain is exposed via
+  /// [lastDoubloonsDelta] for the result screen.
+  ///
+  /// - [opponentRp]: set for ranked online/hotspot play. Elo K=32 with a
+  ///   ±8..32 clamp, so equal players trade ±16 (50% break-even).
+  /// - [aiDifficulty]: set for vs-AI. Rookie pays least and diminishes
+  ///   with consecutive Rookie wins; Admiral pays full.
+  int recordResult({
+    required bool won,
+    int? opponentRp,
+    AIDifficulty? aiDifficulty,
+  }) {
     int delta;
-    if (won) {
-      wins++;
-      streak++;
-      bestStreak = max(bestStreak, streak);
-      delta = 25 + streakBonus;
+    double currencyScale = 1.0;
+    if (opponentRp != null) {
+      // Elo-style ranked gain.
+      const k = 32;
+      final expected =
+          1 / (1 + pow(10, (opponentRp - rp) / 400));
+      if (won) {
+        wins++;
+        streak++;
+        bestStreak = max(bestStreak, streak);
+        delta = (k * (1 - expected)).round().clamp(8, 32).toInt();
+        // Small streak kicker on top of Elo, capped so it can't farm.
+        delta = (delta + min(streak, 3)).clamp(8, 36).toInt();
+        consecutiveRookieWins = 0;
+      } else {
+        losses++;
+        streak = 0;
+        delta = (k * (0 - expected)).round().clamp(-32, -8).toInt();
+        consecutiveRookieWins = 0;
+      }
+    } else if (aiDifficulty != null) {
+      final scale = switch (aiDifficulty) {
+        AIDifficulty.easy => 0.4,
+        AIDifficulty.normal => 0.7,
+        AIDifficulty.hard => 1.0,
+      };
+      currencyScale = switch (aiDifficulty) {
+        AIDifficulty.easy => 0.5,
+        AIDifficulty.normal => 0.8,
+        AIDifficulty.hard => 1.0,
+      };
+      if (won) {
+        wins++;
+        streak++;
+        bestStreak = max(bestStreak, streak);
+        var base = (25 * scale).round() + (streakBonus * scale).round();
+        if (aiDifficulty == AIDifficulty.easy) {
+          // Diminishing returns: 1x, ~0.57x, 0.4x, ... floored at 2 RP.
+          final denom = 1 + 0.75 * consecutiveRookieWins;
+          base = max(2, (base / denom).round());
+          consecutiveRookieWins++;
+        } else {
+          consecutiveRookieWins = 0;
+        }
+        delta = base;
+      } else {
+        losses++;
+        streak = 0;
+        consecutiveRookieWins = 0;
+        delta = switch (aiDifficulty) {
+          AIDifficulty.easy => -5,
+          AIDifficulty.normal => -10,
+          AIDifficulty.hard => -15,
+        };
+      }
     } else {
-      losses++;
-      streak = 0;
-      delta = -15;
+      // Unranked / unknown opponent (e.g. hotspot without RP handshake):
+      // symmetric ± so break-even is 50%, not 37.5%.
+      if (won) {
+        wins++;
+        streak++;
+        bestStreak = max(bestStreak, streak);
+        delta = 16 + min(streak, 5) * 2;
+        consecutiveRookieWins = 0;
+      } else {
+        losses++;
+        streak = 0;
+        delta = -16;
+        consecutiveRookieWins = 0;
+      }
     }
     rp = max(0, rp + delta);
+    // Doubloons: always a gain, scaled like the match, rookie-farmed
+    // gains diminish with the same denominator.
+    int coins;
+    if (won) {
+      coins = (20 * currencyScale).round() + min(streak, 5) * 3;
+      if (aiDifficulty == AIDifficulty.easy && opponentRp == null) {
+        final denom = 1 + 0.75 * (consecutiveRookieWins - 1).clamp(0, 99);
+        coins = max(2, (coins / denom).round());
+      }
+    } else {
+      coins = (8 * currencyScale).round().clamp(2, 99).toInt();
+    }
+    lastDoubloonsDelta = coins;
+    doubloons += coins;
     _save();
     notifyListeners();
     return delta;
@@ -703,10 +1306,11 @@ class ProfileStore extends ChangeNotifier {
   }
 
   /// Buys and/or equips a ship skin. Returns true when equipped.
+  /// Costs Doubloons — rank (RP) is never spent.
   bool equipShipSkin(ShipSkin skin) {
     if (!ownsShip(skin.id)) {
-      if (rp < skin.cost) return false;
-      rp -= skin.cost;
+      if (doubloons < skin.cost) return false;
+      doubloons -= skin.cost;
       owned.add(_ownKey('ship', skin.id));
     }
     shipSkinId = skin.id;
@@ -733,10 +1337,12 @@ class ProfileStore extends ChangeNotifier {
     notifyListeners();
   }
 
+
+
   bool equipCannonSkin(CannonSkin skin) {
     if (!ownsCannon(skin.id)) {
-      if (rp < skin.cost) return false;
-      rp -= skin.cost;
+      if (doubloons < skin.cost) return false;
+      doubloons -= skin.cost;
       owned.add(_ownKey('cannon', skin.id));
     }
     cannonSkinId = skin.id;
@@ -757,8 +1363,8 @@ class ProfileStore extends ChangeNotifier {
   /// discounts what is still missing.
   bool buyFamilySet(FleetFamily family) {
     final price = setPriceFor(family);
-    if (price > rp) return false;
-    rp -= price;
+    if (price > doubloons) return false;
+    doubloons -= price;
     owned.add(_ownKey('ship', 'f_${family.key}'));
     owned.add(_ownKey('cannon', 'f_${family.key}'));
     owned.add(_ownKey('theme', 'f_${family.key}'));
@@ -809,8 +1415,8 @@ class ProfileStore extends ChangeNotifier {
 
   bool equipGameplayTheme(GameplayTheme theme) {
     if (!ownsTheme(theme.id)) {
-      if (rp < theme.cost) return false;
-      rp -= theme.cost;
+      if (doubloons < theme.cost) return false;
+      doubloons -= theme.cost;
       owned.add(_ownKey('theme', theme.id));
     }
     gameplayThemeId = theme.id;

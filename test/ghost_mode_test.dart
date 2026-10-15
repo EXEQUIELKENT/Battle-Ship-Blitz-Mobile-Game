@@ -121,9 +121,9 @@ void main() {
     test('appended, not inserted — its index is what goes over the wire',
         () {
       // chaos=0, turns=1, rearrange=2, blitz=3, ghost=4, powerPlay=5,
-      // phantom=6. Pinned so an accidental reorder (which would silently
-      // reinterpret an in-flight match against an older build — see the
-      // enum's own doc) fails a test instead of shipping quietly.
+      // phantom=6, salvo=7. Pinned so an accidental reorder (which would
+      // silently reinterpret an in-flight match against an older build —
+      // see the enum's own doc) fails a test instead of shipping quietly.
       expect(LanBattleMode.chaos.index, 0);
       expect(LanBattleMode.turns.index, 1);
       expect(LanBattleMode.rearrange.index, 2);
@@ -131,7 +131,8 @@ void main() {
       expect(LanBattleMode.ghost.index, 4);
       expect(LanBattleMode.powerPlay.index, 5);
       expect(LanBattleMode.phantom.index, 6);
-      expect(LanBattleMode.values.length, 7);
+      expect(LanBattleMode.salvo.index, 7);
+      expect(LanBattleMode.values.length, 8);
     });
   });
 
@@ -201,15 +202,17 @@ void main() {
     });
 
     test('ignoreDamage: a hit hull can still be relocated', () {
-      final b = Board()..place(kFleet[4], 0, 0, true);
+      // A battleship: the destroyer slips its first hit even without
+      // the flag (Agile — see ship_abilities_test.dart).
+      final b = Board()..place(kFleet[1], 0, 0, true);
       b.receiveShot(0, 0); // one hit — pinned in every other mode
-      final ship = b.shipOfKind(ShipKind.destroyer)!;
+      final ship = b.shipOfKind(ShipKind.battleship)!;
       expect(b.canRelocate(ship), isFalse);
       expect(b.canRelocate(ship, ignoreDamage: true), isTrue);
-      expect(b.relocate(ShipKind.destroyer, 5, 5, true, ignoreDamage: true),
+      expect(b.relocate(ShipKind.battleship, 5, 5, true, ignoreDamage: true),
           isTrue);
       // The move does not heal it — see `Board.relocate`'s doc.
-      expect(b.shipOfKind(ShipKind.destroyer)!.hitIndices, isNotEmpty);
+      expect(b.shipOfKind(ShipKind.battleship)!.hitIndices, isNotEmpty);
     });
 
     test('ignoreShotHistory: a hull can hide in water already fired at',
@@ -228,11 +231,12 @@ void main() {
     test('the three flags are independent of each other', () {
       // ignoreDamage alone does not also waive shot history, and vice
       // versa — Ghost Fleet happens to pass both together, but nothing
-      // stops a caller from asking for just one.
-      final b = Board()..place(kFleet[4], 0, 0, true);
+      // stops a caller from asking for just one. A battleship, so
+      // neither Agile (destroyer) nor Pickets (cruiser) interferes.
+      final b = Board()..place(kFleet[1], 0, 0, true);
       b.receiveShot(0, 0); // damages the ship
       b.receiveShot(5, 6); // and marks the destination's neighbour cell
-      final ship = b.shipOfKind(ShipKind.destroyer)!;
+      final ship = b.shipOfKind(ShipKind.battleship)!;
       expect(
           b.canRelocateTo(ship, 5, 5, true, ignoreDamage: true), isFalse,
           reason: 'damage waived, but (5,6) is still shot-up water');

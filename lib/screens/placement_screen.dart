@@ -196,9 +196,10 @@ class _PlacementScreenState extends State<PlacementScreen>
       StreamController<void>.broadcast();
 
   /// The deploy cannon's reload clock: 0 the instant a preview shot goes
-  /// off, running back up to 1 (ready) over the same
-  /// `kCooldownSeconds * cannonSkin.cooldownFactor` a real shot costs in
-  /// battle. Feeds `CannonWidget.cooldownFraction` — so the gun draws its
+  /// off, running back up to 1 (ready) over the same effective cooldown
+  /// a real shot costs in battle (standard rate in ranked, the skin's own
+  /// factor in casual — see `CannonSkin.effectiveCooldownFactor`).
+  /// Feeds `CannonWidget.cooldownFraction` — so the gun draws its
   /// actual reload ring here rather than sitting permanently ready — and
   /// gates [_firePreviewShot].
   ///
@@ -243,8 +244,8 @@ class _PlacementScreenState extends State<PlacementScreen>
 
   /// This loadout's reload time, cached from the same build that reads the
   /// geometry above — the equipped cannon can be swapped from the GEAR
-  /// dialog without leaving this screen, and two of the skins reload
-  /// noticeably faster (see `CannonSkin.cooldownFactor`).
+  /// dialog without leaving this screen. Skins with a reload perk fire
+  /// faster in casual modes; ranked always uses the standard rate.
   Duration _cannonReload = const Duration(seconds: kCooldownSeconds);
 
   @override
@@ -1597,12 +1598,16 @@ class _PlacementScreenState extends State<PlacementScreen>
                           _cannonCenterYPx = cannonCenterY;
                           _cannonRenderSizePx = renderSize;
                           _cannonMuzzleFrac = muzzleFrac;
+                          // Ranked preview matches the ranked battle:
+                          // standard reload, not the skin's casual perk.
                           _cannonReload = Duration(
-                            milliseconds:
-                                (kCooldownSeconds *
-                                        1000 *
-                                        loadout.cannonSkin.cooldownFactor)
-                                    .round(),
+                            milliseconds: (kCooldownSeconds *
+                                    1000 *
+                                    loadout.cannonSkin
+                                        .effectiveCooldownFactor(
+                                            ranked:
+                                                controller.isRankedBattle))
+                                .round(),
                           );
                           return Stack(
                             key: _stackKey,

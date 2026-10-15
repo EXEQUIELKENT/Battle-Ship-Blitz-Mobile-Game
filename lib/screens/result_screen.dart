@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
+import '../models/game_models.dart';
+import '../models/power_up.dart';
 import '../services/game_controller.dart';
 import '../services/network_service.dart';
 import '../services/online_service.dart';
@@ -243,6 +245,22 @@ class _ResultScreenState extends State<ResultScreen>
                                 style: AppText.body(
                                     size: 12, color: AppColors.cream),
                               ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '+${controller.doubloonsDelta} Doubloons  •  ${profile.doubloons} DBL',
+                                style: AppText.body(
+                                    size: 12, color: AppColors.gold),
+                              ),
+                              // Medals / quests completed by this match —
+                              // paid out already, announced here.
+                              for (final note in profile.lastAwardNotes) ...[
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${note.icon} ${note.name}  (+${note.reward})',
+                                  style: AppText.label(
+                                      size: 10, color: AppColors.hitGlow),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -302,6 +320,16 @@ class _ResultScreenState extends State<ResultScreen>
                                   ],
                           ),
                         ),
+                      ),
+                      const SizedBox(height: 26),
+
+                      // ---- Match stats: accuracy, shot heatmap vs the
+                      // revealed fleet, cards spent. Everything here reads
+                      // off the finished match (shot grids, enemy board,
+                      // usedPowerUps) — no server needed.
+                      _revealStep(
+                        interval: const Interval(0.64, 1, curve: Curves.easeOut),
+                        child: _matchStats(controller),
                       ),
                       const SizedBox(height: 26),
 
@@ -519,6 +547,198 @@ class _ResultScreenState extends State<ResultScreen>
         Text(value, style: AppText.heading(size: 20, color: color)),
         const SizedBox(height: 2),
         Text(label, style: AppText.label(size: 9, color: AppColors.navy)),
+      ],
+    );
+  }
+
+  // --------------------------------------------------- MATCH STATS ---
+
+  String _accuracyLabel(double? acc, int shots, int hits) =>
+      acc == null ? '—' : '${(acc * 100).round()}%  ($hits/$shots)';
+
+  /// Accuracy + heatmap + cards used, read straight off the finished
+  /// match. In local pass-and-play both seats get their own accuracy
+  /// and heatmap; everywhere else it's your shots vs their fleet.
+  Widget _matchStats(GameController controller) {
+    final isLocal = controller.mode == GameMode.local;
+    final p1 = GameController.shotStats(controller.myShots);
+    final p2 = GameController.shotStats(controller.p2Shots);
+    final cards = controller.usedPowerUps;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: cartoonBox(AppColors.navy, radius: 16),
+      child: Column(
+        children: [
+          Text('MATCH STATS',
+              style: AppText.label(
+                  size: 10,
+                  color: AppColors.cream.withValues(alpha: 0.75))),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: isLocal
+                ? [
+                    _statCell('P1 ACCURACY',
+                        _accuracyLabel(controller.accuracyP1, p1.shots, p1.hits)),
+                    _statCell('P2 ACCURACY',
+                        _accuracyLabel(controller.accuracyP2, p2.shots, p2.hits)),
+                  ]
+                : [
+                    _statCell(
+                        'YOUR ACCURACY',
+                        _accuracyLabel(
+                            controller.accuracyP1, p1.shots, p1.hits)),
+                    _statCell('SHOTS FIRED', '${p1.shots}'),
+                  ],
+          ),
+          const SizedBox(height: 12),
+          if (isLocal) ...[
+            Text('P1 SHOTS vs P2 FLEET',
+                style: AppText.label(size: 9, color: AppColors.cream)),
+            const SizedBox(height: 6),
+            _shotHeatmap(controller.myShots, controller.boards[1]),
+            const SizedBox(height: 12),
+            Text('P2 SHOTS vs P1 FLEET',
+                style: AppText.label(size: 9, color: AppColors.cream)),
+            const SizedBox(height: 6),
+            _shotHeatmap(controller.p2Shots, controller.boards[0]),
+          ] else ...[
+            Text('YOUR SHOTS vs THEIR FLEET',
+                style: AppText.label(size: 9, color: AppColors.cream)),
+            const SizedBox(height: 6),
+            _shotHeatmap(controller.myShots, controller.boards[1]),
+          ],
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _legendDot(AppColors.hit, 'HIT'),
+              const SizedBox(width: 12),
+              _legendDot(
+                  AppColors.cream.withValues(alpha: 0.55), 'MISS'),
+              const SizedBox(width: 12),
+              _legendBox('SHIP'),
+            ],
+          ),
+          if (controller.isPowerUpBattle || cards.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+                cards.isEmpty ? 'NO CARDS USED' : 'CARDS USED (${cards.length})',
+                style: AppText.label(size: 9, color: AppColors.cream)),
+            if (cards.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (final card in cards)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: AppColors.gold.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: AppColors.gold, width: 1.5),
+                      ),
+                      child: Text(
+                        PowerUps.of(card).name,
+                        style: AppText.label(
+                            size: 10, color: AppColors.cream),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _statCell(String label, String value) {
+    return Column(
+      children: [
+        Text(value, style: AppText.heading(size: 18, color: AppColors.gold)),
+        const SizedBox(height: 2),
+        Text(label, style: AppText.label(size: 9, color: AppColors.cream)),
+      ],
+    );
+  }
+
+  /// 10×10 recap: your marks over their revealed hulls.
+  Widget _shotHeatmap(List<List<int>> shots, Board fleet) {
+    final shipCells = <String>{};
+    for (final s in fleet.ships) {
+      for (final cell in s.cells) {
+        shipCells.add('${cell[0]},${cell[1]}');
+      }
+    }
+    return SizedBox(
+      width: 220,
+      height: 220,
+      child: GridView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: kBoardSize,
+          mainAxisSpacing: 1,
+          crossAxisSpacing: 1,
+        ),
+        itemCount: kBoardSize * kBoardSize,
+        itemBuilder: (context, i) {
+          final r = i ~/ kBoardSize;
+          final c = i % kBoardSize;
+          final v = shots[r][c];
+          final isShip = shipCells.contains('$r,$c');
+          Color bg;
+          BoxBorder? border;
+          if (v == 2) {
+            bg = AppColors.hit;
+          } else if (v == 1) {
+            bg = AppColors.cream.withValues(alpha: 0.35);
+          } else if (isShip) {
+            bg = AppColors.gold.withValues(alpha: 0.25);
+            border = Border.all(color: AppColors.gold, width: 1);
+          } else {
+            bg = AppColors.cream.withValues(alpha: 0.08);
+          }
+          return Container(
+            decoration: BoxDecoration(color: bg, border: border),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _legendDot(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(width: 10, height: 10, color: color),
+        const SizedBox(width: 4),
+        Text(label,
+            style: AppText.label(size: 9, color: AppColors.cream)),
+      ],
+    );
+  }
+
+  Widget _legendBox(String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: AppColors.gold.withValues(alpha: 0.25),
+            border: Border.all(color: AppColors.gold, width: 1),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(label,
+            style: AppText.label(size: 9, color: AppColors.cream)),
       ],
     );
   }
