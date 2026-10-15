@@ -29,6 +29,7 @@ enum DamageStyle {
   barnacleShot, // coral — polyp bumps at the rim, rising bubbles
   flechetteDart, // midnight — one clean puncture, one hairline crack
   scrapSlug, // toxic — ragged sawtooth tear, dripping ooze
+  petalHeart, // blush/rosé — five-petal bloom with a cream heart core
 }
 
 DamageStyle damageStyleForShipSkin(String skinId) => switch (skinId) {
@@ -41,6 +42,7 @@ DamageStyle damageStyleForShipSkin(String skinId) => switch (skinId) {
       'coral' => DamageStyle.barnacleShot,
       'midnight' => DamageStyle.flechetteDart,
       'toxic' => DamageStyle.scrapSlug,
+      'blush' => DamageStyle.petalHeart,
       _ => DamageStyle.apSlug,
     };
 
@@ -69,6 +71,7 @@ DamageStyle damageStyleForCannon(String cannonId) => switch (cannonId) {
       'tesla' => DamageStyle.glacierRound,
       'venom' => DamageStyle.scrapSlug,
       'void' => DamageStyle.flechetteDart,
+      'rose' => DamageStyle.petalHeart,
       _ => DamageStyle.apSlug,
     };
 
@@ -114,6 +117,7 @@ Color damageAccentFor(DamageStyle style) => switch (style) {
       DamageStyle.barnacleShot => const Color(0xFFFF9E7A),
       DamageStyle.flechetteDart => const Color(0xFF8FB6E0),
       DamageStyle.scrapSlug => const Color(0xFFA3E635),
+      DamageStyle.petalHeart => const Color(0xFFF472B6),
     };
 
 

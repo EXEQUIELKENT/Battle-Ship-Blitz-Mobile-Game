@@ -146,6 +146,10 @@ Offset paintLegacyCannon(
   // exactly as it would if it were still part of the markup above.
   if (cannonId == 'phantom') {
     _paintAbyssSlug(canvas, cooldown, recoil);
+  } else if (cannonId == 'rose') {
+    // Reads `cooldown` only, never `recoil` — the bud regrows over the
+    // reload rather than snapping with the shot (see `_paintRoseBud`).
+    _paintRoseBud(canvas, cooldown);
   }
   canvas.restore();
 
@@ -189,6 +193,7 @@ double _tipY(String id) => switch (id) {
       'tesla' => 6.0,
       'venom' => 16.0,
       'void' => 16.0,
+      'rose' => 10.0,
       _ => 12.0,
     };
 
@@ -224,6 +229,7 @@ String _ringMarkup(String id) {
     'tesla' => ('#24404F', '#152933', '#E8F7FF', false),
     'venom' => ('#365314', '#24410A', null, false),
     'void' => ('#111827', '#0F0F1A', null, false),
+    'rose' => ('#7E2F4D', '#4A1628', '#FF9EBB', false),
     _ => ('#64748B', '#5A6B78', null, true),
   };
   final accent = bright ?? _hex(legacyIdentityFor(id).accent);
@@ -258,10 +264,22 @@ String _turretMarkup(String id) => switch (id) {
       'tesla' => _turretTesla,
       'venom' => _turretVenom,
       'void' => _turretVoid,
+      'rose' => _turretRose,
       _ => _turretMk1,
     };
 
 const _turretMk1 = '<path d="M54 66 L50 22 L70 22 L66 66 Z" fill="#64748B" stroke="#1E2A36" stroke-width="3" stroke-linejoin="round"></path><path d="M54 66 H66" stroke="#1E2A36" stroke-width="2"></path><rect x="49" y="36" width="22" height="5" rx="2" fill="#94A3B8" stroke="#1E2A36" stroke-width="1.8"></rect><rect x="50" y="50" width="20" height="4.5" rx="2" fill="#94A3B8" stroke="#1E2A36" stroke-width="1.6"></rect><circle cx="52" cy="32" r="1.8" fill="#1E2A36"></circle><circle cx="68" cy="32" r="1.8" fill="#1E2A36"></circle><circle cx="54" cy="46" r="1.4" fill="#1E2A36"></circle><circle cx="66" cy="46" r="1.4" fill="#1E2A36"></circle><path d="M56 28 L54 52" stroke="white" stroke-width="1.4" opacity="0.20" stroke-linecap="round"></path><rect x="44" y="12" width="32" height="12" rx="3" fill="#94A3B8" stroke="#1E2A36" stroke-width="3"></rect><ellipse cx="60" cy="12" rx="11.5" ry="4" fill="#1E2A36"></ellipse><ellipse cx="60" cy="11" rx="7" ry="2.2" fill="#0E151C"></ellipse><path d="M 49.5 10.5 A7.5 2 0 0 1 60 8.6" stroke="white" stroke-width="1" opacity="0.22" stroke-linecap="round" fill="none"></path>';
+
+// Rosé Cannon — a true cannon in rose dress, so it reads as artillery
+// first and romance second: a tapered rosewood barrel on the mount,
+// three raised blush reinforcing bands, a flared muzzle crown with a
+// petal-cut rim (tip at y=10, hence its own muzzle fraction), a blush
+// medallion on the chase and a cascabel knob on the breech. No other
+// gun pairs a flared crown with ring bands and a knob breech. Its
+// heart-bud round sits visibly in the bore and regrows over the reload
+// (see `_paintRoseBud`) — the same "watch it load" idea as the Abyss
+// Railgun's slug, flower-style.
+const _turretRose = '<path d="M50 66 L53 36 C53 30 50 26 46 22 L44 16 L42 12 L78 12 L76 16 L74 22 C70 26 67 30 67 36 L70 66 Z" fill="#7E2F4D" stroke="#1E2A36" stroke-width="3" stroke-linejoin="round"></path><path d="M50 66 H70" stroke="#1E2A36" stroke-width="2"></path><rect x="49" y="38" width="22" height="5" rx="2" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></rect><rect x="49" y="50" width="22" height="5" rx="2" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></rect><rect x="49" y="59" width="22" height="4" rx="2" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></rect><path d="M55 62 C57 54 57 46 55 38" stroke="#FCE7F3" stroke-width="1.3" fill="none" opacity="0.4" stroke-linecap="round"></path><circle cx="53" cy="46" r="1.5" fill="#1E2A36"></circle><circle cx="67" cy="46" r="1.5" fill="#1E2A36"></circle><rect x="42" y="10" width="36" height="9" rx="2" fill="#F472B6" stroke="#1E2A36" stroke-width="2.6"></rect><ellipse cx="60" cy="10" rx="12" ry="3.5" fill="#1E2A36"></ellipse><ellipse cx="60" cy="9.5" rx="6.5" ry="1.8" fill="#3B1220"></ellipse><circle cx="60" cy="9.5" r="1.1" fill="#FCE7F3"></circle><circle cx="60" cy="46.5" r="4" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="60" cy="46.5" r="1.6" fill="#FCE7F3"></circle><circle cx="46" cy="11" r="2.4" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="53" cy="9.5" r="2.4" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="60" cy="9" r="2.4" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="67" cy="9.5" r="2.4" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="74" cy="11" r="2.4" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.6"></circle><circle cx="60" cy="70" r="4" fill="#F9A8D4" stroke="#1E2A36" stroke-width="1.8"></circle><circle cx="60" cy="70" r="1.5" fill="#FCE7F3"></circle>';
 
 const _turretInferno = '<path d="M52 72 L44 42 L76 42 L68 72 Z" fill="#7C2D12" stroke="#1E2A36" stroke-width="3" stroke-linejoin="round"></path><path d="M44 42 L42 30 L78 30 L76 42 Z" fill="#EF4444" stroke="#1E2A36" stroke-width="3" stroke-linejoin="round"></path><path d="M52 72 H68" stroke="#1E2A36" stroke-width="2"></path><rect x="48" y="54" width="24" height="4" rx="1.5" fill="#FFD54A" stroke="#1E2A36" stroke-width="1.6"></rect><circle cx="51" cy="60" r="1.4" fill="#1E2A36"></circle><circle cx="69" cy="60" r="1.4" fill="#1E2A36"></circle><path d="M44 48 L36 36" stroke="#FFD54A" stroke-width="2.2" stroke-linecap="round"></path><path d="M76 48 L84 36" stroke="#FFD54A" stroke-width="2.2" stroke-linecap="round"></path><path d="M52 38 L48 28" stroke="#FFD54A" stroke-width="1.6" stroke-linecap="round" opacity="0.9"></path><path d="M68 38 L72 28" stroke="#FFD54A" stroke-width="1.6" stroke-linecap="round" opacity="0.9"></path><rect x="40" y="20" width="40" height="12" rx="3" fill="#FFD54A" stroke="#1E2A36" stroke-width="3"></rect><ellipse cx="60" cy="20" rx="14" ry="4" fill="#1E2A36"></ellipse><ellipse cx="60" cy="19" rx="8.5" ry="2.2" fill="#FFD54A"></ellipse><path d="M41 48 L33 55 L41 62 Z" fill="#EF4444" stroke="#1E2A36" stroke-width="1.8" stroke-linejoin="round"></path><path d="M79 48 L87 55 L79 62 Z" fill="#EF4444" stroke="#1E2A36" stroke-width="1.8" stroke-linejoin="round"></path><rect x="41" y="48" width="6" height="14" rx="2" fill="#EF4444" stroke="#1E2A36" stroke-width="1.8"></rect><rect x="73" y="48" width="6" height="14" rx="2" fill="#EF4444" stroke="#1E2A36" stroke-width="1.8"></rect>';
 
@@ -363,6 +381,54 @@ void _paintAbyssSlug(Canvas canvas, double charge, double discharge) {
     _abyssSlugSpark.color =
         const Color(0xFFF1E3FF).withValues(alpha: spark);
     canvas.drawCircle(const Offset(60, 16), 2.5 * spark, _abyssSlugSpark);
+  }
+  canvas.restore();
+}
+
+/// Geometry and paints for [_paintRoseBud], hoisted for the same reason
+/// as the abyss slug's above: the bud repaints on every reload tick.
+final Path _roseBudPath = Path()
+  ..moveTo(-4.6, -0.5)
+  ..cubicTo(-4.6, -3.5, -2.2, -4.5, 0, -2.2)
+  ..cubicTo(2.2, -4.5, 4.6, -3.5, 4.6, -0.5)
+  ..lineTo(0, 4.8)
+  ..close();
+final Paint _roseBudFill = Paint();
+final Paint _roseBudSpark = Paint();
+final Paint _roseBudInk = Paint()
+  ..style = PaintingStyle.stroke
+  ..strokeWidth = 1.6
+  ..strokeJoin = StrokeJoin.round;
+
+/// Rosé Cannon's loaded round: a heart-bud nestled visibly in the bloom,
+/// rising out of it and swelling as the reload runs.
+///
+/// Deliberately cooldown-driven where the abyss slug also reads recoil:
+/// the bloom's whole firing story is already told by its petal flash and
+/// champagne exhaust, so the bud only needs to answer "is there a round
+/// in the flower" — and staying off the recoil keeps every other legacy
+/// gun's contract (nothing but the abyss reacts to the shot) untouched.
+void _paintRoseBud(Canvas canvas, double charge) {
+  final t = charge.clamp(0.0, 1.0);
+  if (t <= 0.01) return;
+  final p = legacyShellPalette('rose');
+  _roseBudFill.color = p.trim.withValues(alpha: t);
+  _roseBudInk.color = const Color(0xFF1E2A36).withValues(alpha: t);
+  canvas.save();
+  canvas.translate(60, 24 - 12 * t);
+  final s = 0.4 + 0.6 * t;
+  canvas.scale(s, s);
+  canvas.drawPath(_roseBudPath, _roseBudFill);
+  canvas.drawPath(_roseBudPath, _roseBudInk);
+  // Cream heart-center, then a sparkle above the bud once it is (almost)
+  // seated — the gun's "loaded" tell.
+  _roseBudSpark.color = p.glow.withValues(alpha: t);
+  canvas.drawCircle(const Offset(0, -1), 1.4, _roseBudSpark);
+  final spark = ((t - 0.8) / 0.2).clamp(0.0, 1.0);
+  if (spark > 0) {
+    _roseBudSpark.color =
+        const Color(0xFFFCE7F3).withValues(alpha: spark);
+    canvas.drawCircle(Offset(0, -6.5), 1.6 * spark, _roseBudSpark);
   }
   canvas.restore();
 }
@@ -548,6 +614,25 @@ void paintLegacyHit(Canvas canvas, Offset center, double cell, String cannonId) 
       canvas.drawCircle(p(20, 20), s(2.1), fill(const Color(0xFFFBCFE8)));
       break;
 
+    case 'rose':
+      // Petal burst: five blush petals round a true cream heart.
+      for (final a in const [270, 342, 54, 126, 198]) {
+        final rad = a * math.pi / 180;
+        canvas.drawCircle(p(20 + 9 * math.cos(rad), 20 + 9 * math.sin(rad)), s(4.6),
+            fill(const Color(0xFFF472B6), opacity: 0.9));
+      }
+      canvas.drawCircle(p(20, 20), s(5), fill(const Color(0xFF7E2F4D)));
+      canvas.drawCircle(p(18.4, 19), s(2.2), fill(const Color(0xFFFCE7F3)));
+      canvas.drawCircle(p(21.6, 19), s(2.2), fill(const Color(0xFFFCE7F3)));
+      canvas.drawPath(
+          (Path()
+            ..moveTo(p(16.8, 19.8).dx, p(16.8, 19.8).dy)
+            ..lineTo(p(23.2, 19.8).dx, p(23.2, 19.8).dy)
+            ..lineTo(p(20, 23.4).dx, p(20, 23.4).dy)
+            ..close()),
+          fill(const Color(0xFFFCE7F3)));
+      break;
+
     case 'mk1':
     default:
       canvas.drawRect(Rect.fromLTWH(p(3, 3).dx, p(3, 3).dy, s(34), s(34)),
@@ -612,6 +697,22 @@ void paintLegacyMiss(Canvas canvas, Offset center, double cell, String cannonId)
       canvas.drawOval(Rect.fromCenter(center: p(20, 20), width: s(17), height: s(8.4)),
           strokeP(const Color(0xFFB78FD6), 1.7, opacity: 0.90));
       canvas.drawCircle(p(20, 20), s(1.9), fill(const Color(0xFFFBCFE8), opacity: 0.95));
+      break;
+    case 'rose':
+      // Champagne fizz: a dashed petal ring with four petals and a
+      // cream heart at the centre — never a plain ring-and-dot.
+      canvas.drawCircle(p(20, 20), s(9),
+          strokeP(const Color(0xFFF9A8D4), 1.4, opacity: 0.90)..strokeCap = StrokeCap.round);
+      for (final o in const [
+        [0.0, -6.5],
+        [6.5, 0.0],
+        [0.0, 6.5],
+        [-6.5, 0.0],
+      ]) {
+        canvas.drawCircle(p(20 + o[0], 20 + o[1]), s(1.8),
+            fill(const Color(0xFFF472B6), opacity: 0.9));
+      }
+      canvas.drawCircle(p(20, 20), s(2.6), fill(const Color(0xFFFCE7F3)));
       break;
     case 'mk1':
     default:

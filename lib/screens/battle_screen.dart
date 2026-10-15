@@ -19,6 +19,7 @@ import '../services/sound_service.dart';
 import '../services/storage_service.dart';
 import '../services/vs_ai_session.dart';
 import '../widgets/app_notification.dart';
+import '../widgets/awesome_cheer.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/cartoon_confirm.dart';
@@ -102,6 +103,17 @@ class _BattleScreenState extends State<BattleScreen>
   final _cannon2Fire = StreamController<void>.broadcast();
   final _cannon1Ready = StreamController<void>.broadcast();
   final _cannon2Ready = StreamController<void>.broadcast();
+
+  /// Sinking cheers: every increment replays the "AWESOME!" celebration
+  /// over the middle of the screen (see `AwesomeCheer`). A notifier
+  /// rather than setState so the impact-sound helper can raise it without
+  /// needing a build context of its own.
+  final _cheer = ValueNotifier<int>(0);
+
+  /// Whose gun the current cheer belongs to — read by the overlay builder
+  /// below. Always written in the same breath as [_cheer], so the two can
+  /// never disagree about which sinking the burst is for.
+  String? _cheerCannon;
 
   /// Whose turn it is, in every mode that HAS turns. The bottom half's
   /// owner is the "P1" side and the top half's owner is the "P2" side —
@@ -444,8 +456,14 @@ class _BattleScreenState extends State<BattleScreen>
       case ShotResult.sunk:
         // The sinking hull's own skin picks the sound — a Blackpowder
         // galleon goes down to splintering timber, a Helios Drift
-        // catamaran to an energy implosion (see `SoundService.sunk`).
+        // catamaran to an energy implosion (see `SoundService.sunk`) —
+        // and every sinking gets the "awesome!" voice cheer plus the
+        // center-screen celebration on top — in the shooter's own
+        // colours, so each cannon celebrates its own way.
         SoundService.instance.sunk(shipSkinId: targetSkin?.id);
+        SoundService.instance.voiceAwesome();
+        _cheerCannon = shooterSkin?.id;
+        _cheer.value++;
         break;
       case ShotResult.hit:
         SoundService.instance.hit(
@@ -979,6 +997,13 @@ class _BattleScreenState extends State<BattleScreen>
   void _goToResult() {
     if (_navigatedToResult) return;
     _navigatedToResult = true;
+    // Snapshot both halves' real gear first: the recap on the other side
+    // replays this match in the fleets, guns and decks it was fought
+    // with (see `GameController.resultLoadouts` for why the result
+    // screen cannot re-derive two of the three sources itself).
+    final controller = context.read<GameController>();
+    controller.resultLoadouts = [_loadoutFor(true), _loadoutFor(false)];
+    controller.resultRedSides = [_fleetIsRed(true), _fleetIsRed(false)];
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (_) => const ResultScreen()),
     );
@@ -2192,6 +2217,7 @@ class _BattleScreenState extends State<BattleScreen>
 
   @override
   void dispose() {
+    _cheer.dispose();
     _cannon1Fire.close();
     _cannon2Fire.close();
     _cannon1Ready.close();
@@ -2399,6 +2425,21 @@ class _BattleScreenState extends State<BattleScreen>
           },
         ),
       ),
+          // Sinking cheer: the "AWESOME!" celebration over the middle of
+          // the screen whenever a ship goes down (see `AwesomeCheer`).
+          // Pinned above everything (including the game-over bar), never
+          // intercepting taps.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Center(
+                child: ValueListenableBuilder<int>(
+                  valueListenable: _cheer,
+                  builder: (context, cheerId, _) => AwesomeCheer(
+                      cheerId: cheerId, cannonId: _cheerCannon),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
       ),

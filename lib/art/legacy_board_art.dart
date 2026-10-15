@@ -35,6 +35,7 @@ String _boardMarkup(String id) => switch (id) {
       'tesla' => _boardTesla,
       'venom' => _boardVenom,
       'void' => _boardVoid,
+      'rose' => _boardRose,
       _ => _boardMk1,
     };
 
@@ -148,3 +149,19 @@ const _boardVoid = '<rect width="400" height="400" fill="#070A14"></rect>'
     '<circle cx="88" cy="140" r="1" fill="#FBCFE8" opacity="0.4"></circle>'
     '<circle cx="212" cy="118" r="1.6" fill="#FBCFE8" opacity="0.5"></circle>'
     '<circle cx="372" cy="318" r="1.5" fill="#FBCFE8" opacity="0.44"></circle>';
+
+const _boardRose = '<rect width="400" height="400" fill="#3A1524"></rect>'
+    '<path d="$_grid40" stroke="#8E4A63" stroke-width="2" opacity="0.5" fill="none"></path>'
+    '<path d="M0,200 C60,180 120,220 200,200 C280,180 340,220 400,200" stroke="#F9A8D4" stroke-width="2" opacity="0.16" fill="none" stroke-linecap="round"></path>'
+    '<path d="M0,120 C80,100 160,140 240,120 C300,106 350,130 400,118" stroke="#F9A8D4" stroke-width="1.6" opacity="0.12" fill="none" stroke-linecap="round"></path>'
+    '<circle cx="70" cy="90" r="5" fill="#F472B6" opacity="0.28"></circle>'
+    '<circle cx="70" cy="90" r="2" fill="#FCE7F3" opacity="0.5"></circle>'
+    '<circle cx="330" cy="70" r="4" fill="#F472B6" opacity="0.25"></circle>'
+    '<circle cx="150" cy="250" r="5.5" fill="#F472B6" opacity="0.22"></circle>'
+    '<circle cx="290" cy="300" r="4.5" fill="#F472B6" opacity="0.26"></circle>'
+    '<circle cx="60" cy="330" r="3.5" fill="#F9A8D4" opacity="0.3"></circle>'
+    '<circle cx="230" cy="150" r="3" fill="#F9A8D4" opacity="0.3"></circle>'
+    '<circle cx="350" cy="210" r="2.4" fill="#F9A8D4" opacity="0.3"></circle>'
+    '<circle cx="120" cy="180" r="2" fill="#F9A8D4" opacity="0.3"></circle>'
+    '<path d="M40,40 m-6,0 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" fill="none" stroke="#F472B6" stroke-width="1.6" opacity="0.4"></path>'
+    '<path d="M360,360 m-6,0 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" fill="none" stroke="#F472B6" stroke-width="1.6" opacity="0.4"></path>';

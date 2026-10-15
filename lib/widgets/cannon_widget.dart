@@ -718,6 +718,36 @@ class CannonPainter extends CustomPainter {
         rays(6, math.pi / 3, r * 1.0, p.trim, 2.2, alpha: 0.75, skip: 2.1);
         break;
 
+      // Rosé champagne pop: a cream heart bursting through five
+      // blush petals, ringed by fizz — the only flash here that is a
+      // flower rather than a fireball, orb or star.
+      case 'rose':
+        disc(r * 0.9, p.trim, fade * 0.85);
+        for (var i = 0; i < 5; i++) {
+          final a = -math.pi / 2 + i * 2 * math.pi / 5;
+          final petalC = c + Offset(math.cos(a), math.sin(a)) * r * 0.85 * recoil;
+          canvas.drawCircle(
+            petalC,
+            r * 0.34 * (1 - recoil * 0.25),
+            Paint()..color = p.trim.withValues(alpha: fade * 0.9),
+          );
+          canvas.drawCircle(
+            petalC,
+            r * 0.14 * (1 - recoil * 0.25),
+            Paint()..color = p.glow.withValues(alpha: fade * 0.9),
+          );
+        }
+        canvas.drawCircle(
+          c,
+          r * (0.5 + 0.7 * recoil),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = r * 0.14
+            ..color = p.glow.withValues(alpha: fade * 0.8),
+        );
+        disc(r * 0.32, p.glow, fade);
+        break;
+
       // MK-I and anything unrecognised: the plain powder flash the gun
       // has always had, just in its own palette rather than a fixed gold.
       case 'mk1':
@@ -945,6 +975,46 @@ class CannonPainter extends CustomPainter {
               ..color = p.glow.withValues(alpha: (1 - t) * 0.85),
           );
         }
+        break;
+
+      // Champagne fizz: tumbling blush petals riding a rising
+      // champagne fizz, finished by one thin fizz ring — no grey
+      // powder cloud at all, unlike the MK-I fallback this used to hit.
+      case 'rose':
+        for (final puff in smokePuffs) {
+          final t = lifeOf(puff);
+          if (t <= 0) continue;
+          final petalC = mouth +
+              Offset(puff.dx * outerR * 0.8 * t, -puff.rise * outerR * 1.1 * t);
+          canvas.drawCircle(
+            petalC,
+            outerR * 0.09 * (1 - t * 0.5) * puff.sizeMul,
+            Paint()..color = p.trim.withValues(alpha: (1 - t) * 0.85),
+          );
+          canvas.drawCircle(
+            petalC + Offset(-outerR * 0.03, -outerR * 0.03),
+            outerR * 0.035 * (1 - t) * puff.sizeMul,
+            Paint()..color = p.glow.withValues(alpha: (1 - t) * 0.9),
+          );
+          canvas.drawCircle(
+            mouth +
+                Offset(
+                    -puff.dx * outerR * 0.4 * t, -puff.rise * outerR * 1.6 * t),
+            outerR * 0.045 * (1 - t) * puff.sizeMul,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = outerR * 0.018
+              ..color = p.glow.withValues(alpha: (1 - t) * 0.8),
+          );
+        }
+        canvas.drawCircle(
+          mouth + Offset(0, -outerR * 0.35 * smoke),
+          outerR * (0.12 + 0.4 * smoke),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = outerR * 0.03 * (1 - smoke)
+            ..color = p.glow.withValues(alpha: (1 - smoke) * 0.55),
+        );
         break;
 
       default:

@@ -31,6 +31,7 @@ enum WreckMotion {
   freezeIn,
   sag,
   collapseIn,
+  blossom,
 }
 
 const Map<String, WreckMotion> _byShipSkin = {
@@ -44,6 +45,7 @@ const Map<String, WreckMotion> _byShipSkin = {
   'coral': WreckMotion.drift,
   'midnight': WreckMotion.wipe,
   'toxic': WreckMotion.bubbleUp,
+  'blush': WreckMotion.blossom,
   // ---- Family fleets ----
   'f_pirate': WreckMotion.splinter,
   'f_naval': WreckMotion.capsize,
@@ -75,6 +77,7 @@ Duration wreckRevealDuration(WreckMotion m) => switch (m) {
       WreckMotion.freezeIn => const Duration(milliseconds: 760),
       WreckMotion.sag => const Duration(milliseconds: 680),
       WreckMotion.collapseIn => const Duration(milliseconds: 460),
+      WreckMotion.blossom => const Duration(milliseconds: 600),
     };
 
 /// One frame of a wreck animation. Composed into a single [Matrix4] by
@@ -281,6 +284,20 @@ WreckFrame wreckRevealFrame(WreckMotion m, double t, double span) {
         scaleY: 1.45 - 0.45 * e,
         opacity: ((t / 0.35).clamp(0.0, 1.0) * strobe).clamp(0.0, 1.0),
       );
+
+    case WreckMotion.blossom:
+      // Rosé fleet: blooms open rather than crashing — a soft overshoot
+      // past full size, a light pirouette and a petal-float upward that
+      // settles back exactly onto the cell.
+      final e = Curves.easeOutBack.transform(t);
+      final float = Curves.easeOutSine.transform(t);
+      return WreckFrame(
+        scaleX: 0.78 + 0.22 * e,
+        scaleY: 0.78 + 0.22 * e,
+        rotation: 0.16 * (1 - float) * cos(t * 3.0),
+        dy: -span * 0.28 * (1 - float),
+        opacity: Curves.easeOut.transform((t / 0.5).clamp(0.0, 1.0)),
+      );
   }
 }
 
@@ -309,6 +326,7 @@ WreckFrame wreckSinkFrame(WreckMotion m, double t, double span) {
     WreckMotion.freezeIn => (0.0, 0.0, 0.0),
     WreckMotion.sag => (0.0, 0.30, 0.0),
     WreckMotion.collapseIn => (0.0, 0.0, 0.0),
+    WreckMotion.blossom => (0.30, -0.08, 2.0),
   };
   final wob = wobble == 0 ? 0.0 : sin(t * wobble * 2 * pi) * (1 - t) * 0.06;
   // Phase and collapse dissolve rather than sink, so they barely move.

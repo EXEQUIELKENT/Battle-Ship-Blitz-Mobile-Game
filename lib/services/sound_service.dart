@@ -141,6 +141,10 @@ class SoundService {
     'cannon_ready': 'sfx/cannon_ready.wav',
     'count_beep': 'sfx/count_beep.wav',
     'count_go': 'sfx/count_go.wav',
+    // "Awesome!" voice line for a destroyed ship (see `voiceAwesome`) —
+    // a provided recording, not synthesized, so it deliberately has no
+    // generator in `tool/gen_sounds.dart`.
+    'voice_awesome': 'sfx/voice_awesome.mp3',
     // Cannon Fire variants:
     'cannon_fire_mk1': 'sfx/cannon_fire_mk1.wav',
     'cannon_fire_inferno': 'sfx/cannon_fire_inferno.wav',
@@ -151,6 +155,7 @@ class SoundService {
     'cannon_fire_kraken': 'sfx/cannon_fire_kraken.wav',
     'cannon_fire_sunfire': 'sfx/cannon_fire_sunfire.wav',
     'cannon_fire_void': 'sfx/cannon_fire_void.wav',
+    'cannon_fire_rose': 'sfx/cannon_fire_rose.wav',
     'cannon_fire_pirate': 'sfx/cannon_fire_pirate.wav',
     'cannon_fire_f_pirate': 'sfx/cannon_fire_f_pirate.wav',
     'cannon_fire_naval': 'sfx/cannon_fire_naval.wav',
@@ -173,6 +178,7 @@ class SoundService {
     'cannon_ready_kraken': 'sfx/cannon_ready_kraken.wav',
     'cannon_ready_sunfire': 'sfx/cannon_ready_sunfire.wav',
     'cannon_ready_void': 'sfx/cannon_ready_void.wav',
+    'cannon_ready_rose': 'sfx/cannon_ready_rose.wav',
     'cannon_ready_pirate': 'sfx/cannon_ready_pirate.wav',
     'cannon_ready_f_pirate': 'sfx/cannon_ready_f_pirate.wav',
     'cannon_ready_naval': 'sfx/cannon_ready_naval.wav',
@@ -195,6 +201,7 @@ class SoundService {
     'hit_kraken': 'sfx/hit_kraken.wav',
     'hit_sunfire': 'sfx/hit_sunfire.wav',
     'hit_void': 'sfx/hit_void.wav',
+    'hit_rose': 'sfx/hit_rose.wav',
     'hit_pirate': 'sfx/hit_pirate.wav',
     'hit_f_pirate': 'sfx/hit_f_pirate.wav',
     'hit_naval': 'sfx/hit_naval.wav',
@@ -232,6 +239,7 @@ class SoundService {
     'miss_phantom': 'sfx/miss_phantom.wav',
     'miss_sunfire': 'sfx/miss_sunfire.wav',
     'miss_void': 'sfx/miss_void.wav',
+    'miss_rose': 'sfx/miss_rose.wav',
     // Turn Pass variants:
     // One per legacy battlefield. Before these, the only non-family
     // handoff cues belonged to the four flat themes that were deleted when
@@ -246,6 +254,7 @@ class SoundService {
     'turn_pass_kraken': 'sfx/turn_pass_kraken.wav',
     'turn_pass_sunfire': 'sfx/turn_pass_sunfire.wav',
     'turn_pass_void': 'sfx/turn_pass_void.wav',
+    'turn_pass_rose': 'sfx/turn_pass_rose.wav',
     'turn_pass_classic': 'sfx/turn_pass_classic.wav',
     'turn_pass_arctic': 'sfx/turn_pass_arctic.wav',
     'turn_pass_f_arctic': 'sfx/turn_pass_f_arctic.wav',
@@ -273,6 +282,7 @@ class SoundService {
     'sunk_coral': 'sfx/sunk_coral.wav',
     'sunk_midnight': 'sfx/sunk_midnight.wav',
     'sunk_toxic': 'sfx/sunk_toxic.wav',
+    'sunk_blush': 'sfx/sunk_blush.wav',
     'sunk_f_pirate': 'sfx/sunk_f_pirate.wav',
     'sunk_f_naval': 'sfx/sunk_f_naval.wav',
     'sunk_f_arctic': 'sfx/sunk_f_arctic.wav',
@@ -290,6 +300,7 @@ class SoundService {
     'place_coral': 'sfx/place_coral.wav',
     'place_midnight': 'sfx/place_midnight.wav',
     'place_toxic': 'sfx/place_toxic.wav',
+    'place_blush': 'sfx/place_blush.wav',
     'place_f_pirate': 'sfx/place_f_pirate.wav',
     'place_f_naval': 'sfx/place_f_naval.wav',
     'place_f_arctic': 'sfx/place_f_arctic.wav',
@@ -309,6 +320,7 @@ class SoundService {
     'move_coral': 'sfx/move_coral.wav',
     'move_midnight': 'sfx/move_midnight.wav',
     'move_toxic': 'sfx/move_toxic.wav',
+    'move_blush': 'sfx/move_blush.wav',
     'move_f_pirate': 'sfx/move_f_pirate.wav',
     'move_f_naval': 'sfx/move_f_naval.wav',
     'move_f_arctic': 'sfx/move_f_arctic.wav',
@@ -333,6 +345,7 @@ class SoundService {
     'cannon_ready',
     'count_beep',
     'count_go',
+    'voice_awesome',
   ];
 
   /// How many players an effect keeps, i.e. how many copies of it can
@@ -379,6 +392,7 @@ class SoundService {
     'cannon_ready': 300,
     'count_beep': 130,
     'count_go': 300,
+    'voice_awesome': 800,
     // No shared `move.wav` plays on its own, but every `move_<skin>` needs
     // this to resolve a window through [_baseEffectOf].
     'move': 150,
@@ -1078,6 +1092,14 @@ class SoundService {
     }
     _play('sunk');
   }
+
+  /// A robot-voice cheer ("awesome!") for a destroyed ship. Played
+  /// alongside [sunk] wherever real gameplay sinks a hull — the battle
+  /// screen and the daily puzzle — never for previews (shipyard, guide),
+  /// which sink no one. Sound-only on purpose: [sunk] already thumps
+  /// the haptic, and two heavies on one sinking would feel like one
+  /// muddy buzz.
+  void voiceAwesome() => _play('voice_awesome');
 
   void victory() {
     HapticFeedback.heavyImpact();

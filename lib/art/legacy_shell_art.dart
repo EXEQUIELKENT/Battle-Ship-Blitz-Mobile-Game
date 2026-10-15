@@ -94,6 +94,15 @@ const Map<String, ShellPalette> _legacyShellPalettes = {
     glow: Color(0xFFFBCFE8),
     inkW: 2.5,
   ),
+  // Rosé Cannon — petal shell in the gun's own pinks, feeding the
+  // muzzle exhaust too like every other palette here.
+  'rose': ShellPalette(
+    hull: Color(0xFF7E2F4D),
+    trim: Color(0xFFF472B6),
+    ink: Color(0xFF3B1220),
+    glow: Color(0xFFFCE7F3),
+    inkW: 3,
+  ),
 };
 
 /// The palette a given original cannon's shell (and, per
@@ -146,6 +155,9 @@ void paintLegacyShell(Canvas canvas, Size size, String cannonId) {
       break;
     case 'void':
       _voidOrb(c, p);
+      break;
+    case 'rose':
+      _roseBloom(c, p);
       break;
     case 'mk1':
     default:
@@ -320,4 +332,33 @@ void _voidOrb(FamilyCanvas c, ShellPalette p) {
   c.circle(14, 40, 2, fillColor: p.glow, fillOpacity: 0.8);
   c.circle(108, 88, 2, fillColor: p.glow, fillOpacity: 0.7);
   c.circle(60, 12, 2.2, fillColor: p.glow, fillOpacity: 0.6);
+}
+
+// Rosé Cannon — a champagne rose-bloom, the one shell here that is a
+// flower rather than an orb: five outer petals and five inner petals
+// opening around a rosewood bud with a cream heart, trailing champagne
+// fizz. Deliberately NOT the coilgun's plasma orb (which this used to
+// share) — same box, same weight, entirely different silhouette.
+void _roseBloom(FamilyCanvas c, ShellPalette p) {
+  for (var i = 0; i < 5; i++) {
+    c.rotated(i * 72.0, 60, 64, () {
+      c.ellipse(60, 30, 15, 22,
+          fillColor: p.trim, inkColor: p.ink, inkWidth: 2.4);
+      c.ellipse(60, 34, 7, 12, fillColor: p.glow, fillOpacity: 0.55);
+    });
+  }
+  for (var i = 0; i < 5; i++) {
+    c.rotated(i * 72.0 + 36, 60, 64, () {
+      c.ellipse(60, 42, 10, 14,
+          fillColor: p.glow, inkColor: p.ink, inkWidth: 1.6, inkOpacity: 0.5);
+    });
+  }
+  c.circle(60, 64, 22, fillColor: p.hull, inkColor: p.ink, inkWidth: p.inkW);
+  c.circle(60, 64, 13, fillColor: p.trim, fillOpacity: 0.9);
+  c.shape('M60,70 C52,64 48,58 52,53 C54,56 57,56 60,53 C63,56 66,56 68,53 C72,58 68,64 60,70 Z',
+      fillColor: p.glow, inkColor: p.ink, inkWidth: 1.6);
+  c.circle(54, 58, 2.2, fillColor: Colors.white, fillOpacity: 0.85);
+  c.circle(30, 100, 3.2, fillColor: p.glow, fillOpacity: 0.8);
+  c.circle(90, 106, 2.4, fillColor: p.glow, fillOpacity: 0.65);
+  c.circle(60, 118, 2.8, fillColor: p.trim, fillOpacity: 0.6);
 }

@@ -451,6 +451,27 @@ void _paintReticle(Canvas canvas, Size size, String id) {
       ring(24, const Color(0xFF3A3438), 0.8, opacity: 0.4);
       break;
 
+    // ============================================================== rose ===
+    case 'rose':
+      // Champagne-petal reticle: five petals on a dashed rose ring
+      // around a cream heart — the only crosshair with no straight
+      // cross lines at all.
+      ring(23, const Color(0xFF7E2F4D), 1.1, opacity: 0.9, dash: const [5, 5]);
+      for (var i = 0; i < 5; i++) {
+        final rad = (-90 + i * 72) * math.pi / 180;
+        final px = 50 + 15 * math.cos(rad);
+        final py = 50 + 15 * math.sin(rad);
+        canvas.drawCircle(p(px, py), s(3.2),
+            fill(const Color(0xFFF472B6), opacity: 0.9));
+        canvas.drawCircle(p(px, py), s(1.4), fill(const Color(0xFFFCE7F3)));
+      }
+      canvas.drawCircle(p(47.8, 48.5), s(2.4), fill(const Color(0xFFFCE7F3)));
+      canvas.drawCircle(p(52.2, 48.5), s(2.4), fill(const Color(0xFFFCE7F3)));
+      poly([p(45.8, 49.5), p(54.2, 49.5), p(50, 54.5)],
+          fill(const Color(0xFFFCE7F3)));
+      ring(6.5, const Color(0xFFF472B6), 0.9, opacity: 0.5);
+      break;
+
     default:
       _paintReticle(canvas, size, 'mk1');
   }

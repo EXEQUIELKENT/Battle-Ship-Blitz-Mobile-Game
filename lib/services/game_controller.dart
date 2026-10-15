@@ -1077,6 +1077,22 @@ class GameController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Both halves' real gear — hull, gun and battlefield — snapshotted by
+  /// the battle screen the moment a match ends (see `_goToResult`), so the
+  /// result screen's recap replays the match in the fleets, cannons and
+  /// decks it was actually fought with. Read here rather than re-derived
+  /// because two of the sources live nowhere the result screen could
+  /// reach: the vs-AI opponent's rolled look (cached in battle state) and
+  /// the LAN peer's handshake gear (held by the network layer). Index 0 is
+  /// the P1 half, index 1 the P2 half, mirroring [boards].
+  List<Loadout> resultLoadouts = const [Loadout(), Loadout()];
+
+  /// Which side each recap half sailed on — index-matched with
+  /// [resultLoadouts]. Resolved through the same red/blue rule as the
+  /// battle itself, so an unequipped starter hull recaps in its plain
+  /// side colours exactly as it sailed.
+  List<bool> resultRedSides = const [true, false];
+
   AIDifficulty difficulty = AIDifficulty.normal;
   BattlePhase phase = BattlePhase.idle;
   final List<Board> boards = [Board(), Board()];

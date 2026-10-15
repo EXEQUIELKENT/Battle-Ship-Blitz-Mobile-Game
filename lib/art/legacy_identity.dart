@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'fleet_family.dart';
 
-/// The nine legacy identities' own short name + accent colour, ported
+/// The ten legacy identities' own short name + accent colour, ported
 /// verbatim from `uploads/New Design/Adjustments/*.dart` (a naming/colour
 /// manifest, not new geometry — every file there is a `skin`/`accent`
 /// stub with the actual shape left to whatever already draws that piece).
@@ -40,6 +40,7 @@ const List<LegacyIdentity> legacyIdentities = [
   LegacyIdentity('sunfire', 'coral', 'Coral', Color(0xFFE0715A)),
   LegacyIdentity('void', 'midnight', 'Midnight', Color(0xFF4B72A8)),
   LegacyIdentity('venom', 'toxic', 'Toxic', Color(0xFFA3E635)),
+  LegacyIdentity('rose', 'blush', 'Rose', Color(0xFFF472B6)),
 ];
 
 LegacyIdentity legacyIdentityFor(String cannonId) => legacyIdentities.firstWhere(

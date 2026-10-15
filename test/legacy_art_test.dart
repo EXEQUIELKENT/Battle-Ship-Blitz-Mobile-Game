@@ -19,12 +19,12 @@ import 'package:flutter_test/flutter_test.dart';
 
 const _legacyShipIds = [
   'steel', 'crimson', 'emerald', 'gold', 'abyss',
-  'arctic', 'coral', 'midnight', 'toxic',
+  'arctic', 'coral', 'midnight', 'toxic', 'blush',
 ];
 
 const _legacyCannonIds = [
   'mk1', 'inferno', 'kraken', 'phantom', 'royal',
-  'sunfire', 'tesla', 'venom', 'void',
+  'sunfire', 'tesla', 'venom', 'void', 'rose',
 ];
 
 const _familyCrosshairIds = [
@@ -416,11 +416,12 @@ void main() {
       }
     });
 
-    test('only jitter and sway carry a lateral shake', () {
+    test('only jitter, sway and flutter carry a lateral shake', () {
       for (final character in RecoilCharacter.values) {
         final midLateral = shapeRecoil(character, 0.5).lateral;
-        final isShake =
-            character == RecoilCharacter.jitter || character == RecoilCharacter.sway;
+        final isShake = character == RecoilCharacter.jitter ||
+            character == RecoilCharacter.sway ||
+            character == RecoilCharacter.flutter;
         expect(midLateral != 0, isShake, reason: '$character');
       }
     });
@@ -565,8 +566,8 @@ void main() {
   });
 
   group('legacy sets', () {
-    test('nine legacy sets, each lining up with a real catalogue entry', () {
-      expect(Catalog.legacySets, hasLength(9));
+    test('ten legacy sets, each lining up with a real catalogue entry', () {
+      expect(Catalog.legacySets, hasLength(10));
       for (final set in Catalog.legacySets) {
         expect(Catalog.shipSkins.map((s) => s.id), contains(set.shipSkinId));
         expect(Catalog.cannonSkins.map((c) => c.id), contains(set.id));

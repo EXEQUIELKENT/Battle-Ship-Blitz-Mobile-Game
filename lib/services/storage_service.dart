@@ -129,6 +129,7 @@ class Catalog {
     ShipSkin('coral', 'Coral Raiders', Color(0xFF9F3B46), Color(0xFFFF9A8B), 850),
     ShipSkin('midnight', 'Midnight Ops', Color(0xFF0F172A), Color(0xFF38BDF8), 1100),
     ShipSkin('toxic', 'Toxic Wreckers', Color(0xFF365314), Color(0xFFA3E635), 1250),
+    ShipSkin('blush', 'Blush Fleet', Color(0xFFA34A68), Color(0xFFF9A8D4), 1400),
     // ---- Thematic families: five bespoke hull classes each ----
     // Priced ABOVE every legacy hull (top out at Toxic Wreckers, 1250):
     // five distinct hull classes and a real board to match are worth
@@ -176,6 +177,7 @@ class Catalog {
     // renaming it (see `legacyIdentities`, which pairs it with `coral`).
     CannonSkin('sunfire', 'Coral Battery', Color(0xFFC1543F), Color(0xFFFF9E7A), 'High-energy coral shell launcher.', 0.90, 1400),
     CannonSkin('void', 'Void Annihilator', Color(0xFF111827), Color(0xFFEC4899), 'Dark-matter launcher. 10% faster reload!', 0.90, 1800),
+    CannonSkin('rose', 'Rosé Cannon', Color(0xFF7E2F4D), Color(0xFFF9A8D4), 'Petal-shell launcher with a champagne kick. 10% faster reload!', 0.90, 1900),
     // ---- Thematic families: each gun ships with its own shell ----
     // Priced ABOVE every legacy cannon (top out at Void Annihilator,
     // 1800): a gun with its own silhouette, shell AND muzzle geometry is
@@ -245,6 +247,10 @@ class Catalog {
         'Dark-matter water warped around a hollow gravity well.',
         Color(0xFF1C2A44), Color(0xFFFBCFE8), Color(0xFF070A14),
         Color(0xFF1C2A44), Color(0xFFFBCFE8), Color(0xFF4B72A8), 1600, legacy: true),
+    GameplayTheme('rose', 'Rosé Waters',
+        'Blush-pink shallows strewn with drifting petals.',
+        Color(0xFF6B2D4D), Color(0xFFF9A8D4), Color(0xFF3A1524),
+        Color(0xFF8E4A63), Color(0xFFFCE7F3), Color(0xFFF472B6), 1650, legacy: true),
     // ---- Thematic families: a whole battlefield, not a palette ----
     // Priced ABOVE every legacy battlefield (top out at Event Horizon,
     // 1600): a family board replaces the tiles, gridlines AND hit/miss

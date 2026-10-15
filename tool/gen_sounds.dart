@@ -237,6 +237,14 @@ void main() {
               fmTone(0.12, (t) => 300 + 260 * k + 500 * t, 60, 1.2, volume: 0.22, decay: 14));
         }
       });
+  writeSunkVariant('blush',
+      fund: 200, noiseCut: 0.38, chime: [1046, 1568], chimeVol: 0.22, extra: (o) {
+        // Champagne fizz — five rising fizz blips as the petals go under.
+        for (var k = 0; k < 5; k++) {
+          add(o, ((0.08 + k * 0.08) * sr).toInt(),
+              tone(0.09, (t) => 900 + k * 160 + 500 * t, volume: 0.14, decay: 26));
+        }
+      });
 
   // The six families — each fleet's own hull art gets its own demise.
   writeSunkVariant('f_pirate',
@@ -361,6 +369,8 @@ void main() {
   writeMoveVariant('midnight', f: 300, vol: 0.22);
   writePlaceVariant('toxic', f: 350, watery: true); // goo squelch
   writeMoveVariant('toxic', f: 380, slideCut: 0.4);
+  writePlaceVariant('blush', f: 760, harm: [0.5, 0.3], watery: true); // crystal petal on water
+  writeMoveVariant('blush', f: 840, slideCut: 0.6);
   // The six families — each hull lands in its own material.
   writePlaceVariant('f_pirate', f: 300, harm: [0.55, 0.4]); // timber
   writeMoveVariant('f_pirate', f: 330, slideCut: 0.45);
@@ -470,6 +480,15 @@ void main() {
   add(fireVoid, (0.14 * sr).toInt(),
       fmTone(0.48, (t) => 160 - 90 * t, 45, 6.0, volume: 0.45, decay: 5));
   writeWav('assets/sfx/cannon_fire_void.wav', fireVoid);
+
+  // ---- CANNON FIRE: ROSE (Champagne-cork pop with petal rustle & fizz) ----
+  final fireRose = buf(0.72);
+  add(fireRose, 0, tone(0.09, (t) => 1200 - 900 * t, volume: 0.60, decay: 32)); // cork pop
+  add(fireRose, 0, noise(0.14, volume: 0.40, decay: 22, cutoff: 0.65)); // petal rustle
+  add(fireRose, 0, tone(0.40, (t) => 210 - 120 * t, volume: 0.45, decay: 7));
+  add(fireRose, (0.05 * sr).toInt(),
+      sweep(0.55, (t) => 0.85 - 0.45 * t, volume: 0.30, decay: 7)); // champagne fizz
+  writeWav('assets/sfx/cannon_fire_rose.wav', fireRose);
 
   // ---- CANNON FIRE: PIRATE (Blackpowder broadside & creaking carriage) ----
   final firePirate = buf(0.82);
@@ -610,6 +629,15 @@ void main() {
       fmTone(0.22, (t) => 220, 30, 4.0, volume: 0.32, decay: 8));
   writeWav('assets/sfx/cannon_ready_void.wav', readyVoid);
 
+  // ---- CANNON READY: ROSE (Champagne cork seat & crystal toast chime) ----
+  final readyRose = buf(0.36);
+  add(readyRose, 0, tone(0.06, (t) => 900 - 500 * t, volume: 0.42, decay: 38)); // cork seat
+  add(readyRose, (0.05 * sr).toInt(),
+      harmonicTone(0.24, 1318, [0.35, 0.2], volume: 0.36, decay: 10)); // crystal chime
+  add(readyRose, (0.06 * sr).toInt(),
+      sweep(0.22, (t) => 0.85 - 0.4 * t, volume: 0.22, decay: 12)); // fizz
+  writeWav('assets/sfx/cannon_ready_rose.wav', readyRose);
+
   // ---- CANNON READY: PIRATE (Wooden carriage brake & rammer thud) ----
   final readyPirate = buf(0.34);
   add(readyPirate, 0, tone(0.08, (t) => 130 - 50 * t, volume: 0.45, decay: 20));
@@ -734,6 +762,14 @@ void main() {
   add(hitVoid, (0.08 * sr).toInt(),
       fmTone(0.32, (t) => 180 - 90 * t, 40, 5.0, volume: 0.40, decay: 8));
   writeWav('assets/sfx/hit_void.wav', hitVoid);
+
+  // ---- HIT: ROSE (Petal-burst slap & crystal heart chime) ----
+  final hitRose = buf(0.46);
+  add(hitRose, 0, noise(0.12, volume: 0.50, decay: 24, cutoff: 0.6)); // petal slap
+  add(hitRose, 0, tone(0.18, (t) => 300 - 140 * t, volume: 0.44, decay: 14));
+  add(hitRose, (0.03 * sr).toInt(),
+      harmonicTone(0.34, 1046, [0.35, 0.22, 0.12], volume: 0.34, decay: 8)); // heart chime
+  writeWav('assets/sfx/hit_rose.wav', hitRose);
 
   // ---- HIT: PIRATE (Wooden timber splintering crunch) ----
   final hitPirate = buf(0.48);
@@ -976,6 +1012,18 @@ void main() {
       sweep(0.60, (t) => 0.36 - 0.30 * t, volume: 0.22, decay: 4));
   writeWav('assets/sfx/miss_void.wav', missVoid);
 
+  // Rosé Waters — blush-pink shallows. A soft petal-soft splash with
+  // champagne fizz rising through it, never plain foam.
+  final missRose = buf(0.66);
+  add(missRose, 0, tone(0.16, (t) => 640 - 360 * t, volume: 0.38, decay: 13));
+  add(missRose, (0.03 * sr).toInt(),
+      sweep(0.45, (t) => 0.62 - 0.28 * t, volume: 0.28, decay: 7));
+  for (var k = 0; k < 4; k++) {
+    add(missRose, ((0.10 + k * 0.09) * sr).toInt(),
+        tone(0.08, (t) => 980 + k * 140 + 420 * t, volume: 0.13, decay: 28));
+  }
+  writeWav('assets/sfx/miss_rose.wav', missRose);
+
   // =========================================================================
   // 5. TURN PASS / YOUR TURN SOUNDS (Decks & Thematic Families)
   // =========================================================================
@@ -1150,6 +1198,23 @@ void main() {
   add(passVoid, (0.06 * sr).toInt(),
       sweep(0.55, (t) => 0.34 - 0.28 * t, volume: 0.20, decay: 4));
   writeWav('assets/sfx/turn_pass_void.wav', passVoid);
+
+  // Rosé Waters — a champagne toast: a bright major-third crystal chime
+  // with a breath of fizz, in the same voice as that board's miss.
+  final passRose = buf(0.68);
+  const rNotes = [1046.50, 1318.51]; // C6, E6
+  for (var k = 0; k < rNotes.length; k++) {
+    final at = (k * 0.15 * sr).toInt();
+    add(passRose, at,
+        harmonicTone(0.44, rNotes[k], [0.38, 0.24, 0.12], volume: 0.36, decay: 6));
+  }
+  add(passRose, (0.05 * sr).toInt(),
+      sweep(0.40, (t) => 0.85 - 0.4 * t, volume: 0.16, decay: 9));
+  writeWav('assets/sfx/turn_pass_rose.wav', passRose);
+
+  // NOTE: `voice_awesome` is deliberately NOT generated here. It is a
+  // provided recording (`assets/sfx/voice_awesome.mp3`), not synthesized
+  // like every other effect in this folder.
 
   stdout.writeln('All Battleship Blitz sound effects generated successfully.');
 }

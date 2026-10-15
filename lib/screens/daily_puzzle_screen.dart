@@ -13,6 +13,7 @@ import '../models/daily_puzzle.dart';
 import '../models/game_models.dart';
 import '../services/sound_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/awesome_cheer.dart';
 import '../widgets/battle_grid.dart';
 import '../widgets/cannon_widget.dart';
 import '../widgets/neon_widgets.dart';
@@ -44,6 +45,14 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
 
   /// Cannon fire trigger (recoil + muzzle flash), one shot at a time.
   final StreamController<void> _fireCtrl = StreamController<void>.broadcast();
+
+  /// Sinking cheers: every increment replays the "AWESOME!" celebration
+  /// over the middle of the board (see `AwesomeCheer`).
+  final _cheer = ValueNotifier<int>(0);
+
+  /// Whose gun the current cheer belongs to — always written in the same
+  /// breath as [_cheer].
+  String? _cheerCannon;
 
   /// The in-flight shell's clock. Taps while a shell is airborne are
   /// refused with the standard denied blip rather than restarting the
@@ -82,6 +91,7 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
 
   @override
   void dispose() {
+    _cheer.dispose();
     _fireCtrl.close();
     _shotCtrl.dispose();
     super.dispose();
@@ -149,6 +159,9 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
     switch (res) {
       case ShotResult.sunk:
         SoundService.instance.sunk(shipSkinId: profile.shipSkinId);
+        SoundService.instance.voiceAwesome();
+        _cheerCannon = profile.cannonSkinId;
+        _cheer.value++;
         break;
       case ShotResult.hit:
         SoundService.instance.hit(cannonSkinId: profile.cannonSkinId);
@@ -354,6 +367,20 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                           // whichever cell was tapped — this gun's own
                           // shell artwork, not a generic ball.
                           if (_aimCell != null) _shotLayer(skin),
+                          // Sinking cheer over the middle of the board.
+                          Positioned.fill(
+                            child: IgnorePointer(
+                              child: Center(
+                                child: ValueListenableBuilder<int>(
+                                  valueListenable: _cheer,
+                                  builder: (context, cheerId, _) =>
+                                      AwesomeCheer(
+                                          cheerId: cheerId,
+                                          cannonId: _cheerCannon),
+                                ),
+                              ),
+                            ),
+                          ),
                         ],
                       );
                     },

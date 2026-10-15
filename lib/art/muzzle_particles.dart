@@ -80,6 +80,10 @@ enum MuzzleSpray {
 
   /// Drifting motes pulled back toward the bore — void guns.
   motes,
+
+  /// Tumbling petals on champagne fizz — rosé guns. The only spray
+  /// that throws solid petals rather than sparks, bubbles or shards.
+  petals,
 }
 
 /// The spray a legacy gun throws, keyed to what that gun IS: the MK-I is
@@ -94,6 +98,7 @@ MuzzleSpray _legacySpray(String id) => switch (id) {
       'sunfire' => MuzzleSpray.bubbles,
       'void' => MuzzleSpray.motes,
       'venom' => MuzzleSpray.gobs,
+      'rose' => MuzzleSpray.petals,
       _ => MuzzleSpray.sparks,
     };
 
@@ -268,6 +273,42 @@ void _paintSpray(
         final d = r * 0.75 * (1 - out);
         final p = mouth + Offset(math.cos(a) * d, math.sin(a) * d * 0.7);
         canvas.drawCircle(p, r * 0.03 * fade, _f(accent, fade * 0.95));
+      }
+
+    case MuzzleSpray.petals:
+      // Solid blush petals tumbling forward on champagne fizz rings —
+      // nothing else here throws petals, and bubbles alone (kraken,
+      // sunfire) never carry them.
+      for (var i = 0; i < _n(5); i++) {
+        final spread = (_j(seed, i) - 0.5) * 1.2;
+        final d = r * (0.4 + 0.7 * _j(seed, i + 7)) * out;
+        final drop = r * 0.35 * t * t;
+        final p = mouth +
+            Offset(math.sin(spread) * d, -math.cos(spread) * d + drop);
+        canvas.save();
+        canvas.translate(p.dx, p.dy);
+        canvas.rotate(spread + t * 4 * (i.isEven ? 1 : -1));
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset.zero,
+              width: r * 0.11 * fade,
+              height: r * 0.06 * fade),
+          _f(i.isEven ? accent : core, fade * 0.95),
+        );
+        canvas.restore();
+        canvas.drawCircle(
+            p + Offset(r * 0.06, -r * 0.06),
+            r * 0.022 * fade,
+            _f(core, fade * 0.9));
+      }
+      for (var i = 0; i < _n(2); i++) {
+        final phase = (t + i * 0.4) % 1.0;
+        if (phase > 0.85) continue;
+        canvas.drawCircle(
+          mouth + Offset(0, -r * 0.8 * phase),
+          r * (0.06 + 0.12 * phase),
+          _s(core, (1 - phase) * fade * 0.7, r * 0.018),
+        );
       }
   }
 }

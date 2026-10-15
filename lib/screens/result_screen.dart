@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../art/fleet_family.dart';
+import '../core/fleet_identity.dart';
 import '../core/theme.dart';
 import '../models/game_models.dart';
 import '../models/power_up.dart';
@@ -11,6 +13,7 @@ import '../services/game_controller.dart';
 import '../services/network_service.dart';
 import '../services/online_service.dart';
 import '../services/storage_service.dart';
+import '../widgets/battle_grid.dart';
 import '../widgets/match_chat.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
@@ -597,30 +600,42 @@ class _ResultScreenState extends State<ResultScreen>
             Text('P1 SHOTS vs P2 FLEET',
                 style: AppText.label(size: 9, color: AppColors.cream)),
             const SizedBox(height: 6),
-            _shotHeatmap(controller.myShots, controller.boards[1]),
+            _fleetRecap(
+              controller: controller,
+              shots: controller.myShots,
+              fleet: controller.boards[1],
+              defenderHalfIsP1: false,
+              attackerHalfIsP1: true,
+            ),
             const SizedBox(height: 12),
             Text('P2 SHOTS vs P1 FLEET',
                 style: AppText.label(size: 9, color: AppColors.cream)),
             const SizedBox(height: 6),
-            _shotHeatmap(controller.p2Shots, controller.boards[0]),
+            _fleetRecap(
+              controller: controller,
+              shots: controller.p2Shots,
+              fleet: controller.boards[0],
+              defenderHalfIsP1: true,
+              attackerHalfIsP1: false,
+            ),
           ] else ...[
             Text('YOUR SHOTS vs THEIR FLEET',
                 style: AppText.label(size: 9, color: AppColors.cream)),
             const SizedBox(height: 6),
-            _shotHeatmap(controller.myShots, controller.boards[1]),
+            _fleetRecap(
+              controller: controller,
+              shots: controller.myShots,
+              fleet: controller.boards[1],
+              defenderHalfIsP1: false,
+              attackerHalfIsP1: true,
+            ),
           ],
           const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _legendDot(AppColors.hit, 'HIT'),
-              const SizedBox(width: 12),
-              _legendDot(
-                  AppColors.cream.withValues(alpha: 0.55), 'MISS'),
-              const SizedBox(width: 12),
-              _legendBox('SHIP'),
-            ],
-          ),
+          Text('AS SAILED — REAL FLEETS, DECKS AND MARKS',
+              style: AppText.label(
+                  size: 9,
+                  color: AppColors.cream.withValues(alpha: 0.55))),
+          const SizedBox(height: 2),
           if (controller.isPowerUpBattle || cards.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text(
@@ -668,78 +683,55 @@ class _ResultScreenState extends State<ResultScreen>
     );
   }
 
-  /// 10×10 recap: your marks over their revealed hulls.
-  Widget _shotHeatmap(List<List<int>> shots, Board fleet) {
-    final shipCells = <String>{};
-    for (final s in fleet.ships) {
-      for (final cell in s.cells) {
-        shipCells.add('${cell[0]},${cell[1]}');
-      }
-    }
+  /// One half's true recap: the defender's real fleet drawn in its real
+  /// hull skin on its real deck, wearing the attacker's real cannon marks
+  /// from this exact match — the same `BattleGrid` the battle itself
+  /// uses, parked read-only. Gear comes from the end-of-match snapshot
+  /// (see `GameController.resultLoadouts`), never re-derived, so the
+  /// vs-AI look and the LAN peer's gear survive the trip here.
+  Widget _fleetRecap({
+    required GameController controller,
+    required List<List<int>> shots,
+    required Board fleet,
+    required bool defenderHalfIsP1,
+    required bool attackerHalfIsP1,
+  }) {
+    final defender =
+        controller.resultLoadouts[defenderHalfIsP1 ? 0 : 1];
+    final attacker =
+        controller.resultLoadouts[attackerHalfIsP1 ? 0 : 1];
+    final defenderIsRed =
+        controller.resultRedSides[defenderHalfIsP1 ? 0 : 1];
+    // Same side-colour rule as the battle: an unequipped starter hull
+    // recaps in its plain red/blue exactly as it sailed.
+    final look = fleetLook(
+      isRedSide: defenderIsRed,
+      equippedShipSkinId: defender.shipSkinId,
+      chosen: defender.shipChosen,
+    );
+    final theme = defender.theme;
+    final cannon = attacker.cannonSkin;
     return SizedBox(
       width: 220,
       height: 220,
-      child: GridView.builder(
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: kBoardSize,
-          mainAxisSpacing: 1,
-          crossAxisSpacing: 1,
-        ),
-        itemCount: kBoardSize * kBoardSize,
-        itemBuilder: (context, i) {
-          final r = i ~/ kBoardSize;
-          final c = i % kBoardSize;
-          final v = shots[r][c];
-          final isShip = shipCells.contains('$r,$c');
-          Color bg;
-          BoxBorder? border;
-          if (v == 2) {
-            bg = AppColors.hit;
-          } else if (v == 1) {
-            bg = AppColors.cream.withValues(alpha: 0.35);
-          } else if (isShip) {
-            bg = AppColors.gold.withValues(alpha: 0.25);
-            border = Border.all(color: AppColors.gold, width: 1);
-          } else {
-            bg = AppColors.cream.withValues(alpha: 0.08);
-          }
-          return Container(
-            decoration: BoxDecoration(color: bg, border: border),
-          );
-        },
+      child: BattleGrid(
+        shots: shots,
+        ships: fleet.ships,
+        skin: look.skin,
+        enabled: false,
+        destroyedShips: [
+          for (final s in fleet.ships)
+            if (s.isSunk) s,
+        ],
+        wreckShipSkinId: look.skin.id,
+        wreckShipSkin: look.skin,
+        boardFamily: FleetFamilies.byKey(theme.familyKey),
+        legacyBoardId: theme.legacy ? theme.id : null,
+        glowColor: theme.accent,
+        cellColor: theme.grid,
+        gridLineColor: theme.gridLine,
+        cannonSkinId: cannon.id,
       ),
-    );
-  }
-
-  Widget _legendDot(Color color, String label) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(width: 10, height: 10, color: color),
-        const SizedBox(width: 4),
-        Text(label,
-            style: AppText.label(size: 9, color: AppColors.cream)),
-      ],
-    );
-  }
-
-  Widget _legendBox(String label) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(
-            color: AppColors.gold.withValues(alpha: 0.25),
-            border: Border.all(color: AppColors.gold, width: 1),
-          ),
-        ),
-        const SizedBox(width: 4),
-        Text(label,
-            style: AppText.label(size: 9, color: AppColors.cream)),
-      ],
     );
   }
 }

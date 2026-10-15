@@ -87,6 +87,10 @@ enum SplashStyle {
   rime,
   magma,
   ion,
+  /// Champagne-petal pop — rosé guns only. Five solid petals snapping
+  /// open around a heart core with fizz lifting off, never the hollow
+  /// coral bloom this used to share with sunfire.
+  petal,
 }
 
 /// The detonation layered over a splash when the shot actually connected.
@@ -106,6 +110,9 @@ enum BurstStyle {
   frostNova,
   magmaGout,
   ionLance,
+  /// Petal-heart burst — rosé guns only. Solid petals thrown like
+  /// shrapnel around a heart flash, never hollow bubbles.
+  petalBurst,
 }
 
 /// The flourish that hands the persistent hit/miss mark onto the deck, in
@@ -125,6 +132,8 @@ enum MarkArrival {
   driveIn,
   frostIn,
   scanIn,
+  /// Petals converging onto the mark with a heart blink — rosé only.
+  petalIn,
 }
 
 /// One gun's complete impact identity.
@@ -248,6 +257,14 @@ const Map<String, ImpactFx> _byCannon = {
     core: Color(0xFFECFCCB),
     accent: Color(0xFFA3E635),
     deep: Color(0xFF365314),
+  ),
+  'rose': ImpactFx(
+    splash: SplashStyle.petal,
+    burst: BurstStyle.petalBurst,
+    arrival: MarkArrival.petalIn,
+    core: Color(0xFFFDE6F0),
+    accent: Color(0xFFF472B6),
+    deep: Color(0xFF7E2F4D),
   ),
   // ---- Family guns ----
   'f_pirate': ImpactFx(
@@ -688,6 +705,37 @@ void paintImpactSplash(
           _stroke(fx.core, fade * 0.9, s * 0.035),
         );
       }
+
+    case SplashStyle.petal:
+      // Five solid petals snapping open around a heart core, fizz
+      // lifting off them — solid and heart-centred where bloom is hollow
+      // petals plus bubbles.
+      for (var i = 0; i < _n(5); i++) {
+        final ang = (i / 5) * 2 * pi + 0.3 - local * 0.5;
+        final r = s * (0.16 + 0.32 * grow);
+        canvas.save();
+        canvas.translate(center.dx + cos(ang) * r * 0.7,
+            center.dy + sin(ang) * r * 0.7);
+        canvas.rotate(ang);
+        _squashedCircle(canvas, Offset.zero, r * 0.55 * fade, 0.5,
+            _fill(fx.accent, fade * 0.85));
+        canvas.restore();
+      }
+      canvas.drawCircle(center, s * 0.16 * (1 - local * 0.4),
+          _fill(fx.deep, fade * 0.7));
+      canvas.drawCircle(center, s * 0.08 * (1 - local * 0.4),
+          _fill(fx.core, fade * 0.9));
+      for (var i = 0; i < _n(3); i++) {
+        final ang = _jit(seed, i + 5) * 2 * pi;
+        final d = s * 0.34 * grow;
+        final lift = -s * 0.42 * local;
+        canvas.drawCircle(
+            center + Offset(cos(ang) * d, sin(ang) * d * 0.5 + lift),
+            s * 0.05 * fade,
+            _fill(fx.core, fade * 0.9));
+      }
+      canvas.drawCircle(center, s * (0.3 + 0.3 * grow),
+          _stroke(fx.core, fade * 0.4, s * 0.03 * fade));
   }
 }
 
@@ -988,6 +1036,30 @@ void paintImpactBurst(
         canvas.drawLine(Offset(center.dx - w, y), Offset(center.dx + w, y),
             _stroke(fx.accent, tail * 0.4, s * 0.02));
       }
+
+    case BurstStyle.petalBurst:
+      if (head > 0) {
+        canvas.drawCircle(center, s * 0.22 * grow, _fill(fx.core, head * 0.85));
+        canvas.drawCircle(center, s * 0.12 * grow, _fill(fx.deep, head * 0.7));
+      }
+      for (var i = 0; i < _n(6); i++) {
+        final a = (i / 6) * 2 * pi + _jit(seed, i) * 0.4 + t * 0.8;
+        final d = s * 0.55 * grow * (0.6 + _jit(seed, i + 6) * 0.6);
+        final p = center + Offset(cos(a) * d, sin(a) * d - s * 0.15 * t);
+        canvas.save();
+        canvas.translate(p.dx, p.dy);
+        canvas.rotate(a + t * 3);
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset.zero,
+              width: s * 0.20 * tail,
+              height: s * 0.10 * tail),
+          _fill(fx.accent, tail * 0.9),
+        );
+        canvas.restore();
+      }
+      canvas.drawCircle(center, s * 0.5 * grow,
+          _stroke(fx.core, tail * 0.5, s * 0.035));
   }
 }
 
@@ -1176,6 +1248,27 @@ void paintMarkArrival(
         final p = _stroke(fx.core, fade * 0.85, cell * 0.03);
         canvas.drawLine(corner, corner.translate(-sx * mark * 0.5, 0), p);
         canvas.drawLine(corner, corner.translate(0, -sy * mark * 0.5), p);
+      }
+
+    case MarkArrival.petalIn:
+      // Five petals closing onto the mark with a heart blink at the end.
+      for (var i = 0; i < _n(5); i++) {
+        final ang = i * 2 * pi / 5 + 0.3;
+        final d = mark * (2.3 - 1.7 * ease);
+        canvas.save();
+        canvas.translate(center.dx + cos(ang) * d, center.dy + sin(ang) * d);
+        canvas.rotate(ang);
+        canvas.scale(1.0, 0.5);
+        canvas.drawCircle(
+            Offset.zero, mark * 0.7 * fade, _fill(fx.accent, fade * 0.9));
+        canvas.restore();
+      }
+      canvas.drawCircle(center, mark * (1.6 - 0.6 * ease),
+          _stroke(fx.core, fade * 0.5, cell * 0.025));
+      if (ease > 0.6) {
+        final blink = ((ease - 0.6) / 0.4).clamp(0.0, 1.0);
+        canvas.drawCircle(center, mark * 0.35 * blink,
+            _fill(fx.core, fade * blink));
       }
   }
 }

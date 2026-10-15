@@ -40,6 +40,7 @@ Color legacyShipInk(String skinId) => switch (skinId) {
       'coral' => const Color(0xFF3A1710),
       'midnight' => const Color(0xFF0A0E15),
       'toxic' => const Color(0xFF1C210A),
+      'blush' => const Color(0xFF3B1220),
       _ => const Color(0xFF1E2A36),
     };
 
@@ -105,6 +106,9 @@ void _drawHull(FamilyCanvas c, ShipSkin skin, ShipKind kind) {
       break;
     case 'toxic':
       _toxic(c, kind);
+      break;
+    case 'blush':
+      _rose(c, kind);
       break;
     default:
       _steel(c, kind);
@@ -1226,6 +1230,206 @@ void _toxic(FamilyCanvas c, ShipKind k) {
       c.circle(132, 60, 7, fillColor: const Color(0xFF575F22), inkColor: ink, inkWidth: 2.2);
       c.circle(132, 40, 2.6, fillColor: accent);
       c.stroke('M196,78 Q190,86 196,92', accent, 2.2, opacity: 0.8);
+      break;
+  }
+}
+
+// ================================================================ BLUSH ===
+// Rosé Fleet — five hulls in rosewood and blush steel, every class
+// carrying the same petal Sigil: a blush disc with a cream heart and a
+// faint outer ring. Rounded hulls dressed like love-cruisers throughout —
+// filigree sheer stripes, railing dots, heart portholes, turrets with
+// satellite rosebuds and a heart on every breech — so the fleet reads
+// romantic rather than martial next to the yards around it, and never
+// plain beside them.
+void _rose(FamilyCanvas c, ShipKind k) {
+  const ink = Color(0xFF3B1220);
+  const deep = Color(0xFF7E2F4D);
+  const mid = Color(0xFFA34A68);
+  const trim = Color(0xFFF9A8D4);
+  const cream = Color(0xFFFCE7F3);
+
+  // A true little cream heart, the fleet's own crest wherever it sits.
+  void heart(double cx, double cy, double s) {
+    c.circle(cx - s * 0.32, cy - s * 0.12, s * 0.36, fillColor: cream);
+    c.circle(cx + s * 0.32, cy - s * 0.12, s * 0.36, fillColor: cream);
+    c.shape(
+        'M${(cx - s * 0.62).toStringAsFixed(1)},${(cy + s * 0.05).toStringAsFixed(1)} '
+        'L${(cx + s * 0.62).toStringAsFixed(1)},${(cy + s * 0.05).toStringAsFixed(1)} '
+        'L${cx.toStringAsFixed(1)},${(cy + s * 0.68).toStringAsFixed(1)} Z',
+        fillColor: cream);
+  }
+
+  // The petal sigil shared by every class: blush disc, cream heart,
+  // faint outer ring.
+  void petal(double cx, double cy, double r) {
+    c.circle(cx, cy, r, fillColor: trim, inkColor: ink, inkWidth: 2.2);
+    heart(cx, cy, r * 0.52);
+    c.circle(cx, cy, r + 3, inkColor: ink, inkWidth: 0.9, inkOpacity: 0.35);
+  }
+
+  // A rosebud: deep cup, blush bloom, cream spark.
+  void bud(double cx, double cy, double r) {
+    c.circle(cx, cy, r, fillColor: deep, inkColor: ink, inkWidth: 2);
+    c.circle(cx, cy, r * 0.55, fillColor: trim);
+    c.circle(cx - r * 0.18, cy - r * 0.18, r * 0.16, fillColor: cream);
+  }
+
+  switch (k) {
+    case ShipKind.carrier:
+      // Heart-cleft bow: the tip splits into two lobes around a notch —
+      // no other carrier in the lineup ends in anything but a point.
+      c.shape('M18,50 C18,28 62,16 140,16 C214,16 258,24 276,38 L266,50 L276,62 C258,76 214,84 140,84 C62,84 18,72 18,50 Z',
+          fillColor: deep, inkColor: ink, inkWidth: 3);
+      c.stroke('M28,50 L46,26 L232,23 L268,40 L260,50 L268,60 L232,77 L46,74 Z', trim, 1.6, opacity: 0.5);
+      c.fill('M28,50 L46,26 L232,23 L268,40 L260,50 L268,60 L232,77 L46,74 Z', mid);
+      c.rect(36, 32, 228, 36, r: 12, fillColor: deep, inkColor: ink, inkWidth: 2.4);
+      c.rect(36, 32, 228, 10, r: 5, fillColor: trim, inkColor: ink, inkWidth: 1.6);
+      c.strokeDashed('M48,58 L252,58', cream, 2.4, [14, 10], opacity: 0.7);
+      petal(92, 50, 11);
+      heart(121, 50, 6);
+      petal(150, 50, 13);
+      heart(179, 50, 6);
+      petal(208, 50, 11);
+      c.rect(234, 56, 20, 10, r: 2, fillColor: deep, inkColor: ink, inkWidth: 1.8);
+      c.circle(239, 61, 1.6, fillColor: cream);
+      c.circle(245, 61, 1.6, fillColor: cream);
+      c.circle(251, 61, 1.6, fillColor: cream);
+      c.line(244, 56, 244, 42, ink, 2, opacity: 0.8);
+      c.shape('M244,42 L256,45 L244,48 Z', fillColor: trim, inkColor: ink, inkWidth: 1.2);
+      heart(30, 50, 5);
+      bud(271, 40, 3);
+      bud(271, 60, 3);
+      c.ellipse(250, 50, 10, 8, fillColor: trim, inkColor: ink, inkWidth: 2.2);
+      c.circle(250, 50, 4, fillColor: cream);
+      c.circle(250, 50, 10, inkColor: ink, inkWidth: 1, inkOpacity: 0.35);
+      for (var i = 0; i < 8; i++) {
+        final dx = 70.0 + i * 20;
+        c.circle(dx, 26, 1.6, fillColor: trim, fillOpacity: 0.8);
+        c.circle(dx, 74, 1.6, fillColor: trim, fillOpacity: 0.8);
+      }
+      break;
+    case ShipKind.battleship:
+      // Trident bow: three prongs instead of a point — a forked bow
+      // appears nowhere else in the lineup (forks are stern-only, and
+      // only on one other skin).
+      c.shape('M16,50 C16,24 56,12 134,12 C200,12 238,17 260,27 L247,36 L266,43 L249,50 L266,57 L247,64 L260,73 C238,83 200,88 134,88 C56,88 16,76 16,50 Z',
+          fillColor: deep, inkColor: ink, inkWidth: 3);
+      c.fill('M28,50 C28,30 62,20 134,19 C198,19 232,22 252,29 L242,37 L258,43 L244,50 L258,57 L242,63 L252,71 C232,78 198,81 134,81 C62,80 28,70 28,50 Z', mid);
+      c.stroke('M44,27 C96,17 190,15 248,27', trim, 1.6, opacity: 0.5);
+      c.stroke('M44,73 C96,83 190,85 248,73', trim, 1.6, opacity: 0.5);
+      for (var i = 0; i < 8; i++) {
+        final dx = 104.0 + i * 13;
+        c.circle(dx, 33, 1.8, fillColor: cream);
+        c.circle(dx, 67, 1.8, fillColor: cream);
+      }
+      c.rect(40, 47, 22, 6, r: 3, fillColor: deep, inkColor: ink, inkWidth: 2);
+      c.circle(70, 50, 15, fillColor: deep, inkColor: ink, inkWidth: 2.6);
+      c.circle(58, 38, 7, fillColor: trim, inkColor: ink, inkWidth: 2);
+      c.circle(58, 62, 7, fillColor: trim, inkColor: ink, inkWidth: 2);
+      c.circle(70, 50, 15, inkColor: ink, inkWidth: 1, inkOpacity: 0.35);
+      heart(70, 50, 7);
+      bud(108, 50, 6);
+      c.circle(150, 50, 17, fillColor: deep, inkColor: ink, inkWidth: 2.6);
+      c.circle(150, 50, 7, fillColor: trim);
+      heart(150, 50, 5);
+      bud(192, 50, 6);
+      heart(206, 50, 4.5);
+      c.rect(236, 47, 12, 6, r: 3, fillColor: deep, inkColor: ink, inkWidth: 2);
+      c.circle(230, 50, 15, fillColor: deep, inkColor: ink, inkWidth: 2.6);
+      c.circle(242, 38, 7, fillColor: trim, inkColor: ink, inkWidth: 2);
+      c.circle(242, 62, 7, fillColor: trim, inkColor: ink, inkWidth: 2);
+      c.circle(230, 50, 15, inkColor: ink, inkWidth: 1, inkOpacity: 0.35);
+      heart(230, 50, 7);
+      heart(30, 50, 4);
+      break;
+    case ShipKind.cruiser:
+      c.shape('M24,50 C24,30 58,18 128,16 C180,15 208,26 226,40 C244,34 266,36 280,44 C260,48 244,50 226,50 C244,50 260,52 280,56 C266,64 244,66 226,60 C208,74 180,85 128,84 C58,82 24,70 24,50 Z',
+          fillColor: deep, inkColor: ink, inkWidth: 2.8);
+      c.fill('M36,50 C36,34 64,24 128,23 C172,22 200,32 216,44 C230,40 250,42 264,46 C248,48 234,50 216,50 C234,50 248,52 264,54 C250,58 230,60 216,56 C200,68 172,78 128,77 C64,76 36,66 36,50 Z', mid);
+      c.stroke('M44,36 C84,26 140,24 190,30', trim, 1.6, opacity: 0.5);
+      c.stroke('M44,64 C84,74 140,76 190,70', trim, 1.6, opacity: 0.5);
+      c.rect(40, 47, 24, 5, r: 2.5, fillColor: deep, inkColor: ink, inkWidth: 2);
+      c.ellipse(70, 50, 14, 11, fillColor: deep, inkColor: ink, inkWidth: 2.4);
+      heart(70, 50, 5);
+      bud(104, 50, 7);
+      c.rect(120, 32, 40, 36, r: 6, fillColor: deep, inkColor: ink, inkWidth: 2.4);
+      c.rect(120, 32, 40, 9, r: 4, fillColor: trim, inkColor: ink, inkWidth: 1.6);
+      c.circle(130, 55, 2, fillColor: cream);
+      c.circle(142, 55, 2, fillColor: cream);
+      c.circle(154, 55, 2, fillColor: cream);
+      c.line(118, 30, 162, 30, ink, 2, opacity: 0.6);
+      c.rect(174, 34, 20, 32, r: 7, fillColor: deep, inkColor: ink, inkWidth: 2.4);
+      c.rect(174, 34, 20, 9, r: 4, fillColor: trim, inkColor: ink, inkWidth: 1.6);
+      heart(184, 55, 5);
+      heart(206, 50, 5);
+      c.stroke('M222,40 C240,32 262,32 278,40', trim, 2.6);
+      c.stroke('M222,60 C240,68 262,68 278,60', trim, 2.6);
+      bud(272, 42, 4);
+      bud(272, 58, 4);
+      for (var i = 0; i < 5; i++) {
+        c.circle(120.0 + i * 18, 72, 1.8, fillColor: cream);
+      }
+      break;
+    case ShipKind.submarine:
+      c.shape('M28,50 C28,32 68,26 148,26 C222,26 264,34 288,50 C264,66 222,74 148,74 C68,74 28,68 28,50 Z',
+          fillColor: deep, inkColor: ink, inkWidth: 3);
+      c.fill('M40,50 C40,36 70,30 148,29 C220,28 260,38 280,50 C260,62 220,72 148,71 C70,70 40,64 40,50 Z', mid);
+      c.strokeDashed('M96,33 L114,33', ink, 2, [5, 4], opacity: 0.5);
+      c.strokeDashed('M182,33 L200,33', ink, 2, [5, 4], opacity: 0.5);
+      c.strokeDashed('M96,67 L114,67', ink, 2, [5, 4], opacity: 0.5);
+      c.strokeDashed('M182,67 L200,67', ink, 2, [5, 4], opacity: 0.5);
+      c.rect(118, 30, 56, 40, r: 14, fillColor: deep, inkColor: ink, inkWidth: 2.4);
+      c.circle(146, 33, 3, fillColor: trim, inkColor: ink, inkWidth: 1.6);
+      c.circle(132, 41, 2, fillColor: cream);
+      c.circle(160, 41, 2, fillColor: cream);
+      petal(146, 50, 10);
+      c.circle(132, 60, 2, fillColor: cream);
+      c.circle(160, 60, 2, fillColor: cream);
+      c.line(60, 36, 60, 64, ink, 2.4, opacity: 0.5);
+      c.line(84, 32, 84, 68, ink, 2.4, opacity: 0.5);
+      bud(60, 36, 3.5);
+      bud(60, 64, 3.5);
+      bud(84, 32, 3.5);
+      bud(84, 68, 3.5);
+      heart(44, 50, 4);
+      c.line(210, 34, 210, 66, ink, 2.4, opacity: 0.5);
+      c.line(234, 38, 234, 62, ink, 2.4, opacity: 0.5);
+      bud(210, 34, 3.5);
+      bud(210, 66, 3.5);
+      bud(234, 38, 3.5);
+      bud(234, 62, 3.5);
+      bud(258, 40, 3.5);
+      bud(258, 60, 3.5);
+      c.ellipse(266, 50, 8, 8, fillColor: trim, inkColor: ink, inkWidth: 2.2);
+      c.circle(266, 50, 8, inkColor: ink, inkWidth: 1, inkOpacity: 0.35);
+      break;
+    case ShipKind.destroyer:
+      c.shape('M70,50 L96,24 L180,20 L200,30 L244,26 L292,50 L244,74 L200,70 L180,80 L96,76 Z',
+          fillColor: deep, inkColor: ink, inkWidth: 2.8);
+      c.fill('M80,50 L102,30 L180,27 L198,35 L240,32 L278,50 L240,68 L198,65 L180,73 L102,70 Z', mid);
+      c.strokeDashed('M100,50 L228,50', cream, 2, [10, 8], opacity: 0.6);
+      c.rect(196, 40, 22, 5, r: 2, fillColor: trim, inkColor: ink, inkWidth: 1.6);
+      c.rect(196, 55, 22, 5, r: 2, fillColor: trim, inkColor: ink, inkWidth: 1.6);
+      c.rect(168, 36, 26, 28, r: 4, fillColor: deep, inkColor: ink, inkWidth: 2.2);
+      c.circle(176, 43, 1.8, fillColor: cream);
+      c.circle(187, 43, 1.8, fillColor: cream);
+      c.line(181, 36, 181, 26, ink, 2, opacity: 0.8);
+      c.shape('M181,26 L195,29 L181,32 Z', fillColor: trim, inkColor: ink, inkWidth: 1.2);
+      petal(140, 50, 12);
+      c.circle(112, 50, 9, fillColor: deep, inkColor: ink, inkWidth: 2.2);
+      c.rect(88, 47.5, 18, 5, r: 2.5, fillColor: deep, inkColor: ink, inkWidth: 1.8);
+      heart(112, 50, 4.5);
+      c.circle(240, 50, 11, fillColor: deep, inkColor: ink, inkWidth: 2.4);
+      c.rect(251, 47.5, 24, 5, r: 2.5, fillColor: deep, inkColor: ink, inkWidth: 1.8);
+      heart(240, 50, 5);
+      heart(282, 50, 4);
+      c.ellipse(70, 50, 12, 12, inkColor: trim, inkWidth: 5);
+      c.circle(70, 50, 5, fillColor: cream, inkColor: ink, inkWidth: 1.6);
+      for (final dx in [122.0, 150.0, 214.0]) {
+        c.circle(dx, 63, 1.8, fillColor: cream);
+      }
+      c.circle(222, 35, 1.8, fillColor: cream);
       break;
   }
 }

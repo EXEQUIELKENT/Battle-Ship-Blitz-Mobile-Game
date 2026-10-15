@@ -142,6 +142,12 @@ void main() {
         expect(has('move_${ship.id}'), isTrue, reason: ship.id);
       }
     });
+
+    test('a destroyed ship brings its own "awesome!" voice line', () {
+      // Played alongside the hull's sinking sound wherever gameplay
+      // sinks one (see `SoundService.voiceAwesome`).
+      expect(has('voice_awesome'), isTrue, reason: 'voice_awesome');
+    });
   });
 
   _missKeyingTests();
@@ -179,6 +185,7 @@ void main() {
         'sunk_steel',
         'cannon_ready_void',
         'move_f_steam',
+        'voice_awesome',
       ]) {
         expect(t(key), isNot(fallback), reason: '$key must know its own clip');
       }

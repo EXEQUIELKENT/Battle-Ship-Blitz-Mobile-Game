@@ -117,6 +117,10 @@ enum DeckDebris {
 
   /// Molten rock: glowing gobs that arc up and fall back burning.
   magma,
+
+  /// Rosé shallows: drifting petals on champagne fizz. The only deck
+  /// that throws petals rather than foam, spray or chips.
+  petals,
 }
 
 /// A deck's debris style and the colours to draw it in.
@@ -150,6 +154,7 @@ DeckDebris _legacyDebris(String id) => switch (id) {
       'sunfire' => DeckDebris.sunspray,
       'void' => DeckDebris.motes,
       'venom' => DeckDebris.sludge,
+      'rose' => DeckDebris.petals,
       _ => DeckDebris.foam,
     };
 
@@ -207,6 +212,7 @@ const Map<String, Color> _legacyField = {
   'sunfire': Color(0xFF3A2408),
   'void': Color(0xFF070A14),
   'venom': Color(0xFF1F2E0D),
+  'rose': Color(0xFF3A1524),
 };
 
 /// The pale tone each board's own foam/spray reads as.
@@ -220,6 +226,7 @@ const Map<String, Color> _legacyFoam = {
   'sunfire': Color(0xFFFFE2C4),
   'void': Color(0xFFC9D8FF),
   'venom': Color(0xFFE4FFC2),
+  'rose': Color(0xFFFCE7F3),
 };
 
 /// Debris thrown up by a shot landing on this deck.
@@ -568,6 +575,36 @@ void paintDeckDebris(
         final r = cell * (0.05 + 0.03 * _j(seed, i + 33)) * fade;
         canvas.drawCircle(p, r * 1.9, _f(fx.accent, fade * 0.22));
         canvas.drawCircle(p, r, _f(tint, fade));
+      }
+
+    case DeckDebris.petals:
+      // Rosé shallows answer with what they are made of: drifting
+      // petals spinning flat on the water plus champagne fizz rising
+      // through them — never the MK-I's plain foam ring this shared.
+      canvas.drawCircle(center, cell * (0.14 + 0.26 * out),
+          _s(tint, fade * 0.45, cell * 0.04 * fade));
+      final n = _n(5 + boost * 2);
+      for (var i = 0; i < n; i++) {
+        final a = _ang(seed, i, n) + t * 1.2 * (i.isEven ? 1 : -1);
+        final d = cell * (0.16 + 0.2 * _j(seed, i + 81)) * out;
+        final p = center + Offset(math.cos(a) * d, math.sin(a) * d * 0.8);
+        canvas.save();
+        canvas.translate(p.dx, p.dy);
+        canvas.rotate(a + t * 4);
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset.zero,
+              width: cell * 0.13 * fade,
+              height: cell * 0.06 * fade),
+          _f(heavy, fade * 0.9),
+        );
+        canvas.restore();
+      }
+      for (var i = 0; i < _n(3); i++) {
+        final x = (_j(seed, i + 40) - 0.5) * cell * 0.5;
+        final rise = cell * 0.45 * t;
+        canvas.drawCircle(center + Offset(x, -rise), cell * 0.032 * fade,
+            _s(tint, fade * 0.85, cell * 0.014));
       }
   }
 }

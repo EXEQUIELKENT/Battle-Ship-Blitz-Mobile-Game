@@ -11,7 +11,7 @@ import '../services/storage_service.dart';
 /// shared one fixed 260ms linear recoil; these are what make MK-I's
 /// crisp "snap" read differently from Kraken's slow tentacled "sway" or
 /// Void's inward-pulling "suck".
-enum RecoilCharacter { snap, jitter, sway, ghost, wobble, slow, suck }
+enum RecoilCharacter { snap, jitter, sway, ghost, wobble, slow, suck, flutter }
 
 class CannonFireProfile {
   /// How long the recoil kick takes to reach full extension and settle
@@ -103,6 +103,13 @@ const Map<String, CannonFireProfile> _legacyProfiles = {
     character: RecoilCharacter.suck,
     kickMultiplier: 1,
     squashMultiplier: 1.3,
+  ),
+  'rose': CannonFireProfile(
+    recoilDuration: Duration(milliseconds: 280),
+    muzzleFxDuration: Duration(milliseconds: 750),
+    character: RecoilCharacter.flutter,
+    kickMultiplier: 1.0,
+    squashMultiplier: 1.0,
   ),
 };
 
@@ -200,6 +207,17 @@ CannonFireProfile fireProfileFor(CannonSkin skin) {
       return (
         vertical: Curves.easeInOutSine.transform(t),
         lateral: math.sin(t * 8) * env,
+        opacity: 1,
+      );
+    case RecoilCharacter.flutter:
+      // Champagne pop: a crisp snap with a light petal-flutter riding
+      // on top — overshoots like snap, shivers like jitter, but softer
+      // and shorter than either, with its own sideways drift.
+      final env = 4 * t * (1 - t);
+      return (
+        vertical:
+            Curves.easeOutBack.transform(t) + math.sin(t * 12) * 0.08 * env,
+        lateral: math.sin(t * 18) * env * 0.6,
         opacity: 1,
       );
   }
