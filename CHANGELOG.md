@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.2](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.5.1...battleship_blitz-v1.5.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* Add Rosé fleet and sinking celebrations ([6f870ae](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/6f870aef15633039154c8ff4eb9f4aabb6337849))
+* new ([6cac7ac](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/6cac7acb1cd7ac0a24f29efd545f87b4670c7b4d))
+
 ## [1.5.1](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.5.0...battleship_blitz-v1.5.1) (2026-10-15)
 
 
