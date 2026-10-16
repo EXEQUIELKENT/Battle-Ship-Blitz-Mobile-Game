@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.4](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.5.3...battleship_blitz-v1.5.4) (2026-10-16)
+
+
+### Bug Fixes
+
+* Enhance puzzle, cannon, and progression UI ([235b6c6](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/235b6c61d454782abb293b79f78d2dd514a42976))
+
 ## [1.5.3](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.5.2...battleship_blitz-v1.5.3) (2026-10-16)
 
 
