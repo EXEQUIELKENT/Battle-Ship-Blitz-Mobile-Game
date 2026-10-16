@@ -10,12 +10,15 @@
 // Both cases below are regressions with the same reported symptom ("the
 // projectile covers the whole screen and I can fire forever with no
 // reload or smoke"), and both reproduce loudly when their fix is removed.
+import 'dart:math' as math;
+
 import 'package:battleship_blitz/screens/placement_screen.dart';
 import 'package:battleship_blitz/services/game_controller.dart';
 import 'package:battleship_blitz/services/network_service.dart';
 import 'package:battleship_blitz/services/online_service.dart';
 import 'package:battleship_blitz/services/storage_service.dart';
 import 'package:battleship_blitz/widgets/battle_grid.dart';
+import 'package:battleship_blitz/widgets/cannon_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -126,5 +129,48 @@ void main() {
         reason: 'a reloaded gun must be able to fire again');
 
     await tester.pump(const Duration(seconds: 3));
+  });
+
+  group('barrel aim', () {
+    test('aimAt bears a straight-up gun onto the target', () {
+      const pivot = Offset(100, 200);
+      // Dead ahead stays at rest.
+      expect(CannonWidget.aimAt(pivot, const Offset(100, 100)), 0);
+      // Port and starboard mirror each other.
+      final left = CannonWidget.aimAt(pivot, const Offset(0, 100));
+      final right = CannonWidget.aimAt(pivot, const Offset(200, 100));
+      expect(left, lessThan(0));
+      expect(right, greaterThan(0));
+      expect(right, closeTo(-left, 1e-9));
+      // Behind the gun clamps at the traverse limit instead of laying
+      // the barrel flat.
+      expect(CannonWidget.aimAt(pivot, const Offset(100, 300)), 0.85);
+      expect(CannonWidget.aimAt(pivot, const Offset(0, 300)), -0.85);
+    });
+
+    testWidgets('the deploy gun traverses onto the tapped cell',
+        (tester) async {
+      double maxAim() {
+        var m = 0.0;
+        for (final w in tester
+            .widgetList<CannonWidget>(find.byType(CannonWidget))) {
+          m = math.max(m, w.barrelAim.abs());
+        }
+        return m;
+      }
+
+      final grid = await _pumpDeployScreen(tester);
+      expect(maxAim(), 0, reason: 'the gun starts at rest');
+
+      // Far corner: unmistakably off-axis.
+      grid.onTapCell!(0, 9);
+      await tester.pump();
+      expect(maxAim(), greaterThan(0.1),
+          reason: 'the barrel swings to bear on the tap');
+
+      // Once the shell lands the gun eases back to straight-up.
+      await tester.pump(const Duration(seconds: 3));
+      expect(maxAim(), 0);
+    });
   });
 }

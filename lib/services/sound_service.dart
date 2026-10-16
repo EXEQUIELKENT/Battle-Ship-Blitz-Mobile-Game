@@ -67,6 +67,13 @@ import 'package:flutter/services.dart';
 ///    its own clip length (see [SoundService._safetyTimeoutFor]) and by
 ///    serializing reuse behind a per-player "previous checkout finished"
 ///    gate (see the ROOT-CAUSE FIX note on [_ManagedPool.play]).
+
+/// Which sinking voice line one destroyed ship gets — decided by
+/// [SoundService.sinkingCheer] so the screen can raise the popup that
+/// matches the voice it just heard. Both lines celebrate the same
+/// sinking; only the voice (and its popup) differs.
+enum CheerKind { awesome, wow }
+
 class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
@@ -145,6 +152,9 @@ class SoundService {
     // a provided recording, not synthesized, so it deliberately has no
     // generator in `tool/gen_sounds.dart`.
     'voice_awesome': 'sfx/voice_awesome.mp3',
+    // "Wow!" voice line — the coin-flip alternative to `voice_awesome`
+    // (see `sinkingCheer`). Likewise a provided recording.
+    'voice_wow': 'sfx/voice_wow.mp3',
     // Cannon Fire variants:
     'cannon_fire_mk1': 'sfx/cannon_fire_mk1.wav',
     'cannon_fire_inferno': 'sfx/cannon_fire_inferno.wav',
@@ -346,6 +356,7 @@ class SoundService {
     'count_beep',
     'count_go',
     'voice_awesome',
+    'voice_wow',
   ];
 
   /// How many players an effect keeps, i.e. how many copies of it can
@@ -393,6 +404,7 @@ class SoundService {
     'count_beep': 130,
     'count_go': 300,
     'voice_awesome': 800,
+    'voice_wow': 1700,
     // No shared `move.wav` plays on its own, but every `move_<skin>` needs
     // this to resolve a window through [_baseEffectOf].
     'move': 150,
@@ -1100,6 +1112,24 @@ class SoundService {
   /// the haptic, and two heavies on one sinking would feel like one
   /// muddy buzz.
   void voiceAwesome() => _play('voice_awesome');
+
+  /// The "wow!" reaction for a destroyed ship — [sinkingCheer]'s
+  /// coin-flip alternative to [voiceAwesome]. Same placement, same
+  /// sound-only rule.
+  void voiceWow() => _play('voice_wow');
+
+  static final _cheerRng = math.Random();
+
+  /// Cheers one destroyed ship: plays "awesome!" or "wow!" at random and
+  /// returns which one, so the caller can raise the popup that matches
+  /// the voice it just heard. The decision is synchronous; the playback
+  /// itself stays fire-and-forget like every other effect here.
+  CheerKind sinkingCheer() {
+    final kind =
+        _cheerRng.nextBool() ? CheerKind.awesome : CheerKind.wow;
+    _play(kind == CheerKind.awesome ? 'voice_awesome' : 'voice_wow');
+    return kind;
+  }
 
   void victory() {
     HapticFeedback.heavyImpact();

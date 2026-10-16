@@ -491,11 +491,12 @@ class Board {
   /// it is cleared too (over the wire — this side alone isn't enough).
   void unmarkShot(int r, int c) => _shots.remove('$r,$c');
 
-  /// Randomly places the whole fleet.
-  static Board random({Random? rng}) {
+  /// Randomly places a fleet — the whole [kFleet] unless [specs] narrows
+  /// it (the daily puzzle deals a small 3-hull fleet, not the full five).
+  static Board random({Random? rng, List<ShipSpec>? specs}) {
     final random = rng ?? Random();
     final b = Board();
-    for (final spec in kFleet) {
+    for (final spec in specs ?? kFleet) {
       var placed = false;
       var attempts = 0;
       while (!placed && attempts < 500) {

@@ -216,6 +216,17 @@ class _PlacementScreenState extends State<PlacementScreen>
   /// exactly as long as the shell is airborne, then clears.
   List<int>? _previewAimCell;
 
+  /// Preview barrel swing off straight-up, in the same radians
+  /// `CannonWidget` reads — set as the preview shot launches so the long
+  /// barrel visibly bears on the tapped cell (the widget tweens the
+  /// traverse itself), eased back to rest when the shell lands, exactly
+  /// like battle aim.
+  double _previewAim = 0;
+
+  /// Battle's own traverse limit, so a corner tap swings the gun hard
+  /// without ever laying it flat.
+  static const _maxAimSwing = 0.85;
+
   /// Recent preview combat events (e.g. miss water splashes when test firing).
   final List<CombatEventLike> _previewEvents = [];
 
@@ -569,9 +580,18 @@ class _PlacementScreenState extends State<PlacementScreen>
       _gridLeftPx + (c + 0.5) * cellSize,
       _gridTopPx + (r + 0.5) * cellSize,
     );
+    // Traverse the barrel onto the tapped cell BEFORE the shell is
+    // born, so it launches from the rotated muzzle tip rather than
+    // from beside a gun still pointing straight up.
+    final aim = CannonWidget.aimAt(
+      Offset(_cannonCenterXPx, _cannonCenterYPx),
+      to,
+      _maxAimSwing,
+    );
+    final reach = _cannonRenderSizePx * _cannonMuzzleFrac;
     final muzzle = Offset(
-      _cannonCenterXPx,
-      _cannonCenterYPx - _cannonRenderSizePx * _cannonMuzzleFrac,
+      _cannonCenterXPx + math.sin(aim) * reach,
+      _cannonCenterYPx - math.cos(aim) * reach,
     );
     final controller = context.read<GameController>();
     final isLocal = controller.mode == GameMode.local;
@@ -601,6 +621,7 @@ class _PlacementScreenState extends State<PlacementScreen>
     final dist = math.sqrt(dx * dx + dy * dy) / cellSize; // in cells
     setState(() {
       _previewAimCell = [r, c];
+      _previewAim = aim;
       _previewShotFrom = muzzle;
       _previewShotTo = to;
       _previewShotCell = cellSize;
@@ -614,6 +635,7 @@ class _PlacementScreenState extends State<PlacementScreen>
         );
         setState(() {
           _previewAimCell = null;
+          _previewAim = 0;
           _previewEvents.add(CombatEventLike(r, c, ShotResult.miss));
         });
       }
@@ -1813,14 +1835,15 @@ class _PlacementScreenState extends State<PlacementScreen>
                                     child: AnimatedBuilder(
                                       key: ValueKey(loadout.cannonSkinId),
                                       animation: _previewReloadCtrl,
-                                      builder: (context, _) => CannonWidget(
-                                        skin: loadout.cannonSkin,
-                                        cooldownFraction:
-                                            _previewReloadCtrl.value,
-                                        size: renderSize,
-                                        fireTrigger: _previewFireCtrl.stream,
-                                        readyTrigger: _previewReadyCtrl.stream,
-                                      ),
+                                       builder: (context, _) => CannonWidget(
+                                         skin: loadout.cannonSkin,
+                                         cooldownFraction:
+                                             _previewReloadCtrl.value,
+                                         size: renderSize,
+                                         fireTrigger: _previewFireCtrl.stream,
+                                         readyTrigger: _previewReadyCtrl.stream,
+                                         barrelAim: _previewAim,
+                                       ),
                                     ),
                                   ),
                                 ),

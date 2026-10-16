@@ -101,6 +101,19 @@ class CannonWidget extends StatefulWidget {
   static double gameplaySizeScaleOf(CannonSkin skin) =>
       FleetFamilies.byKey(skin.familyKey)?.gameplayScale ?? 1.0;
 
+  /// Barrel swing that bears a straight-up gun onto [target] from [pivot]
+  /// — the same radians [barrelAim] reads, so the shell and the barrel
+  /// agree. Matches battle's `_aimAt` contract for the simple case both
+  /// single-board screens share (pivot straight below the grid, rest
+  /// heading straight up); battle's own multi-half version stays where
+  /// the extra geometry lives.
+  static double aimAt(Offset pivot, Offset target,
+      [double maxSwing = 0.85]) {
+    return math
+        .atan2(target.dx - pivot.dx, -(target.dy - pivot.dy))
+        .clamp(-maxSwing, maxSwing);
+  }
+
   @override
   State<CannonWidget> createState() => _CannonWidgetState();
 }

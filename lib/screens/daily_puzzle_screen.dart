@@ -19,10 +19,11 @@ import '../widgets/cannon_widget.dart';
 import '../widgets/neon_widgets.dart';
 import '../widgets/ocean_background.dart';
 
-/// Daily puzzle: one pre-seeded enemy fleet per calendar day — the same
-/// board on every device — sink it within [DailyPuzzle.shotBudget]
-/// shots. Solving (or failing) pays Doubloons once per day; replays are
-/// free but pay nothing (see `ProfileStore.claimDailyPuzzleReward`).
+/// Daily puzzle: one pre-seeded three-hull enemy fleet per calendar day
+/// — the same board on every device — sink it within the dealt
+/// shot budget. Solving (or failing) pays Doubloons once per day;
+/// replays are free but pay nothing (see
+/// `ProfileStore.claimDailyPuzzleReward`).
 ///
 /// The cannon below the grid is the captain's own equipped gun (see
 /// `ProfileStore.cannonSkin`, picked on the menu / shipyard) — its
@@ -61,6 +62,17 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
 
   /// Cell the airborne shell is heading for (also the grid reticle).
   List<int>? _aimCell;
+
+  /// Barrel swing off straight-up, in the same radians `CannonWidget`
+  /// reads — set as the shot launches so the long barrel visibly bears
+  /// on the tapped cell (the widget tweens the traverse itself), eased
+  /// back to rest when the shell lands, exactly like battle aim.
+  double _aim = 0;
+
+  /// Battle's own traverse limit, so a corner tap swings the gun hard
+  /// without ever laying it flat.
+  static const _maxAimSwing = 0.85;
+
   Offset _shotFrom = Offset.zero;
   Offset _shotTo = Offset.zero;
   double _shotCell = 32;
@@ -121,9 +133,18 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
       _gridLeftPx + (c + 0.5) * cellSize,
       _gridTopPx + (r + 0.5) * cellSize,
     );
+    // Traverse the barrel onto the tapped cell BEFORE the shell is
+    // born, so it launches from the rotated muzzle tip rather than
+    // from beside a gun still pointing straight up.
+    final aim = CannonWidget.aimAt(
+      Offset(_cannonCenterXPx, _cannonCenterYPx),
+      to,
+      _maxAimSwing,
+    );
+    final reach = _cannonRenderSizePx * _cannonMuzzleFrac;
     final muzzle = Offset(
-      _cannonCenterXPx,
-      _cannonCenterYPx - _cannonRenderSizePx * _cannonMuzzleFrac,
+      _cannonCenterXPx + math.sin(aim) * reach,
+      _cannonCenterYPx - math.cos(aim) * reach,
     );
     final profile = context.read<ProfileStore>();
     // Peak scales with the tap's real distance so a close tap gets a
@@ -134,6 +155,7 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
     final dist = math.sqrt(dx * dx + dy * dy) / cellSize; // in cells
     setState(() {
       _aimCell = [r, c];
+      _aim = aim;
       _shotFrom = muzzle;
       _shotTo = to;
       _shotCell = cellSize;
@@ -152,7 +174,10 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
     final profile = context.read<ProfileStore>();
     final res = _puzzle.fire(r, c);
     if (res == ShotResult.duplicate || res == ShotResult.invalid) {
-      setState(() => _aimCell = null);
+      setState(() {
+        _aimCell = null;
+        _aim = 0;
+      });
       return;
     }
     _fxEvents.add(CombatEventLike(r, c, res));
@@ -189,6 +214,7 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
     }
     setState(() {
       _aimCell = null;
+      _aim = 0;
       if (settledNow) _reward = reward;
     });
   }
@@ -254,7 +280,7 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '${_today.month}/${_today.day}/${_today.year}  •  SINK THE FLEET IN ${DailyPuzzle.shotBudget} SHOTS',
+                  '${_today.month}/${_today.day}/${_today.year}  •  SINK ${_puzzle.board.ships.length} SHIPS IN ${_puzzle.shotBudget} SHOTS',
                   style: AppText.label(
                       size: 10,
                       color: AppColors.cream.withValues(alpha: 0.75)),
@@ -266,7 +292,7 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                     _chip('SHOTS LEFT  ${_puzzle.shotsLeft}'),
                     const SizedBox(width: 8),
                     _chip(
-                        'SUNK  ${_puzzle.sunkShips.length}/5'),
+                        'SUNK  ${_puzzle.sunkShips.length}/${_puzzle.board.ships.length}'),
                     if (!rewardAvailable) ...[
                       const SizedBox(width: 8),
                       _chip('CLAIMED ✓'),
@@ -309,10 +335,18 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                       return Stack(
                         clipBehavior: Clip.none,
                         children: [
-                          // Themed water behind the board — the equipped
-                          // deck color, same as each battle half paints.
+                          // Deep water behind the board — the equipped
+                          // deck's own colours sunk into a dark depth
+                          // gradient with vignette, light rays and rising
+                          // bubbles, so the puzzle reads deep rather than
+                          // flat no matter which battlefield is equipped.
                           Positioned.fill(
-                            child: Container(color: theme.deck),
+                            child: CustomPaint(
+                              painter: _PuzzleDepthPainter(
+                                deck: theme.deck,
+                                accent: theme.accent,
+                              ),
+                            ),
                           ),
                           Positioned(
                             left: gridLeft,
@@ -360,6 +394,7 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                                 cooldownFraction: 1,
                                 size: renderSize,
                                 fireTrigger: _fireCtrl.stream,
+                                barrelAim: _aim,
                               ),
                             ),
                           ),
@@ -616,6 +651,103 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
       ),
     );
   }
+}
+
+/// Deep-sea backdrop for the puzzle board: the equipped deck's own
+/// colours running from dim surface light at the top down into near-black
+/// depth, closed off by a vignette, with slanting light rays, a soft
+/// accent glow behind the cannon's end of the water, and a scatter of
+/// rising bubbles. Static by design — one paint, no ticker — since a
+/// background must never cost frames.
+class _PuzzleDepthPainter extends CustomPainter {
+  final Color deck;
+  final Color accent;
+
+  const _PuzzleDepthPainter({required this.deck, required this.accent});
+
+  double _jit(int i) {
+    var x = i * 668265263 + 0x5F3759;
+    x = (x ^ (x >> 13)) * 1274126177;
+    return ((x ^ (x >> 16)) & 0x7FFFFFF) / 0x7FFFFFF;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width, h = size.height;
+    // Surface light up top, the deck's own water through the middle,
+    // true depth at the bottom.
+    final surface = Color.lerp(deck, Colors.white, 0.10)!;
+    final abyss = const Color(0xFF05090F);
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [surface, deck, abyss],
+          stops: const [0.0, 0.45, 1.0],
+        ).createShader(Offset.zero & size),
+    );
+    // Slanting light rays from the surface.
+    for (var i = 0; i < 3; i++) {
+      final x = w * (0.2 + 0.3 * i) + (_jit(i) - 0.5) * w * 0.1;
+      canvas.drawPath(
+        Path()
+          ..moveTo(x, 0)
+          ..lineTo(x + w * 0.10, 0)
+          ..lineTo(x + w * 0.02, h)
+          ..lineTo(x - w * 0.08, h)
+          ..close(),
+        Paint()..color = Colors.white.withValues(alpha: 0.05),
+      );
+    }
+    // Accent glow behind the cannon's end of the water.
+    canvas.drawCircle(
+      Offset(w / 2, h * 0.92),
+      w * 0.55,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [
+            accent.withValues(alpha: 0.20),
+            accent.withValues(alpha: 0.0),
+          ],
+        ).createShader(Rect.fromCircle(
+            center: Offset(w / 2, h * 0.92), radius: w * 0.55)),
+    );
+    // Rising bubbles, deterministic per index.
+    for (var i = 0; i < 14; i++) {
+      final x = _jit(i + 11) * w;
+      final y = _jit(i + 47) * h;
+      final r = 1.5 + _jit(i + 83) * 3;
+      canvas.drawCircle(
+        Offset(x, y),
+        r,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = Colors.white
+              .withValues(alpha: 0.10 + _jit(i + 5) * 0.12),
+      );
+    }
+    // Vignette to close off the edges.
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = RadialGradient(
+          center: Alignment.center,
+          radius: 0.75,
+          colors: const [
+            Color(0x00000000),
+            Color(0x73000000),
+          ],
+          stops: const [0.55, 1.0],
+        ).createShader(Offset.zero & size),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _PuzzleDepthPainter old) =>
+      old.deck != deck || old.accent != accent;
 }
 
 /// Draws a family's projectile into the flight layer.

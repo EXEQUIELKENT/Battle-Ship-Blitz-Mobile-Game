@@ -172,6 +172,13 @@ class _AwesomeCheerState extends State<AwesomeCheer>
   void initState() {
     super.initState();
     _ctrl = AnimationController(vsync: this, duration: _duration);
+    // A fresh mount already holding a cheer (the overlay slot swaps
+    // between the awesome and wow widgets) plays at once — otherwise it
+    // would sit idle waiting for an update that never comes.
+    if (widget.cheerId > 0) {
+      _played = true;
+      _ctrl.forward(from: 0);
+    }
   }
 
   @override

@@ -666,58 +666,207 @@ class _HomeScreenState extends State<HomeScreen> with RouteAware {
   }
 
   void _editName(ProfileStore profile) {
-    final ctrl = TextEditingController(text: profile.playerName);
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.navy,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: const BorderSide(color: AppColors.outline, width: 3),
+      builder: (_) => _CallsignDialog(profile: profile),
+    );
+  }
+}
+
+/// The captain's-plate callsign editor: a riveted brass-trimmed plate
+/// with a live preview of how the fleet will hail the captain, instead
+/// of the old bare prompt. Same rules as before (14 characters, blank
+/// falls back to Captain, friends-list sync on save).
+class _CallsignDialog extends StatefulWidget {
+  final ProfileStore profile;
+
+  const _CallsignDialog({required this.profile});
+
+  @override
+  State<_CallsignDialog> createState() => _CallsignDialogState();
+}
+
+class _CallsignDialogState extends State<_CallsignDialog> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.profile.playerName);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    SoundService.instance.click();
+    widget.profile.setName(_ctrl.text);
+    // A renamed captain must not stay under the old name on the
+    // friends list: push the new one up straight away. Fire and
+    // forget — the dialog closes either way.
+    final online = context.read<OnlineService>();
+    if (online.signedIn) {
+      online.syncProfile(widget.profile);
+    }
+    Navigator.pop(context);
+  }
+
+  Widget _rivet({double? left, double? top, double? right, double? bottom}) {
+    return Positioned(
+      left: left,
+      top: top,
+      right: right,
+      bottom: bottom,
+      child: Container(
+        width: 9,
+        height: 9,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFFFF3C4), AppColors.gold],
+          ),
+          border: Border.all(color: AppColors.outline, width: 1.2),
         ),
-        title: Text('CALLSIGN', style: AppText.heading(size: 16)),
-        content: TextField(
-          controller: ctrl,
-          maxLength: 14,
-          style: AppText.body(),
-          decoration: InputDecoration(
-            counterStyle: AppText.label(size: 10),
-            enabledBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: AppColors.cream),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final typed = _ctrl.text.trim();
+    final preview = typed.isEmpty ? 'Captain' : typed;
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 36),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(20, 22, 20, 16),
+        decoration: BoxDecoration(
+          color: AppColors.navy,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: AppColors.gold, width: 3),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.gold.withValues(alpha: 0.35),
+              blurRadius: 26,
+              spreadRadius: 2,
             ),
-            focusedBorder: const UnderlineInputBorder(
-              borderSide: BorderSide(color: AppColors.gold, width: 2),
-            ),
-          ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              SoundService.instance.click();
-              Navigator.pop(ctx);
-            },
-            child: Text(
-              'CANCEL',
-              style: AppText.label(
-                  color: AppColors.cream.withValues(alpha: 0.7)),
+        child: Stack(
+          children: [
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 54,
+                  height: 54,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: AppColors.gold.withValues(alpha: 0.18),
+                    border: Border.all(color: AppColors.gold, width: 2.5),
+                  ),
+                  alignment: Alignment.center,
+                  child: const Text('⚓',
+                      style: TextStyle(fontSize: 26)),
+                ),
+                const SizedBox(height: 8),
+                Text('CALLSIGN', style: AppText.heading(size: 17)),
+                const SizedBox(height: 2),
+                Text('HOW THE FLEET HAILS YOU',
+                    style: AppText.label(
+                        size: 9,
+                        color:
+                            AppColors.cream.withValues(alpha: 0.6))),
+                const SizedBox(height: 12),
+                // Live preview plate.
+                Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: AppColors.gold, width: 1.5),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(preview.toUpperCase(),
+                          style: AppText.heading(
+                              size: 19, color: AppColors.gold),
+                          textAlign: TextAlign.center),
+                      const SizedBox(height: 2),
+                      Text(widget.profile.rankTitle,
+                          style: AppText.label(
+                              size: 9, color: AppColors.cream)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _ctrl,
+                  maxLength: 14,
+                  textCapitalization: TextCapitalization.words,
+                  style: AppText.body(),
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    counterStyle: AppText.label(size: 10),
+                    filled: true,
+                    fillColor:
+                        Colors.black.withValues(alpha: 0.3),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(
+                          color: AppColors.cream),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(
+                          color: AppColors.gold, width: 2),
+                    ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () {
+                          SoundService.instance.click();
+                          Navigator.pop(context);
+                        },
+                        child: Text(
+                          'CANCEL',
+                          style: AppText.label(
+                              color: AppColors.cream
+                                  .withValues(alpha: 0.7)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: NeonButton(
+                        label: 'SAVE',
+                        icon: Icons.check,
+                        color: AppColors.green,
+                        compact: true,
+                        onPressed: _save,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
-          ),
-          TextButton(
-            onPressed: () {
-              SoundService.instance.click();
-              profile.setName(ctrl.text);
-              // A renamed captain must not stay under the old name on the
-              // friends list: push the new one up straight away. Fire and
-              // forget — the dialog closes either way.
-              final online = context.read<OnlineService>();
-              if (online.signedIn) {
-                online.syncProfile(profile);
-              }
-              Navigator.pop(ctx);
-            },
-            child: Text('SAVE', style: AppText.label(color: AppColors.gold)),
-          ),
-        ],
+            _rivet(left: 7, top: 7),
+            _rivet(right: 7, top: 7),
+            _rivet(left: 7, bottom: 7),
+            _rivet(right: 7, bottom: 7),
+          ],
+        ),
       ),
     );
   }

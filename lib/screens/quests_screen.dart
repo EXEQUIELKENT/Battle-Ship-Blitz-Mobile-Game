@@ -80,22 +80,31 @@ class QuestsScreen extends StatelessWidget {
                   const SizedBox(height: 8),
                 ],
                 const SizedBox(height: 12),
-                Text('MEDALS  ($unlocked/${ProfileStore.achievementDefs.length})',
-                    style: AppText.label(
-                        size: 11,
-                        color:
-                            AppColors.cream.withValues(alpha: 0.75))),
+                _medalShelfHeader(unlocked),
                 const SizedBox(height: 8),
-                for (final a in ProfileStore.achievementDefs) ...[
-                  _achievementRow(
-                    unlocked: profile.achievements.contains(a.id),
-                    icon: a.icon,
-                    name: a.name,
-                    desc: a.desc,
-                    reward: a.reward,
+                GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    mainAxisExtent: 118,
                   ),
-                  const SizedBox(height: 8),
-                ],
+                  itemCount: ProfileStore.achievementDefs.length,
+                  itemBuilder: (context, i) {
+                    final a = ProfileStore.achievementDefs[i];
+                    return _medalBadge(
+                      context,
+                      unlocked: profile.achievements.contains(a.id),
+                      icon: a.icon,
+                      name: a.name,
+                      desc: a.desc,
+                      reward: a.reward,
+                    );
+                  },
+                ),
                 const SizedBox(height: 8),
                 NeonButton(
                   label: 'BACK',
@@ -181,41 +190,123 @@ class QuestsScreen extends StatelessWidget {
     );
   }
 
-  Widget _achievementRow({
+  /// Shelf header: count plus a gold progress bar toward the full set.
+  Widget _medalShelfHeader(int unlocked) {
+    final total = ProfileStore.achievementDefs.length;
+    final frac = total == 0 ? 0.0 : unlocked / total;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('MEDAL SHELF  ($unlocked/$total)',
+            style: AppText.label(
+                size: 11,
+                color: AppColors.cream.withValues(alpha: 0.75))),
+        const SizedBox(height: 6),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: LinearProgressIndicator(
+            value: frac,
+            minHeight: 8,
+            backgroundColor: Colors.black.withValues(alpha: 0.4),
+            valueColor: const AlwaysStoppedAnimation(AppColors.gold),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// One medallion on the shelf: a gold-ringed badge that glows once
+  /// earned, a dark locked disc before that. Tapping shows what it is
+  /// (or was) for — locked medals keep their description as the hunt
+  /// hint, only the icon stays hidden until earned.
+  Widget _medalBadge(
+    BuildContext context, {
     required bool unlocked,
     required String icon,
     required String name,
     required String desc,
     required int reward,
   }) {
-    return Opacity(
-      opacity: unlocked ? 1.0 : 0.55,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: cartoonBox(AppColors.navy, radius: 14),
-        child: Row(
-          children: [
-            Text(unlocked ? icon : '🔒',
-                style: const TextStyle(fontSize: 22)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(name,
-                      style: AppText.heading(
-                          size: 13, color: AppColors.cream)),
-                  Text(desc,
-                      style: AppText.body(
-                          size: 11,
-                          color: AppColors.cream
-                              .withValues(alpha: 0.8))),
-                ],
-              ),
+    return GestureDetector(
+      onTap: () {
+        SoundService.instance.click();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: AppColors.navy,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: const BorderSide(color: AppColors.gold, width: 2),
             ),
-            Text('+$reward',
+            duration: const Duration(seconds: 2),
+            content: Text(
+              unlocked ? '$icon $name — $desc' : '🔒 $name — $desc',
+              style: AppText.body(size: 12, color: AppColors.cream),
+            ),
+          ),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        decoration: cartoonBox(AppColors.navy, radius: 14),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: unlocked
+                    ? const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Color(0xFFFFF3C4),
+                          AppColors.gold,
+                          Color(0xFFB8860B),
+                        ],
+                      )
+                    : null,
+                color: unlocked ? null : Colors.black.withValues(alpha: 0.45),
+                border: Border.all(
+                  color: unlocked
+                      ? AppColors.cream
+                      : AppColors.cream.withValues(alpha: 0.25),
+                  width: 2.5,
+                ),
+                boxShadow: unlocked
+                    ? [
+                        BoxShadow(
+                          color: AppColors.gold.withValues(alpha: 0.55),
+                          blurRadius: 10,
+                          spreadRadius: 1,
+                        ),
+                      ]
+                    : null,
+              ),
+              alignment: Alignment.center,
+              child: Text(unlocked ? icon : '🔒',
+                  style: const TextStyle(fontSize: 24)),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              name,
+              style: AppText.label(
+                  size: 8.5,
+                  color: unlocked
+                      ? AppColors.cream
+                      : AppColors.cream.withValues(alpha: 0.5)),
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 2),
+            Text('+$reward DBL',
                 style: AppText.label(
-                    size: 10, color: AppColors.gold)),
+                    size: 8,
+                    color: unlocked
+                        ? AppColors.gold
+                        : AppColors.gold.withValues(alpha: 0.45))),
           ],
         ),
       ),
