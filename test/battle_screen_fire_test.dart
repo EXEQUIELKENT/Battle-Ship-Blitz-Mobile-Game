@@ -295,4 +295,73 @@ void main() {
     testWidgets('PHANTOM deals nothing, but the defender still feels it',
         (tester) => run(tester, LanBattleMode.phantom));
   });
+
+  group('the remaining-hull counter follows the IMPACT', () {
+    // BUGFIX: the badge counted `5 - board.sunkCount`, which the model
+    // drops the moment a shot is FIRED — so the number said a hull was
+    // gone while its shell was still in the air, and it was out of step
+    // with the fleet strip, where a hull only turns into a wreck once
+    // its sinking shot has actually landed. The counter now uses the
+    // same impact gate as the wrecks, so the two always move together.
+    testWidgets('the tally drops when the shell lands, not when it leaves',
+        (tester) async {
+      final controller = await _newController(GameMode.local);
+      // One destroyer on the enemy's board: two cells, so the second
+      // shot is the one that finishes it. Pass-and-play (not vs-AI) so
+      // the shooter keeps the turn on a HIT and can put the second
+      // shell in without waiting for an opponent to think.
+      controller.boards[0] = Board()..place(kFleet.first, 9, 0, true);
+      controller.startPlacement();
+      controller.boards[0] = Board()..place(kFleet.first, 9, 0, true);
+      controller.beginBattle(
+        enemyBoard: Board()..place(kFleet.last, 0, 0, true), // destroyer
+      );
+      controller.resumedMidMatch = true; // skip the 3-2-1 countdown
+
+      await _pumpBattleScreen(tester, controller);
+
+      // The badge is a pair of number chips; the enemy half's chip is
+      // the one that changes when the enemy hull goes down.
+      int enemyTally() {
+        var n = 0;
+        for (final t in find.text('5').evaluate()) {
+          n++;
+        }
+        return n;
+      }
+
+      expect(enemyTally(), 2, reason: 'both fleets start with five hulls');
+
+      // First cell: a hit, not a sinking. The tally must NOT move.
+      final grid = _firableGrid(tester)!;
+      grid.onTapCell!(0, 0);
+      await tester.pump();
+      await _settleShot(tester);
+      expect(controller.events.single.result, ShotResult.hit);
+      expect(enemyTally(), 2,
+          reason: 'a hit is not a sinking — the tally must not move');
+
+      // Second cell: the hull goes down, and NOW the tally moves. The
+      // gun is on its 2s reload after the first shot, so wait it out
+      // before the second shell.
+      await tester.pump(const Duration(milliseconds: 2600));
+      await tester.pump();
+      final grid2 = _firableGrid(tester);
+      expect(grid2, isNotNull, reason: 'the gun must be reloaded');
+      grid2!.onTapCell!(0, 1);
+      await tester.pump();
+      // The shell is IN FLIGHT: the model has already scored the hit, but
+      // the hull has not actually gone down yet, so the tally must still
+      // read five.
+      expect(enemyTally(), 2,
+          reason: 'the tally must not move before the shell lands');
+      await _settleShot(tester);
+      expect(controller.events.last.result, ShotResult.sunk,
+          reason: 'the second cell finishes the destroyer');
+      expect(enemyTally(), 1,
+          reason: 'a sunk hull leaves the tally when it lands');
+
+      controller.dispose();
+    });
+  });
 }

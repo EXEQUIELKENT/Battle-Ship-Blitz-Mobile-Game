@@ -55,6 +55,9 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
   /// breath as [_cheer].
   String? _cheerCannon;
 
+  /// Which voice the current cheer is matching ("awesome!" or "wow!").
+  CheerKind _cheerKind = CheerKind.awesome;
+
   /// The in-flight shell's clock. Taps while a shell is airborne are
   /// refused with the standard denied blip rather than restarting the
   /// shell mid-air.
@@ -184,7 +187,9 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
     switch (res) {
       case ShotResult.sunk:
         SoundService.instance.sunk(shipSkinId: profile.shipSkinId);
-        SoundService.instance.voiceAwesome();
+        // The coin flip picks "awesome!" or "wow!"; the popup is told
+        // which, so the two always match.
+        _cheerKind = SoundService.instance.sinkingCheer();
         _cheerCannon = profile.cannonSkinId;
         _cheer.value++;
         break;
@@ -398,19 +403,52 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                               ),
                             ),
                           ),
-                          // The shell itself, arcing from the muzzle to
-                          // whichever cell was tapped — this gun's own
-                          // shell artwork, not a generic ball.
-                          if (_aimCell != null) _shotLayer(skin),
+                          // The shell's slot is ALWAYS in the tree — an
+                          // empty box when no shell is in flight.
+                          //
+                          // BUGFIX: a Stack matches its children BY INDEX
+                          // when they carry no keys, so a child added or
+                          // removed here shifted every later child along
+                          // by one. The celebration overlay sits right
+                          // after this slot and is a `Positioned.fill`
+                          // just like it, so the overlay's element was
+                          // re-used for the shell layer and then
+                          // re-created on the next shot: its animation
+                          // restarted on every shot, and the popup could
+                          // pop up when no ship had been sunk at all.
+                          // Keeping the slot (and its type) fixed means
+                          // the overlay's element is never disturbed.
+                          // The shell's slot is ALWAYS in the tree — an
+                          // empty box when no shell is in flight.
+                          //
+                          // BUGFIX: a Stack matches its children BY INDEX
+                          // when they carry no keys, so a child added or
+                          // removed here shifted every later child along
+                          // by one. The celebration overlay sits right
+                          // after this slot and is a `Positioned.fill`
+                          // just like it, so the overlay's element was
+                          // re-used for the shell layer and then
+                          // re-created on the next shot: its animation
+                          // restarted every time, and the popup could
+                          // pop up when no ship had been sunk at all.
+                          // Keeping the slot (and its type) fixed means
+                          // the overlay's element is never disturbed.
+                          Positioned.fill(
+                            child: _aimCell == null
+                                ? const SizedBox.shrink()
+                                : _shotLayer(skin),
+                          ),
                           // Sinking cheer over the middle of the board.
                           Positioned.fill(
+                            key: const ValueKey('sinking-cheer'),
                             child: IgnorePointer(
                               child: Center(
                                 child: ValueListenableBuilder<int>(
                                   valueListenable: _cheer,
                                   builder: (context, cheerId, _) =>
-                                      AwesomeCheer(
+                                      SinkingCheer(
                                           cheerId: cheerId,
+                                          kind: _cheerKind,
                                           cannonId: _cheerCannon),
                                 ),
                               ),
@@ -498,97 +536,100 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
 
   /// The in-flight shell: this cannon's own artwork (family gun, legacy
   /// gun, or plain iron ball) arcing muzzle-to-cell with motion ghosts.
+  ///
+  /// The CONTENT of the shell slot — the slot itself is a stable
+  /// `Positioned.fill` in the Stack, so the celebration overlay beside it
+  /// is never disturbed by a shell appearing or landing (see the note
+  /// there).
   Widget _shotLayer(CannonSkin skin) {
     final shellFamily = FleetFamilies.byKey(skin.familyKey);
     final legacyShellId = shellFamily == null ? skin.id : null;
     final isDirectional = shellFamily != null
         ? familyShellIsDirectional(shellFamily.id)
         : legacyShellIsDirectional(legacyShellId!);
-    return Positioned.fill(
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: _shotCtrl,
-          builder: (context, _) {
-            final t = _shotCtrl.value;
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: _shotCtrl,
+        builder: (context, _) {
+          final t = _shotCtrl.value;
 
-            Offset posAt(double tt) {
-              final cl = tt.clamp(0.0, 1.0);
-              final base = Offset.lerp(_shotFrom, _shotTo, cl)!;
-              final arc = math.sin(cl * math.pi) * _shotArc;
-              return base - Offset(0, arc);
-            }
+          Offset posAt(double tt) {
+            final cl = tt.clamp(0.0, 1.0);
+            final base = Offset.lerp(_shotFrom, _shotTo, cl)!;
+            final arc = math.sin(cl * math.pi) * _shotArc;
+            return base - Offset(0, arc);
+          }
 
-            double angleAt(double tt) {
-              final cl = tt.clamp(0.0, 1.0);
-              final vx = _shotTo.dx - _shotFrom.dx;
-              final arcRate =
-                  math.pi * _shotArc * math.cos(cl * math.pi);
-              final vy = (_shotTo.dy - _shotFrom.dy) - arcRate;
-              if (vx == 0 && vy == 0) return 0;
-              return math.atan2(vx, -vy);
-            }
+          double angleAt(double tt) {
+            final cl = tt.clamp(0.0, 1.0);
+            final vx = _shotTo.dx - _shotFrom.dx;
+            final arcRate =
+                math.pi * _shotArc * math.cos(cl * math.pi);
+            final vy = (_shotTo.dy - _shotFrom.dy) - arcRate;
+            if (vx == 0 && vy == 0) return 0;
+            return math.atan2(vx, -vy);
+          }
 
-            double diamAt(double tt) =>
-                _shotCell * (2.6 - 1.6 * tt.clamp(0.0, 1.0));
+          double diamAt(double tt) =>
+              _shotCell * (2.6 - 1.6 * tt.clamp(0.0, 1.0));
 
-            double impactFadeAt(double tt) {
-              const fadeStart = 0.92;
-              if (tt <= fadeStart) return 1.0;
-              return (1 - (tt - fadeStart) / (1 - fadeStart))
-                  .clamp(0.0, 1.0);
-            }
+          double impactFadeAt(double tt) {
+            const fadeStart = 0.92;
+            if (tt <= fadeStart) return 1.0;
+            return (1 - (tt - fadeStart) / (1 - fadeStart))
+                .clamp(0.0, 1.0);
+          }
 
-            final pos = posAt(t);
-            final d = diamAt(t);
-            final fade = impactFadeAt(t);
-            final angle = isDirectional ? angleAt(t) : t * math.pi * 6;
+          final pos = posAt(t);
+          final d = diamAt(t);
+          final fade = impactFadeAt(t);
+          final angle = isDirectional ? angleAt(t) : t * math.pi * 6;
 
-            Widget ghost(double dt, double opacity, double scale) {
-              final tt = t - dt;
-              if (tt <= 0) return const SizedBox.shrink();
-              final gp = posAt(tt);
-              final gd = diamAt(tt) * scale;
-              return Positioned(
-                left: gp.dx - gd / 2,
-                top: gp.dy - gd / 2,
+          Widget ghost(double dt, double opacity, double scale) {
+            final tt = t - dt;
+            if (tt <= 0) return const SizedBox.shrink();
+            final gp = posAt(tt);
+            final gd = diamAt(tt) * scale;
+            return Positioned(
+              left: gp.dx - gd / 2,
+              top: gp.dy - gd / 2,
+              child: Opacity(
+                opacity: opacity * impactFadeAt(tt),
+                child: Transform.rotate(
+                  angle: isDirectional ? angleAt(tt) : 0.0,
+                  child: _shellPaint(
+                    gd,
+                    family: shellFamily,
+                    legacyId: legacyShellId,
+                  ),
+                ),
+              ),
+            );
+          }
+
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              ghost(0.11, 0.14, 0.72),
+              ghost(0.055, 0.26, 0.84),
+              Positioned(
+                left: pos.dx - d / 2,
+                top: pos.dy - d / 2,
                 child: Opacity(
-                  opacity: opacity * impactFadeAt(tt),
+                  opacity: fade,
                   child: Transform.rotate(
-                    angle: isDirectional ? angleAt(tt) : 0.0,
+                    angle: angle,
                     child: _shellPaint(
-                      gd,
+                      d,
                       family: shellFamily,
                       legacyId: legacyShellId,
                     ),
                   ),
                 ),
-              );
-            }
-
-            return Stack(
-              clipBehavior: Clip.none,
-              children: [
-                ghost(0.11, 0.14, 0.72),
-                ghost(0.055, 0.26, 0.84),
-                Positioned(
-                  left: pos.dx - d / 2,
-                  top: pos.dy - d / 2,
-                  child: Opacity(
-                    opacity: fade,
-                    child: Transform.rotate(
-                      angle: angle,
-                      child: _shellPaint(
-                        d,
-                        family: shellFamily,
-                        legacyId: legacyShellId,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

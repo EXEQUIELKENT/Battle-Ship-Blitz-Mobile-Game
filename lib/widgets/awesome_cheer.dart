@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../services/sound_service.dart';
+
 /// Center-screen "AWESOME!" celebration shown whenever a ship is destroyed
 /// during gameplay — with a different design per cannon skin.
 ///
@@ -18,7 +20,7 @@ import 'package:flutter/material.dart';
 /// sinkings restart the burst rather than queueing a second one. Always
 /// mount inside an `IgnorePointer`: it celebrates over the board, never
 /// with it.
-class AwesomeCheer extends StatefulWidget {
+class AwesomeCheer extends StatelessWidget {
   final int cheerId;
 
   /// The cannon whose sinking this celebrates — selects the design.
@@ -28,7 +30,38 @@ class AwesomeCheer extends StatefulWidget {
   const AwesomeCheer({super.key, required this.cheerId, this.cannonId});
 
   @override
-  State<AwesomeCheer> createState() => _AwesomeCheerState();
+  Widget build(BuildContext context) => SinkingCheer(
+        cheerId: cheerId,
+        kind: CheerKind.awesome,
+        cannonId: cannonId,
+      );
+}
+
+/// The celebration for a destroyed ship, in whichever voice the coin flip
+/// picked (see `SoundService.sinkingCheer`).
+///
+/// The two lines are NOT the same animation: "AWESOME!" springs up letter
+/// by letter over a soft bloom, while "WOW!" slams down as one big word
+/// on a double shockwave — so the popup always matches the sound that
+/// was just heard, and the two never read as the same canned effect.
+class SinkingCheer extends StatefulWidget {
+  final int cheerId;
+
+  /// Which voice this celebration is matching.
+  final CheerKind kind;
+
+  /// The cannon whose sinking this celebrates — selects the design.
+  final String? cannonId;
+
+  const SinkingCheer({
+    super.key,
+    required this.cheerId,
+    this.kind = CheerKind.awesome,
+    this.cannonId,
+  });
+
+  @override
+  State<SinkingCheer> createState() => _SinkingCheerState();
 }
 
 /// How one cannon's burst behaves — one value per gun, never shared.
@@ -160,10 +193,11 @@ const Map<String, CheerTheme> _cheerThemes = {
 CheerTheme cheerThemeFor(String? cannonId) =>
     _cheerThemes[cannonId] ?? _cheerThemes['mk1']!;
 
-class _AwesomeCheerState extends State<AwesomeCheer>
+class _SinkingCheerState extends State<SinkingCheer>
     with SingleTickerProviderStateMixin {
   static const _duration = Duration(milliseconds: 1500);
-  static const _letters = ['A', 'W', 'E', 'S', 'O', 'M', 'E', '!'];
+  static const _awesomeLetters = ['A', 'W', 'E', 'S', 'O', 'M', 'E', '!'];
+  static const _wowLetters = ['W', 'O', 'W', '!'];
 
   late final AnimationController _ctrl;
   bool _played = false;
@@ -173,7 +207,7 @@ class _AwesomeCheerState extends State<AwesomeCheer>
     super.initState();
     _ctrl = AnimationController(vsync: this, duration: _duration);
     // A fresh mount already holding a cheer (the overlay slot swaps
-    // between the awesome and wow widgets) plays at once — otherwise it
+    // between the awesome and wow words) plays at once — otherwise it
     // would sit idle waiting for an update that never comes.
     if (widget.cheerId > 0) {
       _played = true;
@@ -182,10 +216,11 @@ class _AwesomeCheerState extends State<AwesomeCheer>
   }
 
   @override
-  void didUpdateWidget(AwesomeCheer oldWidget) {
+  void didUpdateWidget(SinkingCheer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if ((widget.cheerId != oldWidget.cheerId ||
-            widget.cannonId != oldWidget.cannonId) &&
+            widget.cannonId != oldWidget.cannonId ||
+            widget.kind != oldWidget.kind) &&
         widget.cheerId > 0) {
       _played = true;
       _ctrl.forward(from: 0);
@@ -201,6 +236,8 @@ class _AwesomeCheerState extends State<AwesomeCheer>
   @override
   Widget build(BuildContext context) {
     final theme = cheerThemeFor(widget.cannonId);
+    final wow = widget.kind == CheerKind.wow;
+    final letters = wow ? _wowLetters : _awesomeLetters;
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (context, _) {
@@ -208,17 +245,21 @@ class _AwesomeCheerState extends State<AwesomeCheer>
         // Idle (never cheered) and settled (burst fully faded) both draw
         // nothing at all — the overlay is only ever alive mid-burst.
         if (!_played || t >= 1.0) return const SizedBox.shrink();
-        final exit = ((t - 0.70) / 0.30).clamp(0.0, 1.0);
+        // "AWESOME!" blooms up and floats away over the last 30%; "WOW!"
+        // holds its punch longer, then snaps out upward.
+        final exit =
+            ((t - (wow ? 0.76 : 0.70)) / (wow ? 0.24 : 0.30)).clamp(0.0, 1.0);
         final fade = 1 - exit;
-        final rise = -26 * Curves.easeIn.transform(exit);
-        final bloom =
-            Curves.easeOutBack.transform((t / 0.22).clamp(0.0, 1.0));
+        final rise = -(wow ? 44 : 26) * Curves.easeIn.transform(exit);
+        final bloom = wow
+            ? Curves.easeOutBack.transform((t / 0.16).clamp(0.0, 1.0))
+            : Curves.easeOutBack.transform((t / 0.22).clamp(0.0, 1.0));
         return Opacity(
           opacity: fade.clamp(0.0, 1.0),
           child: Transform.translate(
             offset: Offset(0, rise),
             child: Transform.rotate(
-              angle: -0.05,
+              angle: wow ? 0.02 : -0.05,
               child: Transform.scale(
                 scale: bloom,
                 child: FittedBox(
@@ -231,18 +272,21 @@ class _AwesomeCheerState extends State<AwesomeCheer>
                       children: [
                         Positioned.fill(
                           child: CustomPaint(
-                            painter: _CheerFxPainter(t, theme),
+                            painter: wow
+                                ? _WowFxPainter(t, theme)
+                                : _CheerFxPainter(t, theme),
                           ),
                         ),
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            for (var i = 0; i < _letters.length; i++)
+                            for (var i = 0; i < letters.length; i++)
                               _CheerLetter(
-                                  letter: _letters[i],
+                                  letter: letters[i],
                                   t: t,
                                   index: i,
-                                  theme: theme),
+                                  theme: theme,
+                                  drop: wow),
                           ],
                         ),
                       ],
@@ -258,30 +302,51 @@ class _AwesomeCheerState extends State<AwesomeCheer>
   }
 }
 
-/// One letter of the word, bouncing in on its own staggered elastic —
-/// the `!` leans in last and hardest.
+/// One letter of the word. "AWESOME!" springs up letter by letter on an
+/// elastic; "WOW!" slams down as one heavier word that lands and bounces.
 class _CheerLetter extends StatelessWidget {
   final String letter;
   final double t;
   final int index;
   final CheerTheme theme;
 
+  /// The WOW choreography: a drop from above with a bounce, bigger and
+  /// heavier than the awesome letters.
+  final bool drop;
+
   const _CheerLetter(
       {required this.letter,
       required this.t,
       required this.index,
-      required this.theme});
+      required this.theme,
+      this.drop = false});
 
   @override
   Widget build(BuildContext context) {
-    final local =
-        ((t - 0.05 - index * 0.045) / 0.45).clamp(0.0, 1.0);
-    final s = Curves.elasticOut.transform(local);
-    if (s <= 0.01) return const SizedBox(width: 24);
+    final size = drop ? 54.0 : 36.0;
+    final stroke = drop ? 9.0 : 6.0;
+    late final double s;
+    late final Offset offset;
+    late final double angle;
+    if (drop) {
+      final fall = (t - index * 0.03).clamp(0.0, 1.0);
+      s = Curves.easeOutBack.transform(
+          ((t - 0.01 - index * 0.03) / 0.20).clamp(0.0, 1.0));
+      // Falls in from above, lands with a bounce, and settles.
+      offset = Offset(0, -190 * (1 - Curves.bounceOut.transform(fall)));
+      angle = (0.06 - index * 0.04) * s;
+    } else {
+      final local =
+          ((t - 0.05 - index * 0.045) / 0.45).clamp(0.0, 1.0);
+      s = Curves.elasticOut.transform(local);
+      offset = Offset(0, -14 * (1 - s));
+      angle = (-0.09 + index * 0.025) * s;
+    }
+    if (s <= 0.01) return SizedBox(width: size * 0.66);
     return Transform.translate(
-      offset: Offset(0, -14 * (1 - s)),
+      offset: offset,
       child: Transform.rotate(
-        angle: (-0.09 + index * 0.025) * s,
+        angle: angle,
         child: Transform.scale(
           scaleX: s,
           scaleY: s,
@@ -292,12 +357,12 @@ class _CheerLetter extends StatelessWidget {
               Text(
                 letter,
                 style: TextStyle(
-                  fontSize: 36,
+                  fontSize: size,
                   fontWeight: FontWeight.w900,
                   letterSpacing: 1,
                   foreground: Paint()
                     ..style = PaintingStyle.stroke
-                    ..strokeWidth = 6
+                    ..strokeWidth = stroke
                     ..strokeJoin = StrokeJoin.round
                     ..color = theme.deep,
                 ),
@@ -316,8 +381,8 @@ class _CheerLetter extends StatelessWidget {
                 ).createShader(bounds),
                 child: Text(
                   letter,
-                  style: const TextStyle(
-                    fontSize: 36,
+                  style: TextStyle(
+                    fontSize: size,
                     fontWeight: FontWeight.w900,
                     letterSpacing: 1,
                     color: Colors.white,
@@ -875,5 +940,267 @@ class _CheerFxPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CheerFxPainter oldDelegate) =>
+      oldDelegate.t != t || oldDelegate.theme != theme;
+}
+
+/// The burst behind the WOW! word — the same sixteen cannons, the same
+/// sixteen palettes, but a different vocabulary from the AWESOME! burst:
+/// where "AWESOME!" blooms and scatters, "WOW!" SLAMS — a hard double
+/// shockwave and one emphatic gesture per gun.
+class _WowFxPainter extends CustomPainter {
+  final double t;
+  final CheerTheme theme;
+
+  _WowFxPainter(this.t, this.theme);
+
+  double _jit(int seed, int i) {
+    var x = seed * 374761393 + i * 668265263;
+    x = (x ^ (x >> 13)) * 1274126177;
+    return ((x ^ (x >> 16)) & 0x7FFFFFF) / 0x7FFFFFF;
+  }
+
+  Paint _fill(Color c, double a) =>
+      Paint()..color = c.withValues(alpha: a.clamp(0.0, 1.0));
+
+  Paint _stroke(Color c, double a, double w) => Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..strokeWidth = w
+    ..color = c.withValues(alpha: a.clamp(0.0, 1.0));
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final r = size.shortestSide / 2;
+    final pop = theme.pop;
+    final light = theme.light;
+    final deep = theme.deep;
+    final fade = 1 - ((t - 0.55) / 0.45).clamp(0.0, 1.0);
+    // The slam: the shockwave races out early and fast.
+    final shock = Curves.easeOutQuart.transform((t / 0.45).clamp(0.0, 1.0));
+    final settle = Curves.easeOutCubic.transform((t / 0.30).clamp(0.0, 1.0));
+
+    // The double shockwave every WOW! shares — the one thing that makes
+    // it read as a slam rather than a bloom.
+    for (final k in const [0.0, 0.18]) {
+      final p = ((shock - k) / (1 - k)).clamp(0.0, 1.0);
+      if (p <= 0) continue;
+      canvas.drawCircle(
+        center,
+        r * 1.05 * p,
+        _stroke(light, (1 - p) * 0.9, 10 * (1 - p) + 1),
+      );
+    }
+    // The impact flash, right at the word.
+    canvas.drawCircle(
+      center,
+      r * 0.42 * (1 - t * 1.6).clamp(0.0, 1.0),
+      _fill(light, (1 - t / 0.35).clamp(0.0, 1.0) * 0.8),
+    );
+
+    switch (theme.burst) {
+      case CheerBurst.sparks:
+        // One hard cross of sparks, four directions.
+        for (final dir in const [-1.0, 1.0]) {
+          canvas.drawLine(
+            center + Offset(-r * 0.9 * dir, 0),
+            center + Offset(r * 0.9 * dir, 0),
+            _stroke(light, fade, 5),
+          );
+          canvas.drawLine(
+            center + Offset(0, -r * 0.9 * dir),
+            center + Offset(0, r * 0.9 * dir),
+            _stroke(pop, fade, 5),
+          );
+        }
+
+      case CheerBurst.flames:
+        // A solid cone of flame punched straight out.
+        canvas.drawPath(
+          Path()
+            ..moveTo(center.dx - r * 0.5, center.dy)
+            ..lineTo(center.dx + r * 0.5, center.dy)
+            ..lineTo(center.dx, center.dy - r * 1.1 * settle)
+            ..close(),
+          _fill(pop, fade * 0.9),
+        );
+        canvas.drawPath(
+          Path()
+            ..moveTo(center.dx - r * 0.2, center.dy)
+            ..lineTo(center.dx + r * 0.2, center.dy)
+            ..lineTo(center.dx, center.dy - r * 0.7 * settle)
+            ..close(),
+          _fill(light, fade),
+        );
+
+      case CheerBurst.arcs:
+        // Four lightning forks striking in at once.
+        for (var i = 0; i < 4; i++) {
+          final a = i * math.pi / 2 + 0.4;
+          final path = Path()..moveTo(center.dx, center.dy);
+          for (var k = 1; k <= 3; k++) {
+            final rr = r * 1.0 * settle * (k / 3);
+            final off = (_jit(7, i * 5 + k) - 0.5) * 0.8;
+            path.lineTo(center.dx + math.cos(a + off) * rr,
+                center.dy + math.sin(a + off) * rr);
+          }
+          canvas.drawPath(path, _stroke(light, fade, 4));
+        }
+
+      case CheerBurst.globs:
+        // Heavy splats flung outward, sagging.
+        for (var i = 0; i < 7; i++) {
+          final a = (i / 7) * 2 * math.pi + 0.3;
+          final d = r * 0.95 * settle;
+          final p = center + Offset(math.cos(a) * d, math.sin(a) * d * 0.8);
+          canvas.drawCircle(p, 9 * fade + 2, _fill(pop, fade));
+        }
+
+      case CheerBurst.coins:
+        // A neat gold medallion stamped dead centre.
+        canvas.drawCircle(center, r * 0.34, _fill(pop, fade));
+        canvas.drawCircle(
+          center,
+          r * 0.34,
+          _stroke(light, fade, 4),
+        );
+        canvas.drawCircle(center, r * 0.16, _fill(light, fade));
+
+      case CheerBurst.rings:
+        // One solid violet disc punched through.
+        canvas.drawCircle(center, r * 0.36, _fill(deep, fade * 0.95));
+        canvas.drawCircle(center, r * 0.36, _stroke(pop, fade, 5));
+        canvas.drawCircle(center, r * 0.12, _fill(light, fade));
+
+      case CheerBurst.bubbles:
+        // Three big bubbles bursting apart.
+        for (var i = 0; i < 3; i++) {
+          final a = (i / 3) * 2 * math.pi + 0.5;
+          final d = r * 0.7 * settle;
+          final p = center + Offset(math.cos(a) * d, math.sin(a) * d);
+          canvas.drawCircle(
+            p,
+            14 * fade + 2,
+            _stroke(light, fade, 3),
+          );
+        }
+
+      case CheerBurst.rays:
+        // Twelve straight rays, a hard sun.
+        for (var i = 0; i < 12; i++) {
+          final a = i * math.pi / 6;
+          final inner = r * 0.30;
+          final outer = r * (i.isEven ? 1.05 : 0.72) * settle;
+          canvas.drawLine(
+            center + Offset(math.cos(a) * inner, math.sin(a) * inner),
+            center + Offset(math.cos(a) * outer, math.sin(a) * outer),
+            _stroke(i.isEven ? pop : light, fade, i.isEven ? 5 : 3),
+          );
+        }
+
+      case CheerBurst.collapse:
+        // Everything rushes INWARD and a black hole flashes.
+        final inward = Curves.easeIn.transform(t);
+        canvas.drawCircle(
+          center,
+          r * 0.9 * (1 - inward),
+          _stroke(pop, fade, 6),
+        );
+        canvas.drawCircle(center, r * 0.2, _fill(deep, fade));
+        final flash = (1 - (t - 0.6).abs() * 6).clamp(0.0, 1.0);
+        canvas.drawCircle(center, r * 0.1 * flash + 1, _fill(light, flash));
+
+      case CheerBurst.petals:
+        // A tight ring of petals bursting outward like a bloom.
+        for (var i = 0; i < 10; i++) {
+          final a = (i / 10) * 2 * math.pi + 0.2;
+          final d = r * 0.95 * settle;
+          final p = center + Offset(math.cos(a) * d, math.sin(a) * d);
+          canvas.save();
+          canvas.translate(p.dx, p.dy);
+          canvas.rotate(a);
+          canvas.drawOval(
+            Rect.fromCenter(
+                center: Offset.zero, width: 22 * fade + 4, height: 10 * fade + 2),
+            _fill(i.isEven ? pop : light, fade),
+          );
+          canvas.restore();
+        }
+
+      case CheerBurst.smoke:
+        // One thick rolling smoke ball.
+        for (var i = 0; i < 4; i++) {
+          canvas.drawCircle(
+            center + Offset((i - 1.5) * r * 0.2, 0),
+            r * (0.34 + 0.2 * t) * (1 - t * 0.4),
+            _fill(light, fade * 0.3),
+          );
+        }
+
+      case CheerBurst.sheets:
+        // Two hard plates slamming in from the sides.
+        for (final dir in [-1.0, 1.0]) {
+          final w = r * 0.9 * settle;
+          canvas.drawRect(
+            Rect.fromLTWH(
+              dir < 0 ? center.dx - w : center.dx,
+              center.dy - r * 0.3,
+              w,
+              r * 0.6,
+            ),
+            _fill(pop, fade * 0.8),
+          );
+        }
+
+      case CheerBurst.jets:
+        // Three hard steam jets punching up.
+        for (var i = -1; i <= 1; i++) {
+          canvas.drawLine(
+            Offset(center.dx + i * 22, center.dy + r * 0.25),
+            Offset(center.dx + i * 22, center.dy - r * 0.95 * settle),
+            _stroke(light, fade, 7),
+          );
+        }
+
+      case CheerBurst.snow:
+        // A hard snowflake cross.
+        for (var i = 0; i < 3; i++) {
+          final a = i * math.pi / 3;
+          canvas.drawLine(
+            center - Offset(math.cos(a) * r * 0.95, math.sin(a) * r * 0.95),
+            center + Offset(math.cos(a) * r * 0.95, math.sin(a) * r * 0.95),
+            _stroke(light, fade, 5),
+          );
+        }
+
+      case CheerBurst.magma:
+        // A single tall gout of molten rock.
+        canvas.drawPath(
+          Path()
+            ..moveTo(center.dx - r * 0.26, center.dy + r * 0.2)
+            ..lineTo(center.dx + r * 0.26, center.dy + r * 0.2)
+            ..lineTo(center.dx, center.dy - r * 1.1 * settle)
+            ..close(),
+          _fill(pop, fade),
+        );
+        canvas.drawCircle(center, r * 0.22, _fill(light, fade));
+
+      case CheerBurst.lance:
+        // A single beam straight through the middle.
+        canvas.drawLine(
+          center.translate(0, -r * 1.1),
+          center.translate(0, r * 1.1),
+          _stroke(pop, fade, 9),
+        );
+        canvas.drawLine(
+          center.translate(0, -r * 1.1),
+          center.translate(0, r * 1.1),
+          _stroke(light, fade * 0.7, 3),
+        );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WowFxPainter oldDelegate) =>
       oldDelegate.t != t || oldDelegate.theme != theme;
 }

@@ -115,6 +115,11 @@ class _BattleScreenState extends State<BattleScreen>
   /// never disagree about which sinking the burst is for.
   String? _cheerCannon;
 
+  /// Which voice the current cheer is matching ("awesome!" or "wow!") —
+  /// the coin flip's result, written in the same breath as [_cheer] so
+  /// the popup always matches the sound that was just heard.
+  CheerKind _cheerKind = CheerKind.awesome;
+
   /// Whose turn it is, in every mode that HAS turns. The bottom half's
   /// owner is the "P1" side and the top half's owner is the "P2" side —
   /// the halves never swap sides, only this flag changes.
@@ -457,11 +462,13 @@ class _BattleScreenState extends State<BattleScreen>
         // The sinking hull's own skin picks the sound — a Blackpowder
         // galleon goes down to splintering timber, a Helios Drift
         // catamaran to an energy implosion (see `SoundService.sunk`) —
-        // and every sinking gets the "awesome!" voice cheer plus the
-        // center-screen celebration on top — in the shooter's own
-        // colours, so each cannon celebrates its own way.
+        // and every sinking gets a voice cheer plus the center-screen
+        // celebration on top — in the shooter's own colours, so each
+        // cannon celebrates its own way. The coin flip picks "awesome!"
+        // or "wow!" and the popup is told which one it just played, so
+        // the two always match.
         SoundService.instance.sunk(shipSkinId: targetSkin?.id);
-        SoundService.instance.voiceAwesome();
+        _cheerKind = SoundService.instance.sinkingCheer();
         _cheerCannon = shooterSkin?.id;
         _cheer.value++;
         break;
@@ -2434,8 +2441,10 @@ class _BattleScreenState extends State<BattleScreen>
               child: Center(
                 child: ValueListenableBuilder<int>(
                   valueListenable: _cheer,
-                  builder: (context, cheerId, _) => AwesomeCheer(
-                      cheerId: cheerId, cannonId: _cheerCannon),
+                  builder: (context, cheerId, _) => SinkingCheer(
+                      cheerId: cheerId,
+                      kind: _cheerKind,
+                      cannonId: _cheerCannon),
                 ),
               ),
             ),
@@ -3538,8 +3547,17 @@ class _BattleScreenState extends State<BattleScreen>
             top: 4,
             bottom: 4,
             child: _DotsBadge(
-              topLeft: 5 - topBoard.sunkCount,
-              bottomLeft: 5 - bottomBoard.sunkCount,
+              // The counter counts what the player can SEE: a hull only
+              // leaves the tally when its sinking shot has actually
+              // landed. The model's own `sunkCount` flips the moment the
+              // shot is FIRED, which left the badge counting a dead ship
+              // while its shell was still in the air — and, worse, a
+              // counter that had already moved before the destruction
+              // the player was watching. Same gate as the destroyed
+              // hulls in the strips above it (see `_revealedSunkNames`),
+              // so the number and the wrecks always change together.
+              topLeft: _hullsRemaining(topBoard, topIsP1Fleet),
+              bottomLeft: _hullsRemaining(bottomBoard, bottomIsP1Fleet),
               // Takes its colour from the same place the hulls do, so the
               // badge can't disagree with the ships it's counting —
               // whether that's the plain side colour or a skin.
@@ -3611,6 +3629,29 @@ class _BattleScreenState extends State<BattleScreen>
   /// accent, and the remaining-ships badge, so a side can never end up
   /// with two different colours in different corners of the screen.
   bool _fleetIsRed(bool isP1Fleet) => isP1Fleet != _iAmBlue;
+
+  /// How many hulls of [board] are still standing AS THE PLAYER CAN SEE
+  /// THEM.
+  ///
+  /// The fleet strip flips a hull to its destroyed model only once its
+  /// sinking shot has visually landed (see `_revealedSunkNames`), so the
+  /// remaining-hull counter is built from the SAME gate — the count and
+  /// the wrecks can never disagree. The model's own `sunkCount` is not
+  /// used here on purpose: it flips at FIRE time, so the badge used to
+  /// drop a hull off the tally while that shell was still in the air.
+  ///
+  /// Still asks the model too (`isSunk`), so a hull that is repaired
+  /// (the REPAIR/PATCH CREW card un-hits a cell) comes back onto the
+  /// tally exactly as the strip's icon comes back to life.
+  int _hullsRemaining(Board board, bool isP1Fleet) {
+    final revealed = _revealedSunkNames(isP1Fleet);
+    var sunk = 0;
+    for (final spec in kFleet) {
+      final ship = board.shipOfKind(spec.kind);
+      if (ship != null && ship.isSunk && revealed.contains(spec.name)) sunk++;
+    }
+    return kFleet.length - sunk;
+  }
 
   Widget _statusRow(Board board,
       {required bool faded,
