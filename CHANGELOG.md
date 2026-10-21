@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.5](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.5.4...battleship_blitz-v1.5.5) (2026-10-21)
+
+
+### Bug Fixes
+
+* Sync sinking cheers and hull counters ([5335c58](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/5335c5861c1639e588da80be2e30d7da9fcbe41f))
+
 ## [1.5.4](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.5.3...battleship_blitz-v1.5.4) (2026-10-16)
 
 
