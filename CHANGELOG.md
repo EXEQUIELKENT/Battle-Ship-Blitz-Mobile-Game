@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.7](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.5.6...battleship_blitz-v1.5.7) (2026-10-23)
+
+
+### Bug Fixes
+
+* Add varied daily puzzle modes ([90a3d57](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/commit/90a3d5739088dd6e461b5ee3d979f2f65eeba616))
+
 ## [1.5.6](https://github.com/EXEQUIELKENT/Battle-Ship-Blitz-Mobile-Game/compare/battleship_blitz-v1.5.5...battleship_blitz-v1.5.6) (2026-10-23)
 
 
