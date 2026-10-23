@@ -5,7 +5,6 @@
 // element must survive everything else in that Stack coming and going —
 // which is what this file pins down.
 import 'package:battleship_blitz/models/daily_puzzle.dart';
-import 'package:battleship_blitz/models/game_models.dart';
 import 'package:battleship_blitz/screens/daily_puzzle_screen.dart';
 import 'package:battleship_blitz/services/game_controller.dart';
 import 'package:battleship_blitz/services/network_service.dart';
@@ -105,5 +104,46 @@ void main() {
     final theme = cheerThemeFor('rose');
     expect(theme.burst, isNot(CheerBurst.sparks),
         reason: 'each cannon keeps its own celebration vocabulary');
+  });
+
+  testWidgets('the board shows exactly the ships the puzzle marks',
+      (tester) async {
+    // The MARKED and FIRST STRIKE puzzles put their target hulls on
+    // show; every other type keeps the whole fleet hidden. Either way
+    // the grid and the model have to agree, or the player is aiming at
+    // a ship the puzzle does not know about.
+    SharedPreferences.setMockInitialValues({});
+    final profile = ProfileStore();
+    await profile.load();
+    final controller =
+        GameController(profile: profile, network: NetworkService());
+
+    await tester.pumpWidget(MultiProvider(
+      providers: [
+        ChangeNotifierProvider<ProfileStore>.value(value: profile),
+        ChangeNotifierProvider<NetworkService>.value(value: controller.network),
+        ChangeNotifierProvider<GameController>.value(value: controller),
+      ],
+      child: const MaterialApp(home: DailyPuzzleScreen()),
+    ));
+    await tester.pump();
+
+    final now = DateTime.now();
+    final puzzle = DailyPuzzle(
+      seed: ProfileStore.dailyPuzzleSeed(
+          DateTime(now.year, now.month, now.day)),
+    );
+    final grid = tester.widget<BattleGrid>(find.byType(BattleGrid));
+    final revealed = puzzle.revealedShips;
+    if (revealed == null) {
+      expect(grid.ships, isNull,
+          reason: 'a blind puzzle must not show the fleet');
+    } else {
+      expect(grid.ships, isNotNull);
+      expect(grid.ships!.map((s) => s.spec.kind).toSet(),
+          revealed.map((s) => s.spec.kind).toSet());
+      expect(grid.skin, isNotNull,
+          reason: 'a revealed target needs a hull to be drawn in');
+    }
   });
 }

@@ -322,13 +322,7 @@ void main() {
 
       // The badge is a pair of number chips; the enemy half's chip is
       // the one that changes when the enemy hull goes down.
-      int enemyTally() {
-        var n = 0;
-        for (final t in find.text('5').evaluate()) {
-          n++;
-        }
-        return n;
-      }
+      int enemyTally() => find.text('5').evaluate().length;
 
       expect(enemyTally(), 2, reason: 'both fleets start with five hulls');
 

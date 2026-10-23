@@ -284,11 +284,44 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                   ],
                 ),
                 const SizedBox(height: 4),
+                // The day's date, and the KIND of puzzle it is — the slot
+                // rotates through five very different briefs, so the
+                // banner says which one this is before the brief below.
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      '${_today.month}/${_today.day}/${_today.year}',
+                      style: AppText.label(
+                          size: 10,
+                          color:
+                              AppColors.cream.withValues(alpha: 0.75)),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 9, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: AppColors.gold,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: AppColors.outline, width: 2),
+                      ),
+                      child: Text(
+                        _puzzle.type.title,
+                        style: AppText.label(
+                            size: 9, color: AppColors.outline),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                // The brief: what this puzzle is actually asking for.
                 Text(
-                  '${_today.month}/${_today.day}/${_today.year}  •  SINK ${_puzzle.board.ships.length} SHIPS IN ${_puzzle.shotBudget} SHOTS',
-                  style: AppText.label(
-                      size: 10,
-                      color: AppColors.cream.withValues(alpha: 0.75)),
+                  _puzzle.brief,
+                  style: AppText.body(
+                      size: 11, color: AppColors.cream),
+                  textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -296,8 +329,7 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                   children: [
                     _chip('SHOTS LEFT  ${_puzzle.shotsLeft}'),
                     const SizedBox(width: 8),
-                    _chip(
-                        'SUNK  ${_puzzle.sunkShips.length}/${_puzzle.board.ships.length}'),
+                    _chip(_puzzle.progressLabel),
                     if (!rewardAvailable) ...[
                       const SizedBox(width: 8),
                       _chip('CLAIMED ✓'),
@@ -367,6 +399,16 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                               destroyedShips: _puzzle.sunkShips,
                               wreckShipSkinId: fleetSkin.id,
                               wreckShipSkin: fleetSkin,
+                              // The MARKED / FIRST STRIKE puzzles show the
+                              // hulls they are about on the board — in the
+                              // plain enemy red, so a revealed target
+                              // never reads as one of the captain's own
+                              // ships. Every other puzzle reveals
+                              // nothing, which is the point of them.
+                              ships: _puzzle.revealedShips,
+                              skin: _puzzle.revealedShips == null
+                                  ? null
+                                  : kRedFleetSkin,
                               // Themed water + hit/miss marks: a family
                               // battlefield replaces the flat cells (and
                               // brings its own markers), otherwise a
@@ -384,6 +426,25 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                               cannonSkinId: skin.id,
                             ),
                           ),
+                          // The MARKED / FIRST STRIKE targets wear a gold
+                          // ring on the water, so "these ones, and only
+                          // these ones" is unmistakable at a glance.
+                          if (_puzzle.revealedShips != null &&
+                              _puzzle.revealedShips!.isNotEmpty)
+                            Positioned(
+                              left: gridLeft,
+                              top: gridTop,
+                              width: gridSide,
+                              height: gridSide,
+                              child: IgnorePointer(
+                                child: CustomPaint(
+                                  painter: _TargetRingPainter(
+                                    ships: _puzzle.revealedShips!,
+                                    cell: gridSide / kBoardSize,
+                                  ),
+                                ),
+                              ),
+                            ),
                           // The captain's own equipped gun, parked below
                           // the grid with its muzzle peeking onto the
                           // deck — recoil, flash and reload ring included.
@@ -403,21 +464,6 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                               ),
                             ),
                           ),
-                          // The shell's slot is ALWAYS in the tree — an
-                          // empty box when no shell is in flight.
-                          //
-                          // BUGFIX: a Stack matches its children BY INDEX
-                          // when they carry no keys, so a child added or
-                          // removed here shifted every later child along
-                          // by one. The celebration overlay sits right
-                          // after this slot and is a `Positioned.fill`
-                          // just like it, so the overlay's element was
-                          // re-used for the shell layer and then
-                          // re-created on the next shot: its animation
-                          // restarted on every shot, and the popup could
-                          // pop up when no ship had been sunk at all.
-                          // Keeping the slot (and its type) fixed means
-                          // the overlay's element is never disturbed.
                           // The shell's slot is ALWAYS in the tree — an
                           // empty box when no shell is in flight.
                           //
@@ -469,13 +515,38 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
                     child: Column(
                       children: [
                         Text(
-                          _puzzle.solved ? 'PUZZLE SOLVED!' : 'OUT OF SHOTS',
+                          _puzzle.solved
+                              ? 'PUZZLE SOLVED!'
+                              : (_puzzle.failReason != null
+                                  ? 'RULE BROKEN'
+                                  : 'OUT OF SHOTS'),
                           style: AppText.heading(
                               size: 18,
                               color: _puzzle.solved
                                   ? AppColors.gold
                                   : AppColors.hit),
                         ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${_puzzle.type.title}  •  '
+                          '${_puzzle.brief}',
+                          style: AppText.label(
+                              size: 10,
+                              color: AppColors.cream
+                                  .withValues(alpha: 0.8)),
+                          textAlign: TextAlign.center,
+                        ),
+                        // Why it ended badly, when the puzzle's own rule
+                        // was the thing that broke it.
+                        if (_puzzle.failReason != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            _puzzle.failReason!,
+                            style: AppText.body(
+                                size: 12, color: AppColors.hit),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
                         const SizedBox(height: 4),
                         Text(
                           _reward > 0
@@ -692,6 +763,75 @@ class _DailyPuzzleScreenState extends State<DailyPuzzleScreen>
       ),
     );
   }
+}
+
+/// The gold rings that mark a puzzle's target hulls on the water.
+///
+/// Drawn over the grid rather than baked into it, so the puzzle screen
+/// can mark any subset of the fleet without the battle grid growing a
+/// notion of "targets" it has no use for.
+class _TargetRingPainter extends CustomPainter {
+  final List<PlacedShip> ships;
+  final double cell;
+
+  const _TargetRingPainter({required this.ships, required this.cell});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final gold = AppColors.gold;
+    for (final ship in ships) {
+      final long = ship.spec.size * cell;
+      final w = ship.horizontal ? long : cell;
+      final h = ship.horizontal ? cell : long;
+      final rect = Rect.fromLTWH(
+        ship.col * cell + cell * 0.06,
+        ship.row * cell + cell * 0.06,
+        w - cell * 0.12,
+        h - cell * 0.12,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, Radius.circular(cell * 0.28)),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = cell * 0.09
+          ..color = gold.withValues(alpha: 0.9),
+      );
+      // Corner ticks, so the mark reads as a TARGET rather than a
+      // decorative outline.
+      final tick = cell * 0.3;
+      for (final corner in const [
+        Offset(0, 0),
+        Offset(1, 0),
+        Offset(0, 1),
+        Offset(1, 1),
+      ]) {
+        final x = corner.dx == 0 ? rect.left : rect.right;
+        final y = corner.dy == 0 ? rect.top : rect.bottom;
+        final dx = corner.dx == 0 ? 1.0 : -1.0;
+        final dy = corner.dy == 0 ? 1.0 : -1.0;
+        canvas.drawLine(
+          Offset(x, y),
+          Offset(x + dx * tick, y),
+          Paint()
+            ..strokeWidth = cell * 0.11
+            ..strokeCap = StrokeCap.round
+            ..color = gold,
+        );
+        canvas.drawLine(
+          Offset(x, y),
+          Offset(x, y + dy * tick),
+          Paint()
+            ..strokeWidth = cell * 0.11
+            ..strokeCap = StrokeCap.round
+            ..color = gold,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TargetRingPainter old) =>
+      old.ships != ships || old.cell != cell;
 }
 
 /// Deep-sea backdrop for the puzzle board: the equipped deck's own

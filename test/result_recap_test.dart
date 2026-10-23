@@ -57,6 +57,6 @@ void main() {
     expect(grid.legacyBoardId, 'rose');
     expect(grid.cannonSkinId, 'rose');
     expect(grid.ships?.length, 2);
-    expect(grid.destroyedShips?.length, 1);
+    expect(grid.destroyedShips.length, 1);
   });
 }
